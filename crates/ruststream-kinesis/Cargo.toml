@@ -14,4 +14,26 @@ categories = ["asynchronous", "network-programming"]
 [lints]
 workspace = true
 
+[features]
+default = []
+# A DynamoDB-backed lease store, so multiple service instances can share the shards.
+dynamodb-lease = ["dep:aws-sdk-dynamodb"]
+# The in-process test broker (TestableBroker + TestApp support). The conformance harness is a
+# broker-author tool and stays in this repo's dev-dependencies, not in the user-facing feature.
+testing = ["ruststream/testing"]
+
 [dependencies]
+ruststream = { workspace = true, default-features = false }
+aws-config.workspace = true
+aws-sdk-kinesis.workspace = true
+aws-sdk-dynamodb = { workspace = true, optional = true }
+bytes.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+ruststream = { workspace = true, features = ["conformance", "testing", "macros", "json"] }
+serde = { version = "1", features = ["derive"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

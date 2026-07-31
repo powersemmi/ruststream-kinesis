@@ -18,6 +18,14 @@ allow = [
     # unicode-ident is (MIT OR Apache-2.0) AND Unicode-3.0; the Unicode license
     # only covers the embedded character tables and is permissive.
     "Unicode-3.0",
+    # The AWS SDK TLS tree (rustls, aws-lc-rs, ring, untrusted): ISC, BSD-3-Clause,
+    # and MIT-0 are all OSI-approved and permissive.
+    "ISC",
+    "BSD-3-Clause",
+    "MIT-0",
+    # webpki-roots ships the Mozilla CA bundle under CDLA-Permissive-2.0, a
+    # permissive data license covering the embedded certificate set.
+    "CDLA-Permissive-2.0",
 ]
 
 [bans]
