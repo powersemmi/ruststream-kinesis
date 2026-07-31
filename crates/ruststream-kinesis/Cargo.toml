@@ -1,0 +1,17 @@
+[package]
+name = "ruststream-kinesis"
+description = "Amazon Kinesis Data Streams broker implementation for the RustStream messaging framework."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+keywords = ["aws", "kinesis", "streaming", "broker", "faststream"]
+categories = ["asynchronous", "network-programming"]
+
+[lints]
+workspace = true
+
+[dependencies]
