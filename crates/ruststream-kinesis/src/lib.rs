@@ -39,7 +39,9 @@ pub use broker::{ConnectedKinesisBroker, KinesisBroker};
 pub use dynamo::DynamoLeaseStore;
 pub use error::KinesisError;
 pub use lease::{LeaseError, LeaseState, LeaseStore, MemoryLeaseStore, SHARD_END};
-pub use message::{KinesisMessage, PARTITION_KEY_HEADER, SEQUENCE_HEADER, SHARD_HEADER};
+pub use message::{
+    KinesisMessage, KinesisPosition, PARTITION_KEY_HEADER, SEQUENCE_HEADER, SHARD_HEADER,
+};
 pub use publisher::{KinesisPublish, KinesisPublisher};
 pub use stream::{KinesisStream, StartPosition};
-pub use subscriber::KinesisSubscriber;
+pub use subscriber::{KinesisSeeker, KinesisSubscriber};

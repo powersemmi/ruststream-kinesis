@@ -6,7 +6,7 @@
 
 #![cfg(feature = "testing")]
 
-use ruststream::conformance::harness;
+use ruststream::conformance::{capabilities, harness};
 use ruststream_kinesis::testing::KinesisTestBroker;
 use ruststream_kinesis::{KinesisBroker, KinesisStream, StartPosition};
 
@@ -45,6 +45,30 @@ async fn kinesis_broker_passes_lifecycle() {
             KinesisStream::new(name)
                 .create_if_missing(1)
                 .start(StartPosition::Horizon)
+        },
+        |connected| connected.publisher(),
+    )
+    .await;
+}
+
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kinesis_broker_passes_seeking_suite() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    capabilities::seeking(
+        || {
+            KinesisBroker::new()
+                .endpoint(endpoint.clone())
+                .test_credentials()
+                .region("us-east-1")
+        },
+        |name| {
+            KinesisStream::new(name)
+                .create_if_missing(1)
+                .start(StartPosition::Horizon)
+                .poll_interval(std::time::Duration::from_millis(200))
         },
         |connected| connected.publisher(),
     )

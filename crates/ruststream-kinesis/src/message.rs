@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use ruststream::{AckError, Headers, IncomingMessage, Partitioned};
+use ruststream::{AckError, Headers, IncomingMessage, Partitioned, Positioned};
 
 use crate::lease::LeaseStore;
 use crate::track::Watermark;
@@ -73,12 +73,30 @@ pub(crate) fn decode_envelope(data: &[u8]) -> (Headers, Bytes) {
     (Headers::new(), Bytes::copy_from_slice(data))
 }
 
+/// A position in the stream's retained log, accepted by
+/// [`Seeker::seek`](ruststream::Seeker::seek).
+///
+/// Captured positions ([`Positioned::position`]) carry the pinned semantics the framework
+/// defines: seeking to one redelivers exactly that record. A position addresses one shard;
+/// seeking moves that shard's reader only, the way a partitioned log seeks per partition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KinesisPosition {
+    /// The shard the position lives on.
+    pub shard: String,
+    /// The record's sequence number.
+    pub sequence: String,
+}
+
 pub(crate) struct Settlement {
     pub(crate) tracker: Arc<Watermark>,
     pub(crate) index: u64,
     pub(crate) store: Arc<dyn LeaseStore>,
     pub(crate) shard: String,
     pub(crate) owner: String,
+    /// The reader's delivery generation at delivery time; a seek bumps the shared gate, and
+    /// stale settlements skip checkpointing (the watermark was reset).
+    pub(crate) epoch: u64,
+    pub(crate) gate: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// A record delivered by a [`KinesisSubscriber`](crate::KinesisSubscriber).
@@ -92,6 +110,7 @@ pub(crate) struct Settlement {
 pub struct KinesisMessage {
     payload: Bytes,
     headers: Headers,
+    sequence: String,
     settlement: Settlement,
 }
 
@@ -118,6 +137,7 @@ impl KinesisMessage {
         Self {
             payload,
             headers,
+            sequence: sequence.to_owned(),
             settlement,
         }
     }
@@ -129,7 +149,14 @@ impl KinesisMessage {
             store,
             shard,
             owner,
+            epoch,
+            gate,
         } = self.settlement;
+        if gate.load(std::sync::atomic::Ordering::Acquire) != epoch {
+            // The subscription repositioned after this delivery: its watermark was reset,
+            // and a stale checkpoint would move the cursor somewhere the seek just left.
+            return Ok(());
+        }
         let Some(sequence) = tracker.settle(index) else {
             return Ok(()); // handled, but the watermark waits on an earlier record
         };
@@ -139,6 +166,17 @@ impl KinesisMessage {
             // permits.
             Ok(_) => Ok(()),
             Err(err) => Err(AckError::Broker(err)),
+        }
+    }
+}
+
+impl Positioned for KinesisMessage {
+    type Position = KinesisPosition;
+
+    fn position(&self) -> KinesisPosition {
+        KinesisPosition {
+            shard: self.settlement.shard.clone(),
+            sequence: self.sequence.clone(),
         }
     }
 }

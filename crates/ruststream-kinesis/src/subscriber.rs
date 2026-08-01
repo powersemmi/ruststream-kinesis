@@ -16,10 +16,13 @@ use futures::Stream;
 use ruststream::Subscriber;
 use tokio::sync::mpsc;
 
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use crate::broker::Core;
 use crate::error::{KinesisError, sdk_err};
 use crate::lease::{LeaseStore, SHARD_END};
-use crate::message::{KPL_MAGIC, KinesisMessage, Settlement};
+use crate::message::{KPL_MAGIC, KinesisMessage, KinesisPosition, Settlement};
 use crate::stream::{KinesisStream, StartPosition};
 use crate::track::Watermark;
 
@@ -31,13 +34,56 @@ const RENEW_EVERY: Duration = Duration::from_secs(3);
 /// How many deliveries may sit between the readers and the consumer.
 const CHANNEL_CAPACITY: usize = 64;
 
+/// A repositioning request delivered to one shard's reader.
+pub(crate) struct ShardSeek {
+    pub(crate) sequence: String,
+    pub(crate) done: tokio::sync::oneshot::Sender<Result<(), KinesisError>>,
+}
+
+/// One shard's live seek surface: the delivery-generation gate (bumped at enqueue, so
+/// in-flight batches stamp stale) and the reader's command channel.
+#[derive(Clone)]
+pub(crate) struct ShardHandle {
+    pub(crate) gate: Arc<AtomicU64>,
+    pub(crate) tx: mpsc::UnboundedSender<ShardSeek>,
+}
+
+pub(crate) type SeekBus = Arc<Mutex<HashMap<String, ShardHandle>>>;
+
+/// One channel item: the delivery (or error) plus its generation stamp. A seek bumps the
+/// shard's gate, and items stamped under an older generation are discarded on the way out.
+pub(crate) struct Stamped {
+    stamp: Option<(u64, Arc<AtomicU64>)>,
+    item: Result<KinesisMessage, KinesisError>,
+}
+
+impl Stamped {
+    fn live(epoch: u64, gate: &Arc<AtomicU64>, item: Result<KinesisMessage, KinesisError>) -> Self {
+        Self {
+            stamp: Some((epoch, Arc::clone(gate))),
+            item,
+        }
+    }
+
+    fn unstamped(item: Result<KinesisMessage, KinesisError>) -> Self {
+        Self { stamp: None, item }
+    }
+
+    fn current(&self) -> bool {
+        self.stamp
+            .as_ref()
+            .is_none_or(|(epoch, gate)| *epoch == gate.load(Ordering::Acquire))
+    }
+}
+
 /// A subscription to one Kinesis stream; yields [`KinesisMessage`]s from every owned shard.
 ///
 /// Dropping the subscriber stops the coordinator and every reader; unsettled records
 /// redeliver from the last checkpoint when the leases are next taken.
 pub struct KinesisSubscriber {
     stream: String,
-    rx: mpsc::Receiver<Result<KinesisMessage, KinesisError>>,
+    rx: mpsc::Receiver<Stamped>,
+    bus: SeekBus,
 }
 
 impl std::fmt::Debug for KinesisSubscriber {
@@ -58,14 +104,81 @@ impl KinesisSubscriber {
     pub(crate) fn open(core: &Core, descriptor: KinesisStream) -> Self {
         let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
         let stream = descriptor.stream().to_owned();
+        let bus: SeekBus = Arc::new(Mutex::new(HashMap::new()));
         tokio::spawn(coordinate(
             core.client.clone(),
             Arc::clone(&core.store),
             core.owner.clone(),
             descriptor,
             tx,
+            Arc::clone(&bus),
         ));
-        Self { stream, rx }
+        Self { stream, rx, bus }
+    }
+}
+
+/// Repositions one shard of a [`KinesisSubscriber`] while its stream runs; minted by
+/// [`Seekable::seeker`](ruststream::Seekable::seeker).
+///
+/// A seek addresses the shard carried by the position and resets that shard's watermark
+/// bookkeeping: acknowledgements of records delivered before the seek no longer checkpoint.
+#[derive(Clone)]
+pub struct KinesisSeeker {
+    bus: SeekBus,
+}
+
+impl std::fmt::Debug for KinesisSeeker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KinesisSeeker").finish_non_exhaustive()
+    }
+}
+
+impl ruststream::Seeker for KinesisSeeker {
+    type Position = KinesisPosition;
+    type Error = KinesisError;
+
+    async fn seek(&self, to: KinesisPosition) -> Result<(), KinesisError> {
+        let handle = {
+            let bus = self.bus.lock().expect("seek bus mutex poisoned");
+            bus.get(&to.shard).cloned()
+        };
+        let Some(handle) = handle else {
+            return Err(KinesisError::Read {
+                stream: String::new(),
+                shard: to.shard,
+                source: Box::from("no live reader for this shard (not owned, or finished)"),
+            });
+        };
+        // Bump the generation first: deliveries stamped before this instant are discarded,
+        // including an in-flight batch the reader has not finished forwarding.
+        handle.gate.fetch_add(1, Ordering::Release);
+        let (done, wait) = tokio::sync::oneshot::channel();
+        handle
+            .tx
+            .send(ShardSeek {
+                sequence: to.sequence,
+                done,
+            })
+            .map_err(|_| KinesisError::Read {
+                stream: String::new(),
+                shard: to.shard.clone(),
+                source: Box::from("the shard reader has shut down"),
+            })?;
+        wait.await.map_err(|_| KinesisError::Read {
+            stream: String::new(),
+            shard: to.shard,
+            source: Box::from("the shard reader has shut down"),
+        })?
+    }
+}
+
+impl ruststream::Seekable for KinesisSubscriber {
+    type Seeker = KinesisSeeker;
+
+    fn seeker(&self) -> KinesisSeeker {
+        KinesisSeeker {
+            bus: Arc::clone(&self.bus),
+        }
     }
 }
 
@@ -76,8 +189,21 @@ impl Subscriber for KinesisSubscriber {
     fn stream(&mut self) -> impl Stream<Item = Result<KinesisMessage, KinesisError>> + Send + '_ {
         // Poll the channel in place rather than wrapping it in an owning stream, so `stream`
         // can be called again after the returned stream is dropped (the runtime and the
-        // conformance helpers re-enter it per call).
-        futures::stream::poll_fn(move |cx| self.rx.poll_recv(cx))
+        // conformance helpers re-enter it per call). Items stamped under an older generation
+        // (before a seek) are discarded here.
+        futures::stream::poll_fn(move |cx| {
+            loop {
+                match self.rx.poll_recv(cx) {
+                    std::task::Poll::Ready(Some(stamped)) => {
+                        if stamped.current() {
+                            return std::task::Poll::Ready(Some(stamped.item));
+                        }
+                    }
+                    std::task::Poll::Ready(None) => return std::task::Poll::Ready(None),
+                    std::task::Poll::Pending => return std::task::Poll::Pending,
+                }
+            }
+        })
     }
 }
 
@@ -117,7 +243,8 @@ async fn coordinate(
     store: Arc<dyn LeaseStore>,
     owner: String,
     descriptor: KinesisStream,
-    out: mpsc::Sender<Result<KinesisMessage, KinesisError>>,
+    out: mpsc::Sender<Stamped>,
+    bus: SeekBus,
 ) {
     let stream = descriptor.stream().to_owned();
     let mut readers: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
@@ -141,16 +268,24 @@ async fn coordinate(
                         Ok(_) => {}
                         Err(err) => {
                             let _ = out
-                                .send(Err(KinesisError::Lease {
+                                .send(Stamped::unstamped(Err(KinesisError::Lease {
                                     shard: id.clone(),
                                     source: err,
-                                }))
+                                })))
                                 .await;
                             continue;
                         }
                     }
                     match store.acquire(&id, &owner, LEASE_TTL).await {
                         Ok(true) => {
+                            let (seek_tx, seek_rx) = mpsc::unbounded_channel();
+                            let handle = ShardHandle {
+                                gate: Arc::new(AtomicU64::new(0)),
+                                tx: seek_tx,
+                            };
+                            bus.lock()
+                                .expect("seek bus mutex poisoned")
+                                .insert(id.clone(), handle.clone());
                             readers.insert(
                                 id.clone(),
                                 tokio::spawn(read_shard(
@@ -160,23 +295,26 @@ async fn coordinate(
                                     descriptor.clone(),
                                     id,
                                     out.clone(),
+                                    handle.gate,
+                                    seek_rx,
+                                    Arc::clone(&bus),
                                 )),
                             );
                         }
                         Ok(false) => {} // another instance owns it
                         Err(err) => {
                             let _ = out
-                                .send(Err(KinesisError::Lease {
+                                .send(Stamped::unstamped(Err(KinesisError::Lease {
                                     shard: id.clone(),
                                     source: err,
-                                }))
+                                })))
                                 .await;
                         }
                     }
                 }
             }
             Err(err) => {
-                if out.send(Err(err)).await.is_err() {
+                if out.send(Stamped::unstamped(Err(err))).await.is_err() {
                     break;
                 }
             }
@@ -263,23 +401,84 @@ async fn initial_iterator(
     Ok(output.shard_iterator().map(str::to_owned))
 }
 
-#[allow(clippy::too_many_lines)]
+/// Applies one reposition: a fresh iterator at the requested sequence and a reset watermark.
+async fn apply_shard_seek(
+    client: &aws_sdk_kinesis::Client,
+    stream: &str,
+    shard: &str,
+    seek: ShardSeek,
+    iterator: &mut String,
+    tracker: &mut Arc<Watermark>,
+) {
+    let fresh = client
+        .get_shard_iterator()
+        .stream_name(stream)
+        .shard_id(shard)
+        .shard_iterator_type(ShardIteratorType::AtSequenceNumber)
+        .starting_sequence_number(&seek.sequence)
+        .send()
+        .await;
+    let outcome = match fresh {
+        Ok(output) => output.shard_iterator().map_or_else(
+            || {
+                Err(KinesisError::Read {
+                    stream: stream.to_owned(),
+                    shard: shard.to_owned(),
+                    source: Box::from("the service returned no iterator for the position"),
+                })
+            },
+            |new_iterator| {
+                new_iterator.clone_into(iterator);
+                *tracker = Arc::new(Watermark::default());
+                Ok(())
+            },
+        ),
+        Err(err) => Err(KinesisError::Read {
+            stream: stream.to_owned(),
+            shard: shard.to_owned(),
+            source: sdk_err(&err),
+        }),
+    };
+    let _ = seek.done.send(outcome);
+}
+
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 async fn read_shard(
     client: aws_sdk_kinesis::Client,
     store: Arc<dyn LeaseStore>,
     owner: String,
     descriptor: KinesisStream,
     shard: String,
-    out: mpsc::Sender<Result<KinesisMessage, KinesisError>>,
+    out: mpsc::Sender<Stamped>,
+    gate: Arc<AtomicU64>,
+    mut seek_rx: mpsc::UnboundedReceiver<ShardSeek>,
+    bus: SeekBus,
 ) {
+    // Every exit path must deregister this shard's seek surface.
+    struct BusGuard {
+        bus: SeekBus,
+        shard: String,
+    }
+    impl Drop for BusGuard {
+        fn drop(&mut self) {
+            self.bus
+                .lock()
+                .expect("seek bus mutex poisoned")
+                .remove(&self.shard);
+        }
+    }
+    let _bus_guard = BusGuard {
+        bus,
+        shard: shard.clone(),
+    };
     let stream = descriptor.stream().to_owned();
-    let tracker = Arc::new(Watermark::default());
+    let mut tracker = Arc::new(Watermark::default());
     let mut iterator =
         match initial_iterator(&client, &stream, &shard, &descriptor, store.as_ref()).await {
             Ok(Some(iterator)) => iterator,
             Ok(None) => return, // already at SHARD_END
             Err(err) => {
-                let _ = out.send(Err(err)).await;
+                let _ = out.send(Stamped::unstamped(Err(err))).await;
                 return;
             }
         };
@@ -291,6 +490,12 @@ async fn read_shard(
             let _ = store.release(&shard, &owner).await;
             return;
         }
+        // A reposition replaces the iterator and resets the watermark; deliveries stamped
+        // under the previous generation are discarded by their settlements and were already
+        // filtered from checkpointing by the gate bump at enqueue.
+        while let Ok(seek) = seek_rx.try_recv() {
+            apply_shard_seek(&client, &stream, &shard, seek, &mut iterator, &mut tracker).await;
+        }
         if last_renew.elapsed() >= RENEW_EVERY {
             match store.renew(&shard, &owner, LEASE_TTL).await {
                 Ok(true) => last_renew = tokio::time::Instant::now(),
@@ -300,6 +505,9 @@ async fn read_shard(
             }
         }
 
+        // Stamped before the read: a seek that lands while the batch is in flight bumps the
+        // gate, so these deliveries are discarded rather than leaking pre-seek records.
+        let epoch = gate.load(Ordering::Acquire);
         let response = client
             .get_records()
             .shard_iterator(&iterator)
@@ -313,9 +521,13 @@ async fn read_shard(
                     let data = record.data().as_ref();
                     if data.len() > 4 && data[0..4] == KPL_MAGIC {
                         if out
-                            .send(Err(KinesisError::AggregatedRecord {
-                                shard: shard.clone(),
-                            }))
+                            .send(Stamped::live(
+                                epoch,
+                                &gate,
+                                Err(KinesisError::AggregatedRecord {
+                                    shard: shard.clone(),
+                                }),
+                            ))
                             .await
                             .is_err()
                         {
@@ -329,6 +541,8 @@ async fn read_shard(
                         store: Arc::clone(&store),
                         shard: shard.clone(),
                         owner: owner.clone(),
+                        epoch,
+                        gate: Arc::clone(&gate),
                     };
                     let message = KinesisMessage::new(
                         data,
@@ -336,7 +550,11 @@ async fn read_shard(
                         record.sequence_number(),
                         settlement,
                     );
-                    if out.send(Ok(message)).await.is_err() {
+                    if out
+                        .send(Stamped::live(epoch, &gate, Ok(message)))
+                        .await
+                        .is_err()
+                    {
                         let _ = store.release(&shard, &owner).await;
                         return;
                     }
@@ -358,6 +576,14 @@ async fn read_shard(
                 if output.records().is_empty() {
                     tokio::select! {
                         () = out.closed() => {}
+                        seek = seek_rx.recv() => {
+                            if let Some(seek) = seek {
+                                apply_shard_seek(
+                                    &client, &stream, &shard, seek, &mut iterator, &mut tracker,
+                                )
+                                .await;
+                            }
+                        }
                         () = tokio::time::sleep(descriptor.poll_value()) => {}
                     }
                 }
@@ -371,11 +597,11 @@ async fn read_shard(
                     .is_some_and(GetRecordsError::is_resource_not_found_exception);
                 if !expired
                     && out
-                        .send(Err(KinesisError::Read {
+                        .send(Stamped::unstamped(Err(KinesisError::Read {
                             stream: stream.clone(),
                             shard: shard.clone(),
                             source: sdk_err(&err),
-                        }))
+                        })))
                         .await
                         .is_err()
                 {
