@@ -1420,6 +1420,8 @@ dependencies = [
 [[package]]
 name = "ruststream"
 version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edd0f1590d59313061ab3a14a68f05acfa61628c9a06b7d3818556c405d080ed"
 dependencies = [
  "bytes",
  "futures",
@@ -1452,6 +1454,8 @@ dependencies = [
 [[package]]
 name = "ruststream-macros"
 version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ff26749d11832429f51682a4a9df99a5b973674aca05b3f7120b52584f5d75f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1678,9 +1682,9 @@ dependencies = [
 
 [[package]]
 name = "time"
-version = "0.3.54"
+version = "0.3.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e1d5e639ff6bab73cb6885cc7e7b1de96c3f32c68ec55f3952614bec1092244"
+checksum = "cdb87b95ec50ddfa440816d227a17b2ccbdda963a316a727fda0fc4334f7d134"
 dependencies = [
  "deranged",
  "num-conv",

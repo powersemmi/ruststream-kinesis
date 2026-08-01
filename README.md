@@ -30,7 +30,7 @@ Deliberately scoped out of this release: enhanced fan-out (a different resume ma
 
 ## Status
 
-Implemented and verified against LocalStack (the framework's conformance lifecycle suite and the integration tests - including checkpoint resume and unacknowledged-record replay - run in CI against it). Not yet published to crates.io: the release rides the `ruststream` 0.6 line. Design and scope are tracked in [powersemmi/ruststream#194](https://github.com/powersemmi/ruststream/issues/194).
+Implemented and verified against LocalStack (the framework's conformance lifecycle suite and the integration tests - including checkpoint resume and unacknowledged-record replay - run in CI against it). Built on the `ruststream` 0.6 line; this crate is not published to crates.io yet. Design and scope are tracked in [powersemmi/ruststream#194](https://github.com/powersemmi/ruststream/issues/194).
 
 MSRV is 1.94, tracking the AWS SDK (the core stays at 1.85; a dependent may exceed its dependency's floor).
 
