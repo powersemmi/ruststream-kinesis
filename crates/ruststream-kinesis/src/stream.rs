@@ -1,8 +1,9 @@
 //! [`KinesisStream`]: the subscription descriptor.
 //!
-//! The consumer model and the start position decide both cost and latency, so they are
-//! explicit on the descriptor. The start position is an enum with per-variant data - a
-//! sequence-position without a sequence number is unrepresentable.
+//! The consumer model decides both cost and latency, so it is explicit on the descriptor.
+//! Where the subscription starts is not part of it: that vocabulary is
+//! [`KinesisPosition`](crate::KinesisPosition), spoken through the framework's `start_at(..)`
+//! clause and the `Seekable` capability.
 
 use std::time::Duration;
 
@@ -12,36 +13,25 @@ use crate::broker::ConnectedKinesisBroker;
 use crate::error::KinesisError;
 use crate::subscriber::KinesisSubscriber;
 
-/// Where a shard starts when it has no checkpoint yet.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum StartPosition {
-    /// Only records published after the subscription attached. The default.
-    #[default]
-    Latest,
-    /// Everything retained (the trim horizon).
-    Horizon,
-    /// Records at or after the timestamp (milliseconds since the Unix epoch).
-    Timestamp(u64),
-    /// Records after the given sequence number.
-    Sequence(String),
-}
-
 /// A subscription descriptor for one Kinesis stream.
+///
+/// Every shard resumes from its stored checkpoint, and a shard without one starts at the tip.
+/// To open somewhere else, wrap the descriptor in the framework's `start_at(..)` clause with a
+/// [`KinesisPosition`](crate::KinesisPosition).
 ///
 /// Implements [`SubscriptionSource`], so it can sit inline in the `#[subscriber(..)]`
 /// decorator:
 ///
 /// ```
-/// use ruststream_kinesis::{KinesisStream, StartPosition};
+/// use ruststream_kinesis::KinesisStream;
 ///
-/// let source = KinesisStream::new("orders").start(StartPosition::Horizon);
+/// let source = KinesisStream::new("orders").batch(500);
 /// # let _ = source;
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use]
 pub struct KinesisStream {
     stream: String,
-    start: StartPosition,
     batch: i32,
     poll_interval: Duration,
     create_shards: Option<i32>,
@@ -52,19 +42,12 @@ impl KinesisStream {
     pub fn new(stream: impl Into<String>) -> Self {
         Self {
             stream: stream.into(),
-            start: StartPosition::default(),
             batch: 1000,
             // The service recommends waiting a second between reads to stay within the
             // per-shard budget.
             poll_interval: Duration::from_secs(1),
             create_shards: None,
         }
-    }
-
-    /// Where shards without a checkpoint start. Defaults to [`StartPosition::Latest`].
-    pub fn start(mut self, start: StartPosition) -> Self {
-        self.start = start;
-        self
     }
 
     /// Records per read call (1..=10000). Defaults to 1000.
@@ -94,10 +77,6 @@ impl KinesisStream {
         &self.stream
     }
 
-    pub(crate) fn start_value(&self) -> &StartPosition {
-        &self.start
-    }
-
     pub(crate) fn batch_value(&self) -> i32 {
         self.batch
     }
@@ -118,13 +97,6 @@ impl KinesisStream {
         if !(1..=10_000).contains(&self.batch) {
             return Err(KinesisError::Invalid(
                 "batch must be within 1..=10000 (the read cap)".into(),
-            ));
-        }
-        if let StartPosition::Sequence(sequence) = &self.start
-            && sequence.is_empty()
-        {
-            return Err(KinesisError::Invalid(
-                "a sequence start position needs a sequence number".into(),
             ));
         }
         if let Some(shards) = self.create_shards
@@ -162,12 +134,6 @@ mod tests {
         assert!(KinesisStream::new("").validate().is_err());
         assert!(KinesisStream::new("s").batch(0).validate().is_err());
         assert!(KinesisStream::new("s").batch(10_001).validate().is_err());
-        assert!(
-            KinesisStream::new("s")
-                .start(StartPosition::Sequence(String::new()))
-                .validate()
-                .is_err()
-        );
         assert!(
             KinesisStream::new("s")
                 .create_if_missing(0)

@@ -5,7 +5,7 @@
 
 use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
 use ruststream::subscriber;
-use ruststream_kinesis::{KinesisBroker, KinesisStream, StartPosition};
+use ruststream_kinesis::{KinesisBroker, KinesisPosition, KinesisStream};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -13,7 +13,9 @@ struct Order {
     id: u64,
 }
 
-#[subscriber(KinesisStream::new("orders").start(StartPosition::Horizon))]
+// Without the `start_at` clause each shard would resume from its checkpoint and otherwise
+// open at the tip; the horizon replays everything the stream still retains.
+#[subscriber(KinesisStream::new("orders"), start_at(KinesisPosition::horizon()))]
 async fn handle(order: &Order) -> HandlerResult {
     println!("got order {}", order.id);
     HandlerResult::Ack

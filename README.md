@@ -22,8 +22,8 @@
 - **Checkpoint as acknowledgement.** `ack` marks a record handled; the per-shard watermark advances - and persists - once every earlier record is handled too, because a checkpoint implies everything before it. An unacknowledged record wedges the watermark, so the shard replays from it when the lease is next taken: at-least-once, always. `nack(requeue = false)` skips (checkpoints past) a poison record.
 - **Shard lifecycle owned by the crate.** A coordinator discovers shards (splits and merges included), runs one reader per owned shard, and starts children only after their parents are fully consumed - which is what keeps per-key ordering across resharding.
 - **Pluggable leasing.** The built-in in-process lease store is correct for a single service instance; `DynamoLeaseStore` (feature `dynamodb-lease`) lets multiple instances share the shards with conditional-write fencing - a failed renewal stops the reader immediately.
-- **Explicit consumer economics.** `KinesisStream::new("orders").start(StartPosition::Horizon).batch(1000).poll_interval(...)` - the start position is an enum with per-variant data, and polling stays within the service's per-shard budget by default.
-- **Repositioning per shard.** `Seekable` is implemented over shard iterators: a `KinesisPosition` captured from a delivered record (shard plus sequence number) redelivers exactly that record, and acknowledgements of deliveries from before the seek stop checkpointing, so a stale checkpoint cannot undo the move. Where a subscription starts stays declarative (`StartPosition` on the source); a seek - `Seek(seeker): Seek<KinesisSeeker>` in a handler - addresses a shard that is already live.
+- **Explicit consumer economics.** `KinesisStream::new("orders").batch(1000).poll_interval(...)` - polling stays within the service's per-shard budget by default.
+- **One start vocabulary.** Where a subscription reads from is `KinesisPosition` and nothing else; the descriptor carries no parallel start enum. By default a shard resumes from its stored checkpoint and opens at the tip when it has none. `start_at(KinesisPosition::horizon())` on the subscriber opens it somewhere explicit, and the same positions reposition a running subscription through `Seek(seeker): Seek<KinesisSeeker>`. `horizon()`, `latest()` and `timestamp(ms)` are stream-wide, so they reach shards discovered later too; a position captured from a delivered record is shard-scoped and pinned, and seeking to it redelivers exactly that record. Repositioning drops the affected shards' watermark bookkeeping, so a checkpoint from before the seek cannot drag the cursor back.
 - **Partition keys as the partition key.** The `partition-key` header rides the record's own partition key in both directions (feeding `Partitioned`); the sequence number and shard id are surfaced as headers. User headers beyond that travel in a small conditional envelope - Kinesis records carry only a data blob and a partition key - and plain payloads stay unenveloped.
 - **In-process test broker** (feature `testing`). `KinesisTestBroker` reproduces core routing with no server, implements `ruststream::testing::TestableBroker`, and passes the framework's conformance suite in process.
 
@@ -40,7 +40,7 @@ MSRV is 1.94, tracking the AWS SDK (the core stays at 1.85; a dependent may exce
 ```rust
 use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
 use ruststream::subscriber;
-use ruststream_kinesis::{KinesisBroker, KinesisStream, StartPosition};
+use ruststream_kinesis::{KinesisBroker, KinesisPosition, KinesisStream};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -48,7 +48,9 @@ struct Order {
     id: u64,
 }
 
-#[subscriber(KinesisStream::new("orders").start(StartPosition::Horizon))]
+// Drop the start_at clause to resume from the checkpoint instead (and start at the tip
+// when there is none).
+#[subscriber(KinesisStream::new("orders"), start_at(KinesisPosition::horizon()))]
 async fn handle(order: &Order) -> HandlerResult {
     println!("got order {}", order.id);
     HandlerResult::Ack

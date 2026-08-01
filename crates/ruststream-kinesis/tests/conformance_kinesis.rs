@@ -6,9 +6,12 @@
 
 #![cfg(feature = "testing")]
 
+use std::time::Duration;
+
+use ruststream::StartAt;
 use ruststream::conformance::{capabilities, harness};
 use ruststream_kinesis::testing::KinesisTestBroker;
-use ruststream_kinesis::{KinesisBroker, KinesisStream, StartPosition};
+use ruststream_kinesis::{KinesisBroker, KinesisPosition, KinesisStream};
 
 fn test_endpoint() -> Option<String> {
     match std::env::var("KINESIS_TEST_ENDPOINT") {
@@ -42,9 +45,10 @@ async fn kinesis_broker_passes_lifecycle() {
                 .region("us-east-1")
         },
         |name| {
-            KinesisStream::new(name)
-                .create_if_missing(1)
-                .start(StartPosition::Horizon)
+            StartAt::new(
+                KinesisStream::new(name).create_if_missing(1),
+                KinesisPosition::horizon(),
+            )
         },
         |connected| connected.publisher(),
     )
@@ -65,10 +69,12 @@ async fn kinesis_broker_passes_seeking_suite() {
                 .region("us-east-1")
         },
         |name| {
-            KinesisStream::new(name)
-                .create_if_missing(1)
-                .start(StartPosition::Horizon)
-                .poll_interval(std::time::Duration::from_millis(200))
+            StartAt::new(
+                KinesisStream::new(name)
+                    .create_if_missing(1)
+                    .poll_interval(Duration::from_millis(200)),
+                KinesisPosition::horizon(),
+            )
         },
         |connected| connected.publisher(),
     )

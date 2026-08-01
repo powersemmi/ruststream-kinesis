@@ -10,20 +10,22 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
+
 use aws_sdk_kinesis::operation::get_records::GetRecordsError;
+use aws_sdk_kinesis::operation::get_shard_iterator::builders::GetShardIteratorFluentBuilder;
+use aws_sdk_kinesis::primitives::DateTime;
 use aws_sdk_kinesis::types::{Shard, ShardIteratorType};
 use futures::Stream;
 use ruststream::Subscriber;
-use tokio::sync::mpsc;
-
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::{mpsc, oneshot};
 
 use crate::broker::Core;
 use crate::error::{KinesisError, sdk_err};
 use crate::lease::{LeaseStore, SHARD_END};
 use crate::message::{KPL_MAGIC, KinesisMessage, KinesisPosition, Settlement};
-use crate::stream::{KinesisStream, StartPosition};
+use crate::stream::KinesisStream;
 use crate::track::Watermark;
 
 /// How often the coordinator re-lists shards (splits and merges change the set over time).
@@ -34,10 +36,31 @@ const RENEW_EVERY: Duration = Duration::from_secs(3);
 /// How many deliveries may sit between the readers and the consumer.
 const CHANNEL_CAPACITY: usize = 64;
 
+/// A position every shard of the subscription can open at: the stream-wide half of
+/// [`KinesisPosition`]. Kept apart from the shard-scoped forms so that "install this for the
+/// whole subscription" cannot be handed a position that only one shard understands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StreamStart {
+    Horizon,
+    Latest,
+    Timestamp(u64),
+}
+
+/// The cursor one shard's reader opens with, in the shapes the service's iterator types take.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ShardStart {
+    /// A position shared by the whole subscription.
+    Stream(StreamStart),
+    /// Redelivers exactly this record: a captured, pinned position.
+    At(String),
+    /// Resumes after this record: a stored checkpoint.
+    After(String),
+}
+
 /// A repositioning request delivered to one shard's reader.
 pub(crate) struct ShardSeek {
-    pub(crate) sequence: String,
-    pub(crate) done: tokio::sync::oneshot::Sender<Result<(), KinesisError>>,
+    pub(crate) start: ShardStart,
+    pub(crate) done: oneshot::Sender<Result<(), KinesisError>>,
 }
 
 /// One shard's live seek surface: the delivery-generation gate (bumped at enqueue, so
@@ -48,7 +71,49 @@ pub(crate) struct ShardHandle {
     pub(crate) tx: mpsc::UnboundedSender<ShardSeek>,
 }
 
-pub(crate) type SeekBus = Arc<Mutex<HashMap<String, ShardHandle>>>;
+/// The subscription's seek surface, shared by the seeker, the coordinator, and every reader.
+#[derive(Default)]
+pub(crate) struct SeekState {
+    /// The readers that can be repositioned right now, by shard id.
+    shards: Mutex<HashMap<String, ShardHandle>>,
+    /// The stream-wide position a seek installed, if any. Readers consult it when they fetch
+    /// their first iterator, which is what makes a stream-wide seek reach shards that have no
+    /// reader yet: the subscription opened microseconds ago (the `start_at(..)` case), or the
+    /// shard is a child that only appears after a split.
+    start: Mutex<Option<StreamStart>>,
+}
+
+pub(crate) type SeekBus = Arc<SeekState>;
+
+impl SeekState {
+    fn register(&self, shard: String, handle: ShardHandle) {
+        self.lock_shards().insert(shard, handle);
+    }
+
+    fn deregister(&self, shard: &str) {
+        self.lock_shards().remove(shard);
+    }
+
+    fn handle(&self, shard: &str) -> Option<ShardHandle> {
+        self.lock_shards().get(shard).cloned()
+    }
+
+    fn live(&self) -> Vec<ShardHandle> {
+        self.lock_shards().values().cloned().collect()
+    }
+
+    fn install(&self, start: StreamStart) {
+        *self.start.lock().expect("seek state mutex poisoned") = Some(start);
+    }
+
+    pub(crate) fn installed(&self) -> Option<StreamStart> {
+        *self.start.lock().expect("seek state mutex poisoned")
+    }
+
+    fn lock_shards(&self) -> MutexGuard<'_, HashMap<String, ShardHandle>> {
+        self.shards.lock().expect("seek state mutex poisoned")
+    }
+}
 
 /// One channel item: the delivery (or error) plus its generation stamp. A seek bumps the
 /// shard's gate, and items stamped under an older generation are discarded on the way out.
@@ -104,7 +169,7 @@ impl KinesisSubscriber {
     pub(crate) fn open(core: &Core, descriptor: KinesisStream) -> Self {
         let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
         let stream = descriptor.stream().to_owned();
-        let bus: SeekBus = Arc::new(Mutex::new(HashMap::new()));
+        let bus: SeekBus = Arc::new(SeekState::default());
         tokio::spawn(coordinate(
             core.client.clone(),
             Arc::clone(&core.store),
@@ -117,11 +182,15 @@ impl KinesisSubscriber {
     }
 }
 
-/// Repositions one shard of a [`KinesisSubscriber`] while its stream runs; minted by
+/// Repositions a [`KinesisSubscriber`] while its stream runs; minted by
 /// [`Seekable::seeker`](ruststream::Seekable::seeker).
 ///
-/// A seek addresses the shard carried by the position and resets that shard's watermark
-/// bookkeeping: acknowledgements of records delivered before the seek no longer checkpoint.
+/// A stream-wide position ([`KinesisPosition::Horizon`], [`Latest`](KinesisPosition::Latest),
+/// [`Timestamp`](KinesisPosition::Timestamp)) moves every shard of the subscription and is
+/// remembered, so shards whose readers start later open there too. A captured
+/// [`Sequence`](KinesisPosition::Sequence) position moves the one shard it names. Either way
+/// the affected shards drop their watermark bookkeeping: acknowledgements of records delivered
+/// before the seek no longer checkpoint.
 #[derive(Clone)]
 pub struct KinesisSeeker {
     bus: SeekBus,
@@ -133,42 +202,88 @@ impl std::fmt::Debug for KinesisSeeker {
     }
 }
 
-impl ruststream::Seeker for KinesisSeeker {
-    type Position = KinesisPosition;
-    type Error = KinesisError;
-
-    async fn seek(&self, to: KinesisPosition) -> Result<(), KinesisError> {
-        let handle = {
-            let bus = self.bus.lock().expect("seek bus mutex poisoned");
-            bus.get(&to.shard).cloned()
-        };
-        let Some(handle) = handle else {
+impl KinesisSeeker {
+    /// Repositions the one shard the captured position names.
+    async fn seek_shard(&self, shard: String, start: ShardStart) -> Result<(), KinesisError> {
+        let Some(handle) = self.bus.handle(&shard) else {
             return Err(KinesisError::Read {
                 stream: String::new(),
-                shard: to.shard,
+                shard,
                 source: Box::from("no live reader for this shard (not owned, or finished)"),
             });
         };
         // Bump the generation first: deliveries stamped before this instant are discarded,
         // including an in-flight batch the reader has not finished forwarding.
         handle.gate.fetch_add(1, Ordering::Release);
-        let (done, wait) = tokio::sync::oneshot::channel();
+        let (done, wait) = oneshot::channel();
         handle
             .tx
-            .send(ShardSeek {
-                sequence: to.sequence,
-                done,
-            })
+            .send(ShardSeek { start, done })
             .map_err(|_| KinesisError::Read {
                 stream: String::new(),
-                shard: to.shard.clone(),
+                shard: shard.clone(),
                 source: Box::from("the shard reader has shut down"),
             })?;
         wait.await.map_err(|_| KinesisError::Read {
             stream: String::new(),
-            shard: to.shard,
+            shard,
             source: Box::from("the shard reader has shut down"),
         })?
+    }
+
+    /// Repositions every shard, present and future.
+    async fn seek_stream(&self, start: StreamStart) -> Result<(), KinesisError> {
+        // Installed before the broadcast, so a shard whose reader has not fetched its first
+        // iterator yet lands on the position instead of racing past it. This is the whole
+        // reason a `start_at(..)` clause works: it seeks the instant the subscription is
+        // created, when no reader has started.
+        self.bus.install(start);
+        let handles = self.bus.live();
+        // Every gate bumps before the first await, so a batch already in flight anywhere in
+        // the subscription stamps stale.
+        for handle in &handles {
+            handle.gate.fetch_add(1, Ordering::Release);
+        }
+        let mut pending = Vec::with_capacity(handles.len());
+        for handle in handles {
+            let (done, wait) = oneshot::channel();
+            // A reader that shut down between the snapshot and the send needs no reposition:
+            // its shard is finished, or its successor will open at the installed position.
+            if handle
+                .tx
+                .send(ShardSeek {
+                    start: ShardStart::Stream(start),
+                    done,
+                })
+                .is_ok()
+            {
+                pending.push(wait);
+            }
+        }
+        for wait in pending {
+            if let Ok(outcome) = wait.await {
+                outcome?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl ruststream::Seeker for KinesisSeeker {
+    type Position = KinesisPosition;
+    type Error = KinesisError;
+
+    async fn seek(&self, to: KinesisPosition) -> Result<(), KinesisError> {
+        match to {
+            KinesisPosition::Horizon => self.seek_stream(StreamStart::Horizon).await,
+            KinesisPosition::Latest => self.seek_stream(StreamStart::Latest).await,
+            KinesisPosition::Timestamp(millis) => {
+                self.seek_stream(StreamStart::Timestamp(millis)).await
+            }
+            KinesisPosition::Sequence { shard, sequence } => {
+                self.seek_shard(shard, ShardStart::At(sequence)).await
+            }
+        }
     }
 }
 
@@ -260,7 +375,7 @@ async fn coordinate(
                     if readers.contains_key(&id) {
                         continue;
                     }
-                    if !parents_done(&descriptor, shard, &by_id, store.as_ref()).await {
+                    if !parents_done(&bus, shard, &by_id, store.as_ref()).await {
                         continue;
                     }
                     match store.read(&id).await {
@@ -283,9 +398,7 @@ async fn coordinate(
                                 gate: Arc::new(AtomicU64::new(0)),
                                 tx: seek_tx,
                             };
-                            bus.lock()
-                                .expect("seek bus mutex poisoned")
-                                .insert(id.clone(), handle.clone());
+                            bus.register(id.clone(), handle.clone());
                             readers.insert(
                                 id.clone(),
                                 tokio::spawn(read_shard(
@@ -330,10 +443,10 @@ async fn coordinate(
 
 /// A child shard may start only when every parent is fully consumed - that is what keeps
 /// per-key ordering across a split. A parent counts as done when it reached `SHARD_END`, was
-/// trimmed out of the listing, or is closed with no checkpoint under a `Latest` start (its
-/// history is being skipped by request).
+/// trimmed out of the listing, or is closed with no checkpoint while the subscription starts
+/// at the tip (its history is being skipped by request).
 async fn parents_done(
-    descriptor: &KinesisStream,
+    bus: &SeekState,
     shard: &Shard,
     by_id: &HashMap<&str, &Shard>,
     store: &dyn LeaseStore,
@@ -349,19 +462,60 @@ async fn parents_done(
         match state.checkpoint.as_deref() {
             Some(SHARD_END) => {}
             None if is_closed(parent_shard)
-                && matches!(descriptor.start_value(), StartPosition::Latest) => {}
+                && matches!(bus.installed(), None | Some(StreamStart::Latest)) => {}
             _ => return false,
         }
     }
     true
 }
 
+/// Points a `GetShardIterator` request at a cursor.
+fn iterator_at(
+    request: GetShardIteratorFluentBuilder,
+    start: &ShardStart,
+) -> GetShardIteratorFluentBuilder {
+    match start {
+        ShardStart::Stream(StreamStart::Latest) => {
+            request.shard_iterator_type(ShardIteratorType::Latest)
+        }
+        ShardStart::Stream(StreamStart::Horizon) => {
+            request.shard_iterator_type(ShardIteratorType::TrimHorizon)
+        }
+        ShardStart::Stream(StreamStart::Timestamp(millis)) => request
+            .shard_iterator_type(ShardIteratorType::AtTimestamp)
+            .timestamp(DateTime::from_millis(
+                i64::try_from(*millis).unwrap_or(i64::MAX),
+            )),
+        ShardStart::At(sequence) => request
+            .shard_iterator_type(ShardIteratorType::AtSequenceNumber)
+            .starting_sequence_number(sequence),
+        ShardStart::After(sequence) => request
+            .shard_iterator_type(ShardIteratorType::AfterSequenceNumber)
+            .starting_sequence_number(sequence),
+    }
+}
+
+/// Why a reader is fetching an iterator from scratch, which decides whether a sought position
+/// or the stored checkpoint wins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reopen {
+    /// The reader is starting. A position installed by a seek is forced here, ahead of the
+    /// checkpoint: that is what the capability promises, and what `start_at(..)` means.
+    Start,
+    /// The reader lost its iterator mid-flight (expiry, a transient failure). The checkpoint
+    /// is the truth now - re-applying the installed position would replay everything this
+    /// reader has already handled - and the position only serves a shard that never
+    /// checkpointed.
+    Recover,
+}
+
 async fn initial_iterator(
     client: &aws_sdk_kinesis::Client,
     stream: &str,
     shard: &str,
-    descriptor: &KinesisStream,
+    bus: &SeekState,
     store: &dyn LeaseStore,
+    why: Reopen,
 ) -> Result<Option<String>, KinesisError> {
     let checkpoint = store
         .read(shard)
@@ -371,28 +525,23 @@ async fn initial_iterator(
             source: e,
         })?
         .checkpoint;
-    let mut request = client
-        .get_shard_iterator()
-        .stream_name(stream)
-        .shard_id(shard);
-    request = match checkpoint.as_deref() {
-        Some(SHARD_END) => return Ok(None),
-        Some(sequence) => request
-            .shard_iterator_type(ShardIteratorType::AfterSequenceNumber)
-            .starting_sequence_number(sequence),
-        None => match descriptor.start_value() {
-            StartPosition::Latest => request.shard_iterator_type(ShardIteratorType::Latest),
-            StartPosition::Horizon => request.shard_iterator_type(ShardIteratorType::TrimHorizon),
-            StartPosition::Timestamp(millis) => request
-                .shard_iterator_type(ShardIteratorType::AtTimestamp)
-                .timestamp(aws_sdk_kinesis::primitives::DateTime::from_millis(
-                    i64::try_from(*millis).unwrap_or(i64::MAX),
-                )),
-            StartPosition::Sequence(sequence) => request
-                .shard_iterator_type(ShardIteratorType::AfterSequenceNumber)
-                .starting_sequence_number(sequence),
-        },
+    if checkpoint.as_deref() == Some(SHARD_END) {
+        return Ok(None);
+    }
+    let start = match (why, bus.installed(), checkpoint) {
+        (Reopen::Start, Some(installed), _) | (Reopen::Recover, Some(installed), None) => {
+            ShardStart::Stream(installed)
+        }
+        (_, _, Some(sequence)) => ShardStart::After(sequence),
+        (_, None, None) => ShardStart::Stream(StreamStart::Latest),
     };
+    let request = iterator_at(
+        client
+            .get_shard_iterator()
+            .stream_name(stream)
+            .shard_id(shard),
+        &start,
+    );
     let output = request.send().await.map_err(|e| KinesisError::Read {
         stream: stream.to_owned(),
         shard: shard.to_owned(),
@@ -401,7 +550,7 @@ async fn initial_iterator(
     Ok(output.shard_iterator().map(str::to_owned))
 }
 
-/// Applies one reposition: a fresh iterator at the requested sequence and a reset watermark.
+/// Applies one reposition: a fresh iterator at the requested cursor and a reset watermark.
 async fn apply_shard_seek(
     client: &aws_sdk_kinesis::Client,
     stream: &str,
@@ -410,14 +559,15 @@ async fn apply_shard_seek(
     iterator: &mut String,
     tracker: &mut Arc<Watermark>,
 ) {
-    let fresh = client
-        .get_shard_iterator()
-        .stream_name(stream)
-        .shard_id(shard)
-        .shard_iterator_type(ShardIteratorType::AtSequenceNumber)
-        .starting_sequence_number(&seek.sequence)
-        .send()
-        .await;
+    let fresh = iterator_at(
+        client
+            .get_shard_iterator()
+            .stream_name(stream)
+            .shard_id(shard),
+        &seek.start,
+    )
+    .send()
+    .await;
     let outcome = match fresh {
         Ok(output) => output.shard_iterator().map_or_else(
             || {
@@ -461,27 +611,32 @@ async fn read_shard(
     }
     impl Drop for BusGuard {
         fn drop(&mut self) {
-            self.bus
-                .lock()
-                .expect("seek bus mutex poisoned")
-                .remove(&self.shard);
+            self.bus.deregister(&self.shard);
         }
     }
     let _bus_guard = BusGuard {
-        bus,
+        bus: Arc::clone(&bus),
         shard: shard.clone(),
     };
     let stream = descriptor.stream().to_owned();
     let mut tracker = Arc::new(Watermark::default());
-    let mut iterator =
-        match initial_iterator(&client, &stream, &shard, &descriptor, store.as_ref()).await {
-            Ok(Some(iterator)) => iterator,
-            Ok(None) => return, // already at SHARD_END
-            Err(err) => {
-                let _ = out.send(Stamped::unstamped(Err(err))).await;
-                return;
-            }
-        };
+    let mut iterator = match initial_iterator(
+        &client,
+        &stream,
+        &shard,
+        &bus,
+        store.as_ref(),
+        Reopen::Start,
+    )
+    .await
+    {
+        Ok(Some(iterator)) => iterator,
+        Ok(None) => return, // already at SHARD_END
+        Err(err) => {
+            let _ = out.send(Stamped::unstamped(Err(err))).await;
+            return;
+        }
+    };
     let mut last_renew = tokio::time::Instant::now();
     let mut failures: u32 = 0;
 
@@ -619,7 +774,15 @@ async fn read_shard(
                 // Expired iterators are refetched from the checkpoint (never Latest, which
                 // would silently skip data); everything else backs off and retries.
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                match initial_iterator(&client, &stream, &shard, &descriptor, store.as_ref()).await
+                match initial_iterator(
+                    &client,
+                    &stream,
+                    &shard,
+                    &bus,
+                    store.as_ref(),
+                    Reopen::Recover,
+                )
+                .await
                 {
                     Ok(Some(fresh)) => iterator = fresh,
                     Ok(None) => return,

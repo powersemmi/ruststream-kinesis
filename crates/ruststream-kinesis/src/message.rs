@@ -73,18 +73,87 @@ pub(crate) fn decode_envelope(data: &[u8]) -> (Headers, Bytes) {
     (Headers::new(), Bytes::copy_from_slice(data))
 }
 
-/// A position in the stream's retained log, accepted by
-/// [`Seeker::seek`](ruststream::Seeker::seek).
+/// A position in the stream's retained log: the whole start vocabulary of this broker,
+/// accepted by [`Seeker::seek`](ruststream::Seeker::seek) and by the `start_at(..)` clause of
+/// `#[subscriber(..)]`.
 ///
-/// Captured positions ([`Positioned::position`]) carry the pinned semantics the framework
-/// defines: seeking to one redelivers exactly that record. A position addresses one shard;
-/// seeking moves that shard's reader only, the way a partitioned log seeks per partition.
+/// Repositioning resets the checkpoint bookkeeping of every shard it moves: acknowledgements
+/// of records delivered before the seek stop advancing the watermark, so a stale checkpoint
+/// cannot drag the cursor back over the position just taken. Records from the new position
+/// onward are delivered again, which at-least-once permits.
+///
+/// Without a position a subscription resumes from the stored checkpoint of each shard, and
+/// starts at the tip on a shard that has none.
+///
+/// # Examples
+///
+/// ```
+/// use ruststream_kinesis::KinesisPosition;
+///
+/// // Every retained record on every shard, replayed from the trim horizon.
+/// let backlog = KinesisPosition::horizon();
+/// # let _ = backlog;
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KinesisPosition {
-    /// The shard the position lives on.
-    pub shard: String,
-    /// The record's sequence number.
-    pub sequence: String,
+pub enum KinesisPosition {
+    /// The trim horizon: everything the stream still retains.
+    ///
+    /// Stream-wide - it applies to every shard of the subscription, including shards
+    /// discovered later (the children of a split or merge).
+    Horizon,
+    /// The tip: only records published after the reposition.
+    ///
+    /// Stream-wide, and the position a shard without a checkpoint starts at by default.
+    Latest,
+    /// The first record at or after this timestamp, in milliseconds since the Unix epoch.
+    ///
+    /// Stream-wide; each shard opens at its own first record from that instant.
+    Timestamp(u64),
+    /// Exactly one record on one shard.
+    ///
+    /// This is the pinned form the framework defines for captured positions
+    /// ([`Positioned::position`]): seeking to one redelivers that very record. It addresses a
+    /// single shard, so it moves that shard's reader only, the way a partitioned log seeks
+    /// per partition, and the shard must be owned and live.
+    Sequence {
+        /// The shard the position lives on.
+        shard: String,
+        /// The record's sequence number.
+        sequence: String,
+    },
+}
+
+impl KinesisPosition {
+    /// The trim horizon, for every shard: see [`KinesisPosition::Horizon`].
+    #[must_use]
+    pub const fn horizon() -> Self {
+        Self::Horizon
+    }
+
+    /// The tip, for every shard: see [`KinesisPosition::Latest`].
+    #[must_use]
+    pub const fn latest() -> Self {
+        Self::Latest
+    }
+
+    /// A wall-clock instant (milliseconds since the Unix epoch), for every shard: see
+    /// [`KinesisPosition::Timestamp`].
+    #[must_use]
+    pub const fn timestamp(millis: u64) -> Self {
+        Self::Timestamp(millis)
+    }
+
+    /// One record on one shard: see [`KinesisPosition::Sequence`].
+    ///
+    /// Captured positions come from [`Positioned::position`]; this constructor is for a
+    /// sequence number carried in from elsewhere (an operator's replay request, say).
+    #[must_use]
+    pub fn sequence(shard: impl Into<String>, sequence: impl Into<String>) -> Self {
+        Self::Sequence {
+            shard: shard.into(),
+            sequence: sequence.into(),
+        }
+    }
 }
 
 pub(crate) struct Settlement {
@@ -174,10 +243,7 @@ impl Positioned for KinesisMessage {
     type Position = KinesisPosition;
 
     fn position(&self) -> KinesisPosition {
-        KinesisPosition {
-            shard: self.settlement.shard.clone(),
-            sequence: self.sequence.clone(),
-        }
+        KinesisPosition::sequence(self.settlement.shard.clone(), self.sequence.clone())
     }
 }
 

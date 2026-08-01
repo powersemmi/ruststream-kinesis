@@ -8,11 +8,12 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use ruststream::{
-    Broker, ConnectedBroker, Headers, IncomingMessage, OutgoingMessage, Publisher, Subscriber,
+    Broker, ConnectedBroker, Headers, IncomingMessage, OutgoingMessage, Publisher, Seekable,
+    Seeker, StartAt, Subscriber, SubscriptionSource,
 };
 use ruststream_kinesis::{
-    ConnectedKinesisBroker, KinesisBroker, KinesisStream, PARTITION_KEY_HEADER, SEQUENCE_HEADER,
-    StartPosition,
+    ConnectedKinesisBroker, KinesisBroker, KinesisPosition, KinesisStream, PARTITION_KEY_HEADER,
+    SEQUENCE_HEADER,
 };
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(30);
@@ -42,11 +43,18 @@ fn unique(name: &str) -> String {
     format!("it-{name}-{}", std::process::id())
 }
 
+/// The plain descriptor: every shard resumes from its checkpoint, and a shard without one
+/// opens at the tip.
 fn source(stream: &str) -> KinesisStream {
     KinesisStream::new(stream)
         .create_if_missing(1)
-        .start(StartPosition::Horizon)
         .poll_interval(Duration::from_millis(200))
+}
+
+/// The same descriptor opened at the trim horizon, the way `start_at(..)` opens it: a forced
+/// position, so it also beats a stored checkpoint.
+fn from_horizon(stream: &str) -> StartAt<KinesisStream, KinesisPosition> {
+    StartAt::new(source(stream), KinesisPosition::horizon())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -57,8 +65,8 @@ async fn roundtrip_preserves_payload_headers_and_partition_key() {
     let connected = connect(&endpoint).await;
 
     let stream_name = unique("roundtrip");
-    let mut subscriber = connected
-        .subscribe_stream(source(&stream_name))
+    let mut subscriber = from_horizon(&stream_name)
+        .subscribe(&connected)
         .await
         .expect("subscription opens");
 
@@ -104,8 +112,8 @@ async fn checkpoints_resume_where_acknowledgement_stopped() {
 
     // First pass: consume and acknowledge two records.
     {
-        let mut subscriber = connected
-            .subscribe_stream(source(&stream_name))
+        let mut subscriber = from_horizon(&stream_name)
+            .subscribe(&connected)
             .await
             .expect("subscription opens");
         for payload in [b"one".as_slice(), b"two".as_slice()] {
@@ -127,14 +135,15 @@ async fn checkpoints_resume_where_acknowledgement_stopped() {
     // Give the dropped subscription's tasks a moment to settle their teardown.
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    // Second pass over the same broker (same lease store): the checkpoint skips the
-    // acknowledged records even though the start position is the horizon.
+    // Second pass over the same broker (same lease store), on the plain descriptor: with no
+    // position forced, the shard resumes from its checkpoint and the acknowledged records
+    // stay consumed.
     publisher
         .publish(OutgoingMessage::new(&stream_name, b"three".as_slice()))
         .await
         .expect("publish succeeds");
-    let mut subscriber = connected
-        .subscribe_stream(source(&stream_name))
+    let mut subscriber = source(&stream_name)
+        .subscribe(&connected)
         .await
         .expect("subscription reopens");
     let mut stream = pin!(subscriber.stream());
@@ -159,28 +168,50 @@ async fn an_unacknowledged_record_replays_on_the_next_lease() {
     let stream_name = unique("replay");
     let publisher = connected.publisher();
 
+    // The first record is acknowledged, so it checkpoints; the second is not, which wedges
+    // the watermark there even though the third is handled.
     {
-        let mut subscriber = connected
-            .subscribe_stream(source(&stream_name))
+        let mut subscriber = from_horizon(&stream_name)
+            .subscribe(&connected)
             .await
             .expect("subscription opens");
-        publisher
-            .publish(OutgoingMessage::new(&stream_name, b"sticky".as_slice()))
-            .await
-            .expect("publish succeeds");
+        for payload in [
+            b"first".as_slice(),
+            b"sticky".as_slice(),
+            b"after".as_slice(),
+        ] {
+            publisher
+                .publish(OutgoingMessage::new(&stream_name, payload))
+                .await
+                .expect("publish succeeds");
+        }
         let mut stream = pin!(subscriber.stream());
-        let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
-            .await
-            .expect("delivery arrives")
-            .expect("stream is open")
-            .expect("delivery is ok");
-        // nack(requeue = true): leave it unhandled - the watermark must not advance.
-        message.nack(true).await.expect("nack succeeds");
+        for expected in [
+            b"first".as_slice(),
+            b"sticky".as_slice(),
+            b"after".as_slice(),
+        ] {
+            let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+                .await
+                .expect("delivery arrives")
+                .expect("stream is open")
+                .expect("delivery is ok");
+            assert_eq!(message.payload(), expected);
+            if expected == b"sticky" {
+                // nack(requeue = true): leave it unhandled - the watermark must not advance.
+                message.nack(true).await.expect("nack succeeds");
+            } else {
+                message.ack().await.expect("ack succeeds");
+            }
+        }
     }
+    // Give the dropped subscription's tasks a moment to settle their teardown.
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let mut subscriber = connected
-        .subscribe_stream(source(&stream_name))
+    // The plain descriptor resumes from the checkpoint, which never moved past the
+    // unacknowledged record: it and everything after it are delivered again.
+    let mut subscriber = source(&stream_name)
+        .subscribe(&connected)
         .await
         .expect("subscription reopens");
     let mut stream = pin!(subscriber.stream());
@@ -191,6 +222,52 @@ async fn an_unacknowledged_record_replays_on_the_next_lease() {
         .expect("replay is ok");
     assert_eq!(replayed.payload(), b"sticky");
     replayed.ack().await.expect("ack succeeds");
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_horizon_seek_delivers_the_retained_backlog() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    let connected = connect(&endpoint).await;
+
+    let stream_name = unique("backlog");
+    let publisher = connected.publisher();
+
+    // The subscription starts at the tip (no position forced), and these records are
+    // published into the retained log behind it.
+    let mut subscriber = source(&stream_name)
+        .subscribe(&connected)
+        .await
+        .expect("subscription opens");
+    let seeker = subscriber.seeker();
+    for payload in [b"one".as_slice(), b"two".as_slice()] {
+        publisher
+            .publish(OutgoingMessage::new(&stream_name, payload))
+            .await
+            .expect("publish succeeds");
+    }
+
+    // The reposition reaches the shard either way: broadcast to its reader if that reader is
+    // already live, and applied when it opens if it is not. Whatever the tip subscription had
+    // already delivered was stamped before the seek, so it is discarded rather than seen.
+    seeker
+        .seek(KinesisPosition::horizon())
+        .await
+        .expect("seek to the horizon succeeds");
+
+    let mut stream = pin!(subscriber.stream());
+    for expected in [b"one".as_slice(), b"two".as_slice()] {
+        let replayed = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+            .await
+            .expect("backlog arrives")
+            .expect("stream is open")
+            .expect("backlog is ok");
+        assert_eq!(replayed.payload(), expected);
+        replayed.ack().await.expect("ack succeeds");
+    }
 
     connected.shutdown().await.expect("shutdown succeeds");
 }

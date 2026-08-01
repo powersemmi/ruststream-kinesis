@@ -15,6 +15,10 @@
 //!   multiple instances share the shards with conditional-write fencing.
 //! - Children of a split or merge start only after their parents are fully consumed, which
 //!   is what keeps per-key ordering across resharding.
+//! - Where a subscription starts is one vocabulary, not two: a shard resumes from its stored
+//!   checkpoint and otherwise opens at the tip, and [`KinesisPosition`] repositions it -
+//!   through the framework's `start_at(..)` clause at startup, or the `Seekable` capability
+//!   while it runs.
 //! - Shared polling only in this release: enhanced fan-out is a different resume machine on
 //!   an HTTP/2 push stream with no local emulator support, and is deliberately deferred.
 //!   KPL-aggregated records are refused loudly rather than delivered as opaque protobuf.
@@ -43,5 +47,5 @@ pub use message::{
     KinesisMessage, KinesisPosition, PARTITION_KEY_HEADER, SEQUENCE_HEADER, SHARD_HEADER,
 };
 pub use publisher::{KinesisPublish, KinesisPublisher};
-pub use stream::{KinesisStream, StartPosition};
+pub use stream::KinesisStream;
 pub use subscriber::{KinesisSeeker, KinesisSubscriber};
