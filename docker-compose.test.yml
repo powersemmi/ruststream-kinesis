@@ -1,0 +1,17 @@
+services:
+  localstack:
+    # Pinned to the last token-free tag: from 2026-03 the current LocalStack images require
+    # an auth token, which fork PRs cannot read from secrets.
+    image: localstack/localstack:4.14.0
+    ports:
+      - "127.0.0.1:4566:4566"
+    environment:
+      SERVICES: kinesis
+      EAGER_SERVICE_LOADING: 1
+      # The mock injects 500ms of artificial latency per call by default.
+      KINESIS_LATENCY: 0
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_localstack/health | grep -q '\"kinesis\": \"running\"'"]
+      interval: 5s
+      timeout: 5s
+      retries: 24

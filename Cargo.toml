@@ -5,13 +5,28 @@ members = ["crates/ruststream-kinesis"]
 [workspace.package]
 version = "0.6.0"
 edition = "2024"
-rust-version = "1.85"
+# The AWS SDK tracks a stable-2 MSRV policy (1.94.1 today); the core stays at 1.85 (a
+# dependent may exceed its dependency's floor).
+rust-version = "1.94.1"
 license = "Apache-2.0"
 repository = "https://github.com/powersemmi/ruststream-kinesis"
 authors = ["RustStream contributors"]
 
 [workspace.dependencies]
 ruststream-kinesis = { path = "crates/ruststream-kinesis" }
+
+ruststream = { version = ">=0.6.0, <0.7.0", default-features = false }
+
+aws-config = "1.10"
+# default-features off drops the legacy hyper-0.14/rustls-0.21 feature (RustSec advisories in
+# rustls-webpki 0.101); the modern hyper-1/rustls-0.23 stack comes from default-https-client.
+aws-sdk-kinesis = { version = "1.112", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-dynamodb = { version = "1.119", default-features = false, features = ["default-https-client", "rt-tokio"] }
+bytes = "1"
+futures = "0.3"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tracing = "0.1"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

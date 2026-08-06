@@ -61,8 +61,52 @@ jobs:
       - name: cargo check (all features)
         run: cargo check --workspace --all-targets --all-features
 
-      - name: cargo test
+      - name: cargo test (handler-stub only, no live broker)
         run: cargo test --workspace --all-features
+
+  broker-integration:
+    name: Broker integration (LocalStack)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Pinned to the last token-free LocalStack tag; newer images require an auth token,
+      # which fork PRs cannot read from secrets.
+      - name: Start LocalStack
+        run: |
+          docker run -d --name localstack \
+            -p 127.0.0.1:4566:4566 \
+            -e SERVICES=kinesis -e KINESIS_LATENCY=0 \
+            -e EAGER_SERVICE_LOADING=1 \
+            -e SQS_ENDPOINT_STRATEGY=path \
+            localstack/localstack:4.14.0
+
+      - name: Wait for LocalStack
+        timeout-minutes: 3
+        run: |
+          timeout 150 bash -c 'until curl -fsS http://127.0.0.1:4566/_localstack/health | grep -q "\"kinesis\": \"running\""; do sleep 2; done'
+          curl -fsS http://127.0.0.1:4566/_localstack/health
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run integration + conformance against LocalStack
+        env:
+          KINESIS_TEST_ENDPOINT: http://127.0.0.1:4566
+        run: >-
+          cargo test -p ruststream-kinesis --all-features
+          --test integration_kinesis
+          --test conformance_kinesis
+          -- --test-threads=1
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f localstack
 
   security:
     name: Security scans
