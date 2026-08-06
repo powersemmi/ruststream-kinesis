@@ -12,6 +12,24 @@ ruststream-kinesis = "0.6"
 serde = { version = "1", features = ["derive"] }
 ```
 
+## Capabilities
+
+Which of the framework's optional capability traits this crate implements natively:
+
+| Capability | Native | Notes |
+| --- | --- | --- |
+| `Subscribe` | Yes | `ConnectedKinesisBroker` resolves a string-literal stream name, so `#[subscriber("orders")]` works without a descriptor. See [Subscriptions](#subscriptions). |
+| `Seekable` + `Positioned` | Yes | `KinesisSubscriber` mints a `KinesisSeeker`, and `KinesisMessage` reports a `KinesisPosition`. Shard iterators are the service's own repositioning primitive. See [Positions](#positions). |
+| `Partitioned` | Yes | `KinesisMessage` exposes the record's partition key, which is the service's unit of shard routing and per-key ordering. See [Publishing](#publishing). |
+| `BatchSubscriber` | No | `GetRecords` returns batches, but the reader flattens them into one delivery stream so each record settles against the shard watermark on its own; the framework's batching layer applies unchanged. |
+| `RequestReply` | No | Kinesis has no reply address and no correlation primitive; a reply would be a second stream the crate would have to invent. |
+| `TransactionalPublisher` | No | The service has no transaction. `PutRecords` is a batch whose entries fail individually, so it cannot provide atomic all-or-nothing publishing. |
+| `OwnedTransactions` | No | Same reason: there is no transaction to own. |
+| `DescribeServer` | Yes | `KinesisBroker` reports the endpoint (or `kinesis.amazonaws.com`) with the `kinesis` protocol, which is what AsyncAPI generation reads. |
+
+Acknowledgement is not a capability trait, and on this broker it is a per-shard checkpoint rather
+than a per-message settlement. See [Leases and checkpoints](#leases-and-checkpoints).
+
 ## The lifecycle
 
 The broker is a ladder of consuming transitions, so each state is a distinct type:
