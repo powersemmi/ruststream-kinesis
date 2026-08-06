@@ -37,3 +37,7 @@ tracing.workspace = true
 ruststream = { workspace = true, features = ["conformance", "testing", "macros", "json"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+[[example]]
+name = "kinesis_leases"
+required-features = ["dynamodb-lease"]
