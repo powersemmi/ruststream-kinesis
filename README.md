@@ -31,9 +31,18 @@ Out of scope for this release: enhanced fan-out (a different resume machine on a
 
 ## Status
 
-Implemented and verified against LocalStack (the framework's conformance lifecycle suite and the integration tests - including checkpoint resume and unacknowledged-record replay - run in CI against it). Published on crates.io as `ruststream-kinesis = "0.6"`, built on the `ruststream` 0.6 line. Design and scope are tracked in [powersemmi/ruststream#194](https://github.com/powersemmi/ruststream/issues/194).
+Implemented and verified against LocalStack (the framework's conformance lifecycle suite and the integration tests - including checkpoint resume and unacknowledged-record replay - run in CI against it). Published on crates.io, tracking the `ruststream` 0.6 line. The design issue is [powersemmi/ruststream#194](https://github.com/powersemmi/ruststream/issues/194).
 
 MSRV is 1.94, tracking the AWS SDK (the core stays at 1.85; a dependent may exceed its dependency's floor).
+
+## Install
+
+```toml
+[dependencies]
+ruststream = { version = "0.6", features = ["macros", "json"] }
+ruststream-kinesis = "0.6"
+serde = { version = "1", features = ["derive"] }
+```
 
 ## Write a service
 
