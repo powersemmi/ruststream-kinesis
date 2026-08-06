@@ -6,10 +6,17 @@
 
 <p align="center">
   <a href="https://github.com/powersemmi/ruststream-kinesis/actions/workflows/ci.yml"><img src="https://github.com/powersemmi/ruststream-kinesis/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://crates.io/crates/ruststream-kinesis"><img src="https://img.shields.io/crates/v/ruststream-kinesis.svg" alt="crates.io"></a>
+  <a href="https://crates.io/crates/ruststream-kinesis"><img src="https://img.shields.io/crates/dr/ruststream-kinesis" alt="Recent downloads"></a>
+  <a href="https://docs.rs/ruststream-kinesis"><img src="https://img.shields.io/docsrs/ruststream-kinesis" alt="docs.rs"></a>
   <img src="https://img.shields.io/badge/MSRV-1.94-blue.svg" alt="MSRV 1.94">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
   <a href="https://t.me/ruststream_community"><img src="https://img.shields.io/badge/-Telegram-blue?logo=telegram&label=News" alt="Telegram news channel"></a>
   <a href="https://t.me/ruststream_communuty_ru_chat"><img src="https://img.shields.io/badge/-Telegram-blue?logo=telegram&label=RU" alt="Telegram RU chat"></a>
+</p>
+
+<p align="center">
+  <b><a href="https://powersemmi.github.io/ruststream-kinesis/">Documentation</a></b>
 </p>
 
 ---
@@ -29,11 +36,14 @@
 
 Out of scope for this release: enhanced fan-out (a different resume machine on an HTTP/2 push stream, with no local emulator support) and KPL-aggregated records (rejected with an error rather than delivered as opaque protobuf).
 
-## Status
+## Install
 
-Implemented and verified against LocalStack (the framework's conformance lifecycle suite and the integration tests - including checkpoint resume and unacknowledged-record replay - run in CI against it). Published on crates.io as `ruststream-kinesis = "0.6"`, built on the `ruststream` 0.6 line. Design and scope are tracked in [powersemmi/ruststream#194](https://github.com/powersemmi/ruststream/issues/194).
-
-MSRV is 1.94, tracking the AWS SDK (the core stays at 1.85; a dependent may exceed its dependency's floor).
+```toml
+[dependencies]
+ruststream = { version = "0.6", features = ["macros", "json"] }
+ruststream-kinesis = "0.6"
+serde = { version = "1", features = ["derive"] }
+```
 
 ## Write a service
 
@@ -78,7 +88,20 @@ let broker = KinesisBroker::from_config(config.clone())
 
 ## Test it
 
-The `testing` feature runs handlers against an in-process Kinesis stand-in - no server, same routing. Kinesis behaviour (shard leases, checkpoint resume, replay of unacknowledged records) is covered by the env-gated live suite instead: `just test-brokers` starts LocalStack and runs the integration tests plus the framework conformance lifecycle against it.
+The `testing` feature runs handlers against an in-process Kinesis stand-in - no server, same routing, same ladder. Inject a record as an external producer would with `TestableBroker::inject`, then assert on what a handler published with the free `expect_published`:
+
+```rust
+use ruststream::{Broker, OutgoingMessage};
+use ruststream::testing::{TestableBroker, expect_published};
+use ruststream_kinesis::testing::KinesisTestBroker;
+
+let broker = KinesisTestBroker::new().connect().await?;
+broker.inject(OutgoingMessage::new("orders", br#"{"id":1}"#));
+let confirmations =
+    expect_published(&broker, "confirmations", 1, std::time::Duration::from_secs(1)).await;
+```
+
+Kinesis behaviour (shard leases, checkpoint resume, replay of unacknowledged records) is covered by the env-gated live suite instead: `just test-brokers` starts LocalStack and runs the integration tests plus the framework conformance lifecycle against it.
 
 ## Layout
 
