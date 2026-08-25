@@ -20,13 +20,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        toolchain: [stable, msrv]
+        # The floor, what users build with, and the early warning. Releases in between add
+        # nothing: what fails on a later one fails on the floor too.
+        toolchain: [stable, beta, msrv]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       # The MSRV leg follows `rust-version` in Cargo.toml, so an MSRV bump is a one-line change.
+      # RUSTUP_TOOLCHAIN is exported with it because installing a toolchain does not select it:
+      # `rust-toolchain.toml` pins `stable` and outranks the rustup default the install action
+      # sets, so without this every leg would quietly run stable. RUSTUP_TOOLCHAIN outranks the
+      # file.
       - name: Resolve toolchain
         id: toolchain
         env:
@@ -37,6 +43,7 @@ jobs:
             test -n "$TOOLCHAIN"
           fi
           echo "toolchain=$TOOLCHAIN" >> "$GITHUB_OUTPUT"
+          echo "RUSTUP_TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -53,22 +60,115 @@ jobs:
 
       - name: cargo clippy
         if: matrix.toolchain == 'stable'
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+      # Advisory, not a gate: surfaces a lint added by the next clippy release six weeks
+      # before it turns the build red.
+      - name: cargo clippy (beta, advisory)
+        if: matrix.toolchain == 'beta'
+        continue-on-error: true
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
       - name: cargo check (no default features)
-        run: cargo check --workspace --no-default-features
+        run: cargo check --locked --workspace --no-default-features
 
       - name: cargo check (all features)
-        run: cargo check --workspace --all-targets --all-features
+        run: cargo check --locked --workspace --all-targets --all-features
 
+      # --no-fail-fast: a failing target must not hide failures in the targets behind it;
+      # the log then lists every red test, not just the first binary's.
       - name: cargo test (handler-stub only, no live broker)
-        run: cargo test --workspace --all-features
+        run: cargo test --locked --workspace --all-features --no-fail-fast
+
+      # The crate-root missing_docs deny covers item docs; this gate catches what rustc
+      # cannot: broken intra-doc links and redundant targets only rustdoc resolves.
+      - name: cargo doc
+        if: matrix.toolchain == 'stable'
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --workspace --all-features --no-deps
+
+  features:
+    name: Each feature alone
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@v2.86.5
+        with:
+          tool: cargo-hack
+
+      # The all-features and no-default-features builds above cover both ends of the range and
+      # nothing between them, so a feature that only compiles next to another one passes there.
+      # --no-dev-deps: a dev-dependency in scope masks a missing feature gate in the library.
+      # It also rewrites the manifests in place, which is why this is the one job without
+      # --locked.
+      - name: cargo hack check (each feature)
+        run: cargo hack check --workspace --each-feature --no-dev-deps
+
+  minimal-versions:
+    name: Minimal versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Same source as the matrix leg above: the floor is whatever the manifest declares.
+      - name: Resolve the floor toolchain
+        id: floor
+        run: |
+          toolchain="$(sed -n 's/^rust-version *= *"\(.*\)"/\1/p' Cargo.toml)"
+          test -n "$toolchain"
+          echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install nightly (resolver only)
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install the floor toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.floor.outputs.toolchain }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # The full flag rather than -Z direct-minimal-versions: the narrow one leaves the assembled
+      # graph unverified, and that is what a user builds. It costs a pinning list when a
+      # third-party manifest declares a bound looser than the code it ships needs.
+      - name: Resolve minimal versions
+        run: cargo +nightly update -Z minimal-versions
+
+      # No pins are needed today: every bound in the graph is honest at its floor. When one is
+      # not, add `cargo update -p <crate> --precise <version>` here with the reason and the
+      # condition for dropping it, rather than raising the declared bound to hide it.
+
+      # Minimum dependencies on the minimum compiler: the worst case a user can assemble.
+      # Resolution above needs nightly, so only this step drops to the floor.
+      - name: Build and test against minimal versions
+        env:
+          RUSTUP_TOOLCHAIN: ${{ steps.floor.outputs.toolchain }}
+        run: |
+          cargo check --locked --workspace --all-targets --all-features
+          cargo test --locked --workspace --all-features --no-fail-fast
 
   broker-integration:
     name: Broker integration (LocalStack)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -99,7 +199,7 @@ jobs:
         env:
           KINESIS_TEST_ENDPOINT: http://127.0.0.1:4566
         run: >-
-          cargo test -p ruststream-kinesis --all-features
+          cargo test --locked -p ruststream-kinesis --all-features
           --test integration_kinesis
           --test conformance_kinesis
           -- --test-threads=1
@@ -112,7 +212,7 @@ jobs:
     name: Security scans
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
