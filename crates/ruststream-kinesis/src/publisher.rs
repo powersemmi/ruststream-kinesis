@@ -99,11 +99,8 @@ impl PublishPolicy<ConnectedKinesisBroker> for KinesisPublish {
 
 /// The Kinesis publish steps, on this crate's publishers.
 ///
-/// The framework routes every publish through one builder, entered with `message(..)` or
-/// `raw(..)`. A per-message argument of the transport joins that chain one step earlier, on the
-/// publisher itself: the step returns a publisher of its own that declares the argument as a base
-/// header, and the builder writes each publish's own headers over that base, so the builder that
-/// follows is the framework's unchanged.
+/// A step goes in front of the framework's publish builder and returns a publisher, so
+/// `message(..)` and `raw(..)` follow it unchanged.
 ///
 /// # Examples
 ///
@@ -127,13 +124,11 @@ impl PublishPolicy<ConnectedKinesisBroker> for KinesisPublish {
 pub trait KinesisPublishExt: Publisher + Clone + crate::sealed::Sealed {
     /// Publishes through this publisher with `key` as the record's partition key.
     ///
-    /// The partition key selects the shard, and with it per-key ordering. Naming it here is the
-    /// alternative to setting [`PARTITION_KEY_HEADER`] by hand, so a mistyped header name cannot
-    /// quietly spread a keyed stream across every shard.
+    /// The partition key selects the shard, and with it per-key ordering. It is the named
+    /// alternative to setting [`PARTITION_KEY_HEADER`] by hand.
     ///
-    /// The step serves a run of publishes, so a key named at the call site wins over it - the
-    /// same ladder the builder applies to every header and to codec selection, where the most
-    /// specific level has the last word. Publishes that name other headers keep this key.
+    /// The key applies to every publish through the returned publisher. A publish that names
+    /// `partition-key` itself overrides it for that message; one that names other headers keeps it.
     ///
     /// # Examples
     ///
@@ -156,9 +151,7 @@ pub trait KinesisPublishExt: Publisher + Clone + crate::sealed::Sealed {
     /// ```
     #[must_use]
     fn with_partition_key(&self, key: impl Into<String>) -> PartitionKeyed<Self> {
-        // Built once here rather than per publish: `base_headers` hands the builder a borrow.
-        // Anything the wrapped handle already contributes stays underneath, since this step is
-        // the more specific of the two.
+        // Built once here, not per publish: `base_headers` hands the builder a borrow.
         let mut base = self.base_headers().cloned().unwrap_or_default();
         base.insert(PARTITION_KEY_HEADER, key.into());
         PartitionKeyed {
@@ -171,14 +164,11 @@ pub trait KinesisPublishExt: Publisher + Clone + crate::sealed::Sealed {
 impl crate::sealed::Sealed for KinesisPublisher {}
 impl KinesisPublishExt for KinesisPublisher {}
 
-/// The publisher returned by
-/// [`with_partition_key`](KinesisPublishExt::with_partition_key): it declares the captured key as
-/// a base header and otherwise delegates to the publisher it wraps.
+/// The publisher returned by [`with_partition_key`](KinesisPublishExt::with_partition_key): it
+/// carries the key as a base header and otherwise delegates to the publisher it wraps.
 ///
 /// It is a [`Publisher`] like any other, so the framework's publish builder (`message(..)`,
-/// `raw(..)`) applies to it unchanged. The builder reads the base through
-/// [`Publisher::base_headers`] and writes each publish's own headers over it, which is what makes
-/// the call site win over the step.
+/// `raw(..)`) applies to it unchanged.
 ///
 /// # Examples
 ///
@@ -207,8 +197,8 @@ impl<P: Publisher> Publisher for PartitionKeyed<P> {
     }
 
     fn base_headers(&self) -> Option<&Headers> {
-        // The header is the crate's own wire for the key, so the envelope, the delivered
-        // `Partitioned` view, and the in-process broker all keep reading it from one place.
+        // The header is the crate's one wire for the key: the envelope, `Partitioned`, and the
+        // in-process broker all read it from here.
         Some(&self.base)
     }
 }

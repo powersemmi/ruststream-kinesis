@@ -30,16 +30,9 @@ Which of the framework's optional capability traits this crate implements native
 Acknowledgement is not a capability trait, and on this broker it is a per-shard checkpoint rather
 than a per-message settlement. See [Leases and checkpoints](#leases-and-checkpoints).
 
-`ruststream_kinesis::prelude` re-exports the rows marked yes here that service code names: `Seeker`
-(the trait behind `Seekable`) and `Positioned`, whose methods a handler calls on the seeker and the
-records it is handed. `Seekable` itself, `Subscribe`, and `DescribeServer` are yes rows too, but
-they ride through the contract - the runtime and the AsyncAPI generator read them off the subscriber
-and the broker, and a service never writes those names. `Partitioned` stays out for a different
-reason: the framework already surfaces `partition_key` as a defaulted method on `IncomingMessage`,
-which the prelude carries, so re-exporting the capability trait as well would make the natural call
-ambiguous. The glob is therefore the service-vocabulary subset of this table: a handler written
-against it cannot reach for a capability this broker does not have, and a service spanning several
-brokers gets what their preludes agree on.
+`ruststream_kinesis::prelude` re-exports the traits a handler calls directly: `Seeker` to reposition
+and `Positioned` to read a delivered record's position. Read a record's partition key through
+`IncomingMessage::partition_key`.
 
 ## The lifecycle
 
@@ -63,9 +56,7 @@ longer consumes.
 
 `KinesisStream::new(name)` is the subscription descriptor. It takes a stream name or ARN and sits
 inline in the `#[subscriber(..)]` decorator. The imports come from `ruststream_kinesis::prelude`,
-which carries the framework's own prelude, the capability traits a handler here writes, and this
-crate's mount-site surface - the framework leaves brokers out of its prelude because a service states which
-one it runs on, and naming this crate is that statement:
+which carries the framework's own prelude alongside this crate's own surface:
 
 ```rust
 --8<-- "crates/ruststream-kinesis/examples/kinesis_service.rs:handler"
@@ -174,32 +165,17 @@ framework docs for the capability itself.
 `#[subscriber(.., publish("dest"))]` handler mounted without an explicit publisher replies through
 it. It pairs into `KinesisPublisher`, whose destination is the stream name or ARN.
 
-The prelude re-exports it as `Publish`, its concept name with the broker prefix stripped, so a
-mount site reads the same on every broker; the prefixed name stays at the crate root for a file that
-mounts two brokers and has to say which one it means. A missing concept name is the statement that
-this broker has no such policy. Note that `Publish` here is the policy, not the framework's
-`runtime::Publish` builder that `message(..)` and `raw(..)` return - a service never names that one.
+The prelude re-exports it as `Publish`, so a mount site reads the same on every broker; the prefixed
+name stays at the crate root for a file that mounts two brokers. `Publish` is the publish policy,
+not the framework's `runtime::Publish` builder.
 
-RustStream 0.7 unified publishing behind a single builder: `message(..)` for a value and `raw(..)`
-for bytes, reached on every publish surface through the blanket `PublishExt` trait, then
-`to(..)`, `with_headers(..)`, `with_codec(..)`, and `publish()`. A broker implements
-`Publisher::publish` and the whole builder follows from it, so nothing on this page replaces the
-framework's publishing guide.
+Publishing itself is the framework's: `message(..)` for a value or `raw(..)` for bytes, then
+`to(..)`, `with_headers(..)`, `with_codec(..)`, and `publish()`. See the
+[publishing guide](https://powersemmi.github.io/ruststream/latest/guides/publishing/).
 
-What a broker does add is its own per-message arguments, and they join the chain one step *before*
-its entry point. The step lives on the publisher and returns a small adapter that is itself a
-`Publisher`, declaring the argument through `base_headers`. The builder starts each outgoing map
-from that base and writes the publish's own headers over it key by key, so the builder that follows
-is the framework's, unchanged, and the map is built once rather than cloned per message.
-
-That merge settles the precedence: the call site wins over the step, and the step wins over
-nothing. It is the ladder the framework applies everywhere, codec selection included - the most
-specific level has the last word, and a step that serves a run of publishes is less specific than
-a call that names one message.
-
-On Kinesis the record's partition key is such an argument: per-message by nature, and the unit of
-shard routing and therefore of per-key ordering. `KinesisPublishExt::with_partition_key` names it,
-and returns a `PartitionKeyed<KinesisPublisher>` that publishes like any other publisher:
+The record's partition key goes one step in front of that builder.
+`KinesisPublishExt::with_partition_key` names it and returns a `PartitionKeyed<KinesisPublisher>`,
+which publishes like any other publisher:
 
 ```rust
 --8<-- "crates/ruststream-kinesis/examples/kinesis_seek.rs:publish"
@@ -207,11 +183,10 @@ and returns a `PartitionKeyed<KinesisPublisher>` that publishes like any other p
 
 Without a key a process-unique one spreads records across shards.
 
-The underlying wire is the `partition-key` header, and setting it by hand still works: the same
-header is set on every delivered record and feeds the framework's `Partitioned` capability, so the
-convention matches the in-memory broker and a service can switch brokers without changing its
-headers. A publish that names `partition-key` itself overrides the step for that one message;
-publishes that name other headers keep the step's key alongside them.
+The wire is the `partition-key` header, and setting it by hand still works. The same header is set
+on every delivered record and feeds the framework's `Partitioned` capability, matching the in-memory
+broker's convention. A publish that names `partition-key` itself overrides the step for that one
+message; publishes that name other headers keep the step's key alongside them.
 
 Deliveries additionally expose `kinesis-sequence-number` and `kinesis-shard-id`
 (`SEQUENCE_HEADER` and `SHARD_HEADER`).

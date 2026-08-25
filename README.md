@@ -47,10 +47,8 @@ serde = { version = "1", features = ["derive"] }
 
 ## Write a service
 
-One glob carries the lot: the framework's own prelude rides along inside this crate's, because
-naming the broker crate is already the choice a service makes for itself. It also carries the
-capability traits a handler here writes - repositioning, and reading a record's position - and none
-this broker lacks, so the glob doubles as a manifest of the vocabulary a service on Kinesis has.
+One glob: `ruststream_kinesis::prelude` carries the framework's own prelude alongside this crate's
+broker, descriptors, positions, and publish policy.
 
 ```rust
 use ruststream_kinesis::prelude::*;

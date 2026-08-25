@@ -2,11 +2,8 @@
 //!
 //! The `start_at` clause opens every shard at the trim horizon, so the retained backlog
 //! replays first. The `Seek` parameter moves the subscription to the tip once the backlog is
-//! no longer wanted, and the seeding publish rides the scope's `after_startup` hook, where
-//! the publish policy is paired with the connected broker.
-//!
-//! The seeding publish names its partition key with `with_partition_key(..)`, the crate's step
-//! in front of the framework's publish builder.
+//! no longer wanted, and the seeding publish rides the scope's `after_startup` hook, naming its
+//! partition key with `with_partition_key(..)`.
 //!
 //! Run a local stack first (`just brokers-up`), then:
 //! `cargo run --example kinesis_seek -- run`
@@ -47,9 +44,7 @@ fn app() -> impl App {
             .region("us-east-1"),
         |b| {
             b.after_startup(Publish, async move |publisher| {
-                // The partition key decides the shard, and with it per-key ordering. It is
-                // a step on the publisher, so the framework's publish builder follows it
-                // unchanged.
+                // The partition key decides the shard, and with it per-key ordering.
                 publisher
                     .with_partition_key("tenant-acme")
                     .raw(br#"{"id":1}"#)
