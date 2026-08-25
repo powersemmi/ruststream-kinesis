@@ -167,9 +167,15 @@ for bytes, reached on every publish surface through the blanket `PublishExt` tra
 framework's publishing guide.
 
 What a broker does add is its own per-message arguments, and they join the chain one step *before*
-its entry point. The step lives on the publisher, returns a small adapter that is itself a
-`Publisher`, captures the argument, and applies it inside `publish(OutgoingMessage)` before
-delegating to the publisher it wraps. The builder that follows is the framework's, unchanged.
+its entry point. The step lives on the publisher and returns a small adapter that is itself a
+`Publisher`, declaring the argument through `base_headers`. The builder starts each outgoing map
+from that base and writes the publish's own headers over it key by key, so the builder that follows
+is the framework's, unchanged, and the map is built once rather than cloned per message.
+
+That merge settles the precedence: the call site wins over the step, and the step wins over
+nothing. It is the ladder the framework applies everywhere, codec selection included - the most
+specific level has the last word, and a step that serves a run of publishes is less specific than
+a call that names one message.
 
 On Kinesis the record's partition key is such an argument: per-message by nature, and the unit of
 shard routing and therefore of per-key ordering. `KinesisPublishExt::with_partition_key` names it,
@@ -184,7 +190,8 @@ Without a key a process-unique one spreads records across shards.
 The underlying wire is the `partition-key` header, and setting it by hand still works: the same
 header is set on every delivered record and feeds the framework's `Partitioned` capability, so the
 convention matches the in-memory broker and a service can switch brokers without changing its
-headers. A key named on the step wins over one already in the message's headers.
+headers. A publish that names `partition-key` itself overrides the step for that one message;
+publishes that name other headers keep the step's key alongside them.
 
 Deliveries additionally expose `kinesis-sequence-number` and `kinesis-shard-id`
 (`SEQUENCE_HEADER` and `SHARD_HEADER`).

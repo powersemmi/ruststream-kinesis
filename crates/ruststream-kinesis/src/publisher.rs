@@ -1,7 +1,7 @@
 //! [`KinesisPublisher`], its [`KinesisPublish`] policy, and the crate's publish steps.
 
 use aws_sdk_kinesis::primitives::Blob;
-use ruststream::{OutgoingMessage, PairError, PublishPolicy, Publisher};
+use ruststream::{Headers, OutgoingMessage, PairError, PublishPolicy, Publisher};
 
 use crate::broker::{ConnectedKinesisBroker, Core, CoreCell};
 use crate::error::{KinesisError, sdk_err};
@@ -11,8 +11,8 @@ use crate::message::{PARTITION_KEY_HEADER, encode_envelope};
 ///
 /// The `partition-key` header becomes the record's partition key - the unit of shard routing
 /// and per-key ordering; without one, a process-unique key spreads records across shards.
-/// [`KinesisPublishExt::with_partition_key`] names that key per publish without spelling the
-/// header out. User headers beyond the partition key travel in a small conditional envelope (Kinesis
+/// [`KinesisPublishExt::with_partition_key`] names that key without spelling the header out.
+/// User headers beyond the partition key travel in a small conditional envelope (Kinesis
 /// records carry only a data blob and a partition key); plain payloads stay unenveloped.
 /// Buildable before `connect` and usable until `shutdown`; afterwards every publish reports
 /// [`KinesisError::NotConnected`].
@@ -101,9 +101,9 @@ impl PublishPolicy<ConnectedKinesisBroker> for KinesisPublish {
 ///
 /// The framework routes every publish through one builder, entered with `message(..)` or
 /// `raw(..)`. A per-message argument of the transport joins that chain one step earlier, on the
-/// publisher itself: the step returns a publisher of its own that carries the argument and
-/// applies it to each message on the way through, so the builder that follows is the framework's
-/// unchanged.
+/// publisher itself: the step returns a publisher of its own that declares the argument as a base
+/// header, and the builder writes each publish's own headers over that base, so the builder that
+/// follows is the framework's unchanged.
 ///
 /// # Examples
 ///
@@ -128,9 +128,12 @@ pub trait KinesisPublishExt: Publisher + Clone + crate::sealed::Sealed {
     /// Publishes through this publisher with `key` as the record's partition key.
     ///
     /// The partition key selects the shard, and with it per-key ordering. Naming it here is the
-    /// per-message alternative to setting [`PARTITION_KEY_HEADER`] by hand, so a mistyped header
-    /// name cannot quietly spread a keyed stream across every shard. A key named on the step
-    /// wins over one already present in the message's headers.
+    /// alternative to setting [`PARTITION_KEY_HEADER`] by hand, so a mistyped header name cannot
+    /// quietly spread a keyed stream across every shard.
+    ///
+    /// The step serves a run of publishes, so a key named at the call site wins over it - the
+    /// same ladder the builder applies to every header and to codec selection, where the most
+    /// specific level has the last word. Publishes that name other headers keep this key.
     ///
     /// # Examples
     ///
@@ -153,9 +156,14 @@ pub trait KinesisPublishExt: Publisher + Clone + crate::sealed::Sealed {
     /// ```
     #[must_use]
     fn with_partition_key(&self, key: impl Into<String>) -> PartitionKeyed<Self> {
+        // Built once here rather than per publish: `base_headers` hands the builder a borrow.
+        // Anything the wrapped handle already contributes stays underneath, since this step is
+        // the more specific of the two.
+        let mut base = self.base_headers().cloned().unwrap_or_default();
+        base.insert(PARTITION_KEY_HEADER, key.into());
         PartitionKeyed {
             inner: self.clone(),
-            key: key.into(),
+            base,
         }
     }
 }
@@ -164,11 +172,13 @@ impl crate::sealed::Sealed for KinesisPublisher {}
 impl KinesisPublishExt for KinesisPublisher {}
 
 /// The publisher returned by
-/// [`with_partition_key`](KinesisPublishExt::with_partition_key): it stamps the captured key
-/// onto every message and hands it to the publisher it wraps.
+/// [`with_partition_key`](KinesisPublishExt::with_partition_key): it declares the captured key as
+/// a base header and otherwise delegates to the publisher it wraps.
 ///
 /// It is a [`Publisher`] like any other, so the framework's publish builder (`message(..)`,
-/// `raw(..)`) applies to it unchanged.
+/// `raw(..)`) applies to it unchanged. The builder reads the base through
+/// [`Publisher::base_headers`] and writes each publish's own headers over it, which is what makes
+/// the call site win over the step.
 ///
 /// # Examples
 ///
@@ -186,18 +196,20 @@ impl KinesisPublishExt for KinesisPublisher {}
 #[derive(Debug, Clone)]
 pub struct PartitionKeyed<P> {
     inner: P,
-    key: String,
+    base: Headers,
 }
 
 impl<P: Publisher> Publisher for PartitionKeyed<P> {
     type Error = P::Error;
 
     async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
+        self.inner.publish(msg).await
+    }
+
+    fn base_headers(&self) -> Option<&Headers> {
         // The header is the crate's own wire for the key, so the envelope, the delivered
         // `Partitioned` view, and the in-process broker all keep reading it from one place.
-        let mut headers = msg.headers().clone();
-        headers.insert(PARTITION_KEY_HEADER, self.key.clone());
-        self.inner.publish(msg.with_headers(headers)).await
+        Some(&self.base)
     }
 }
 
@@ -238,14 +250,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_step_wins_over_a_key_already_in_the_headers() {
+    async fn a_key_named_at_the_call_site_wins_over_the_step() {
         let broker = connected().await;
         let mut headers = Headers::new();
-        headers.insert(PARTITION_KEY_HEADER, "inherited");
+        headers.insert(PARTITION_KEY_HEADER, "named-on-the-call");
         broker
             .publisher()
             .with_partition_key("named-on-the-step")
-            .publish(OutgoingMessage::new("jobs", b"payload").with_headers(headers))
+            .raw(b"payload")
+            .to("jobs")
+            .with_headers(headers)
+            .publish()
+            .await
+            .expect("the publish succeeds");
+
+        let published = broker.published("jobs");
+        assert_eq!(
+            published[0].headers().get_str(PARTITION_KEY_HEADER),
+            Some("named-on-the-call")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_steps_key_survives_a_call_that_names_other_headers() {
+        let broker = connected().await;
+        let mut headers = Headers::new();
+        headers.insert("x-tenant", "acme");
+        broker
+            .publisher()
+            .with_partition_key("named-on-the-step")
+            .raw(b"payload")
+            .to("jobs")
+            .with_headers(headers)
+            .publish()
             .await
             .expect("the publish succeeds");
 
@@ -254,6 +291,7 @@ mod tests {
             published[0].headers().get_str(PARTITION_KEY_HEADER),
             Some("named-on-the-step")
         );
+        assert_eq!(published[0].headers().get_str("x-tenant"), Some("acme"));
     }
 
     #[tokio::test]
