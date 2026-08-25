@@ -11,9 +11,6 @@
 //! Run a local stack first (`just brokers-up`), then:
 //! `cargo run --example kinesis_seek -- run`
 
-// `Seeker` is the capability trait behind the injected seeker, and the framework's prelude
-// leaves the capability traits to the code that calls them.
-use ruststream::Seeker;
 use ruststream_kinesis::prelude::*;
 use serde::Deserialize;
 

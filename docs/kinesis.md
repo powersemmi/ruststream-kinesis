@@ -30,6 +30,10 @@ Which of the framework's optional capability traits this crate implements native
 Acknowledgement is not a capability trait, and on this broker it is a per-shard checkpoint rather
 than a per-message settlement. See [Leases and checkpoints](#leases-and-checkpoints).
 
+`ruststream_kinesis::prelude` re-exports exactly the traits marked yes here, so the glob a service
+imports is this table in code: a handler written against it cannot reach for a capability this
+broker does not have, and a service spanning several brokers gets what their preludes agree on.
+
 ## The lifecycle
 
 The broker is a ladder of consuming transitions, so each state is a distinct type:
@@ -52,9 +56,9 @@ longer consumes.
 
 `KinesisStream::new(name)` is the subscription descriptor. It takes a stream name or ARN and sits
 inline in the `#[subscriber(..)]` decorator. The imports come from `ruststream_kinesis::prelude`,
-which carries the framework's own prelude along with this crate's mount-site surface - the
-framework leaves brokers out of its prelude because a service states which one it runs on, and
-naming this crate is that statement:
+which carries the framework's own prelude, the capabilities in the table above, and this crate's
+mount-site surface - the framework leaves brokers out of its prelude because a service states which
+one it runs on, and naming this crate is that statement:
 
 ```rust
 --8<-- "crates/ruststream-kinesis/examples/kinesis_service.rs:handler"

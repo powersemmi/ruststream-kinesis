@@ -47,8 +47,10 @@ serde = { version = "1", features = ["derive"] }
 
 ## Write a service
 
-One glob carries both halves: the framework's own prelude rides along inside this crate's, because
-naming the broker crate is already the choice a service makes for itself.
+One glob carries the lot: the framework's own prelude rides along inside this crate's, because
+naming the broker crate is already the choice a service makes for itself. It also carries the
+framework capabilities this broker implements and none it does not, so the glob doubles as a
+manifest of what this broker can do.
 
 ```rust
 use ruststream_kinesis::prelude::*;
