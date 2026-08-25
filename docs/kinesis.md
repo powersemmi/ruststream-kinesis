@@ -51,7 +51,10 @@ longer consumes.
 ## Subscriptions
 
 `KinesisStream::new(name)` is the subscription descriptor. It takes a stream name or ARN and sits
-inline in the `#[subscriber(..)]` decorator:
+inline in the `#[subscriber(..)]` decorator. The imports come from `ruststream_kinesis::prelude`,
+which carries the framework's own prelude along with this crate's mount-site surface - the
+framework leaves brokers out of its prelude because a service states which one it runs on, and
+naming this crate is that statement:
 
 ```rust
 --8<-- "crates/ruststream-kinesis/examples/kinesis_service.rs:handler"

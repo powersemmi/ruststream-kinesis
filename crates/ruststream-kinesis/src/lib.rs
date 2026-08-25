@@ -27,6 +27,8 @@
 //!   publisher. The record's partition key is a step in front of it,
 //!   [`with_partition_key`](KinesisPublishExt::with_partition_key), rather than a header the
 //!   caller spells out.
+//! - A service imports [`prelude`]: it carries the framework's own prelude plus this crate's
+//!   mount-site surface, so one glob covers a service file.
 
 #![forbid(unsafe_code)]
 
@@ -36,6 +38,7 @@ mod dynamo;
 mod error;
 mod lease;
 mod message;
+pub mod prelude;
 mod publisher;
 mod stream;
 mod subscriber;

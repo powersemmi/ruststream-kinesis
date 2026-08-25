@@ -15,9 +15,7 @@ use std::error::Error;
 use std::sync::Arc;
 
 use aws_config::{BehaviorVersion, Region};
-use ruststream::runtime::{AppInfo, HandlerResult, RustStream};
-use ruststream::subscriber;
-use ruststream_kinesis::{DynamoLeaseStore, KinesisBroker, KinesisStream};
+use ruststream_kinesis::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]

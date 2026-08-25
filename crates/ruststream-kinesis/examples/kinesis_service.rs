@@ -4,9 +4,7 @@
 //! `cargo run --example kinesis_service`
 
 // --8<-- [start:handler]
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
-use ruststream::subscriber;
-use ruststream_kinesis::{KinesisBroker, KinesisPosition, KinesisStream};
+use ruststream_kinesis::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]

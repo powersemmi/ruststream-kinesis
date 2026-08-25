@@ -11,14 +11,10 @@
 //! Run a local stack first (`just brokers-up`), then:
 //! `cargo run --example kinesis_seek -- run`
 
-use ruststream::runtime::{
-    App, AppInfo, HandlerResult, PublishError, PublishExt, RustStream, Seek,
-};
-use ruststream::{Seeker, subscriber};
-use ruststream_kinesis::{
-    KinesisBroker, KinesisError, KinesisPosition, KinesisPublish, KinesisPublishExt, KinesisSeeker,
-    KinesisStream,
-};
+// `Seeker` is the capability trait behind the injected seeker, and the framework's prelude
+// leaves the capability traits to the code that calls them.
+use ruststream::Seeker;
+use ruststream_kinesis::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -53,20 +49,17 @@ fn app() -> impl App {
             .test_credentials()
             .region("us-east-1"),
         |b| {
-            b.after_startup(
-                KinesisPublish,
-                async move |publisher| -> Result<(), PublishError<KinesisError>> {
-                    // The partition key decides the shard, and with it per-key ordering. It is
-                    // a step on the publisher, so the framework's publish builder follows it
-                    // unchanged.
-                    publisher
-                        .with_partition_key("tenant-acme")
-                        .raw(br#"{"id":1}"#)
-                        .to("jobs")
-                        .publish()
-                        .await
-                },
-            );
+            b.after_startup(KinesisPublish, async move |publisher| {
+                // The partition key decides the shard, and with it per-key ordering. It is
+                // a step on the publisher, so the framework's publish builder follows it
+                // unchanged.
+                publisher
+                    .with_partition_key("tenant-acme")
+                    .raw(br#"{"id":1}"#)
+                    .to("jobs")
+                    .publish()
+                    .await
+            });
             b.include(replay);
         },
     )

@@ -47,10 +47,11 @@ serde = { version = "1", features = ["derive"] }
 
 ## Write a service
 
+One glob carries both halves: the framework's own prelude rides along inside this crate's, because
+naming the broker crate is already the choice a service makes for itself.
+
 ```rust
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
-use ruststream::subscriber;
-use ruststream_kinesis::{KinesisBroker, KinesisPosition, KinesisStream};
+use ruststream_kinesis::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -77,7 +78,7 @@ Multiple instances share the shards through DynamoDB:
 
 ```rust
 use std::sync::Arc;
-use ruststream_kinesis::{DynamoLeaseStore, KinesisBroker};
+use ruststream_kinesis::prelude::*;
 
 # async fn wire(config: aws_config::SdkConfig) {
 let broker = KinesisBroker::from_config(config.clone())
