@@ -1,5 +1,7 @@
 //! [`KinesisPublisher`] and its [`KinesisPublish`] policy.
 
+use std::future::{Future, ready};
+
 use aws_sdk_kinesis::primitives::Blob;
 use ruststream::{OutgoingMessage, PairError, PublishPolicy, Publisher};
 
@@ -91,7 +93,10 @@ pub struct KinesisPublish;
 impl PublishPolicy<ConnectedKinesisBroker> for KinesisPublish {
     type Live = KinesisPublisher;
 
-    async fn pair(self, connected: &ConnectedKinesisBroker) -> Result<Self::Live, PairError> {
-        Ok(connected.publisher())
+    fn pair(
+        self,
+        connected: &ConnectedKinesisBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(connected.publisher()))
     }
 }

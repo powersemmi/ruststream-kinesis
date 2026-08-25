@@ -5,6 +5,7 @@
 //! cell remains so publishers can be handed out while the application is still being
 //! assembled, before `connect` runs.
 
+use std::future::{Future, ready};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -293,11 +294,11 @@ impl ConnectedBroker for ConnectedKinesisBroker {
     type Error = KinesisError;
     type Closed = ();
 
-    async fn shutdown(self) -> Result<(), Self::Error> {
+    fn shutdown(self) -> impl Future<Output = Result<(), Self::Error>> {
         // The SDK client has no close; the closed flag stops readers and stale handles, and
         // leases lapse or are released by the readers as they exit.
         self.core.closed.store(true, Ordering::Release);
-        Ok(())
+        ready(Ok(()))
     }
 }
 

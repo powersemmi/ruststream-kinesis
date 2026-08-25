@@ -1,5 +1,6 @@
 //! [`KinesisTestBroker`]: the in-process transport and its connected form.
 
+use std::future::{Future, ready};
 use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
@@ -66,8 +67,8 @@ impl Broker for KinesisTestBroker {
     type Error = KinesisError;
     type Connected = ConnectedKinesisTestBroker;
 
-    async fn connect(self) -> Result<Self::Connected, Self::Error> {
-        Ok(ConnectedKinesisTestBroker { state: self.state })
+    fn connect(self) -> impl Future<Output = Result<Self::Connected, Self::Error>> {
+        ready(Ok(ConnectedKinesisTestBroker { state: self.state }))
     }
 }
 
@@ -93,24 +94,24 @@ impl ConnectedBroker for ConnectedKinesisTestBroker {
     type Error = KinesisError;
     type Closed = ();
 
-    async fn shutdown(self) -> Result<(), Self::Error> {
+    fn shutdown(self) -> impl Future<Output = Result<(), Self::Error>> {
         self.state.router.clear();
-        Ok(())
+        ready(Ok(()))
     }
 }
 
 impl Subscribe for ConnectedKinesisTestBroker {
     type Subscriber = KinesisTestSubscriber;
 
-    async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
+    fn subscribe(&self, name: &str) -> impl Future<Output = Result<Self::Subscriber, Self::Error>> {
         let (id, requeue, rx) = self.state.router.subscribe(name.to_owned());
-        Ok(KinesisTestSubscriber::new(
+        ready(Ok(KinesisTestSubscriber::new(
             Arc::clone(&self.state),
             id,
             rx,
             requeue,
             self.state.coordinator().cloned(),
-        ))
+        )))
     }
 }
 
@@ -143,13 +144,13 @@ pub struct KinesisTestPublisher {
 impl Publisher for KinesisTestPublisher {
     type Error = KinesisError;
 
-    async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
+    fn publish(&self, msg: OutgoingMessage<'_>) -> impl Future<Output = Result<(), Self::Error>> {
         self.state.publish(
             msg.name(),
             Bytes::copy_from_slice(msg.payload()),
             msg.headers().clone(),
         );
-        Ok(())
+        ready(Ok(()))
     }
 }
 
@@ -171,8 +172,11 @@ pub struct KinesisTestPublish;
 impl PublishPolicy<ConnectedKinesisTestBroker> for KinesisTestPublish {
     type Live = KinesisTestPublisher;
 
-    async fn pair(self, connected: &ConnectedKinesisTestBroker) -> Result<Self::Live, PairError> {
-        Ok(connected.publisher())
+    fn pair(
+        self,
+        connected: &ConnectedKinesisTestBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(connected.publisher()))
     }
 }
 
