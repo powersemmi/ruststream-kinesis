@@ -46,7 +46,7 @@ fn app() -> impl App {
             .test_credentials()
             .region("us-east-1"),
         |b| {
-            b.after_startup(KinesisPublish, async move |publisher| {
+            b.after_startup(Publish, async move |publisher| {
                 // The partition key decides the shard, and with it per-key ordering. It is
                 // a step on the publisher, so the framework's publish builder follows it
                 // unchanged.

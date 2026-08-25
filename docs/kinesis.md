@@ -174,6 +174,12 @@ framework docs for the capability itself.
 `#[subscriber(.., publish("dest"))]` handler mounted without an explicit publisher replies through
 it. It pairs into `KinesisPublisher`, whose destination is the stream name or ARN.
 
+The prelude re-exports it as `Publish`, its concept name with the broker prefix stripped, so a
+mount site reads the same on every broker; the prefixed name stays at the crate root for a file that
+mounts two brokers and has to say which one it means. A missing concept name is the statement that
+this broker has no such policy. Note that `Publish` here is the policy, not the framework's
+`runtime::Publish` builder that `message(..)` and `raw(..)` return - a service never names that one.
+
 RustStream 0.7 unified publishing behind a single builder: `message(..)` for a value and `raw(..)`
 for bytes, reached on every publish surface through the blanket `PublishExt` trait, then
 `to(..)`, `with_headers(..)`, `with_codec(..)`, and `publish()`. A broker implements

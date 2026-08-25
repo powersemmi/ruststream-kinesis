@@ -23,6 +23,17 @@
 //! service vocabulary elsewhere. A service on several brokers gets what their globs agree on - the
 //! same core traits either way, so the compiler checks the overlap rather than the reader.
 //!
+//! The policies come through broker-agnostic, under their concept names with the broker prefix
+//! stripped: `KinesisPublish` is [`Publish`] here. A mount site then reads the same on every
+//! broker, and the manifest principle reaches the policy layer too - every policy this broker
+//! supports appears under its concept name, and a concept name that is missing means the broker
+//! does not have it. Each prefixed original stays at the crate root, for a file that mounts two
+//! brokers at once and has to say which `Publish` it means.
+//!
+//! [`Publish`] is a *policy*: pure declaration, paired with the connected broker by the runtime.
+//! It is not the framework's `runtime::Publish`, the builder that `message(..)` and `raw(..)`
+//! return - services never name that type, so the two do not meet.
+//!
 //! # Examples
 //!
 //! ```
@@ -33,10 +44,11 @@
 //!     HandlerResult::Ack
 //! }
 //!
-//! // The broker and its descriptors come from the same glob.
+//! // The broker, its descriptors, and its policies come from the same glob.
 //! let orders = KinesisStream::new("orders").batch(500);
 //! let broker = KinesisBroker::new();
-//! # let _ = (orders, broker, handle);
+//! let reply_with = Publish;
+//! # let _ = (orders, broker, reply_with, handle);
 //! ```
 
 // The framework half. A service on this crate is a RustStream service first, so everything the
@@ -67,8 +79,12 @@ pub use crate::broker::KinesisBroker;
 #[cfg(feature = "dynamodb-lease")]
 pub use crate::dynamo::DynamoLeaseStore;
 pub use crate::message::KinesisPosition;
-// The step trait is sealed, so a glob is exactly how a service reaches `with_partition_key`.
-pub use crate::publisher::{KinesisPublish, KinesisPublishExt};
+// The policy layer, under the broker-agnostic concept name. `KinesisPublish` itself stays exported
+// from the crate root for a file that mounts two brokers and must disambiguate.
+pub use crate::publisher::KinesisPublish as Publish;
+// Not a policy, so it keeps its name: the step trait is sealed, and a glob is exactly how a service
+// reaches `with_partition_key`.
+pub use crate::publisher::KinesisPublishExt;
 pub use crate::stream::KinesisStream;
 pub use crate::subscriber::KinesisSeeker;
 
