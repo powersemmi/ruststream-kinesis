@@ -23,6 +23,10 @@
 //!   an HTTP/2 push stream with no local emulator support, and is not implemented.
 //!   KPL-aggregated records are rejected with an error rather than delivered as opaque
 //!   protobuf.
+//! - Publishing rides the framework's builder, entered with `message(..)` or `raw(..)` on any
+//!   publisher. The record's partition key is a step in front of it,
+//!   [`with_partition_key`](KinesisPublishExt::with_partition_key), rather than a header the
+//!   caller spells out.
 
 #![forbid(unsafe_code)]
 
@@ -39,6 +43,14 @@ mod subscriber;
 pub mod testing;
 mod track;
 
+/// Restricts the crate's publish steps to the crate's own publishers: the arguments they carry
+/// mean something only to a transport that reads them back.
+#[doc(hidden)]
+pub mod sealed {
+    /// The sealing supertrait of [`KinesisPublishExt`](crate::KinesisPublishExt).
+    pub trait Sealed {}
+}
+
 pub use broker::{ConnectedKinesisBroker, KinesisBroker};
 #[cfg(feature = "dynamodb-lease")]
 pub use dynamo::DynamoLeaseStore;
@@ -47,6 +59,6 @@ pub use lease::{LeaseError, LeaseState, LeaseStore, MemoryLeaseStore, SHARD_END}
 pub use message::{
     KinesisMessage, KinesisPosition, PARTITION_KEY_HEADER, SEQUENCE_HEADER, SHARD_HEADER,
 };
-pub use publisher::{KinesisPublish, KinesisPublisher};
+pub use publisher::{KinesisPublish, KinesisPublishExt, KinesisPublisher, PartitionKeyed};
 pub use stream::KinesisStream;
 pub use subscriber::{KinesisSeeker, KinesisSubscriber};

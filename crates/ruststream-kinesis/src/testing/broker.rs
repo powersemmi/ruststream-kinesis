@@ -153,6 +153,9 @@ impl Publisher for KinesisTestPublisher {
     }
 }
 
+impl crate::sealed::Sealed for KinesisTestPublisher {}
+impl crate::KinesisPublishExt for KinesisTestPublisher {}
+
 /// The publish policy for [`KinesisTestPublisher`], mirroring
 /// [`KinesisPublish`](crate::KinesisPublish) on the real broker.
 ///

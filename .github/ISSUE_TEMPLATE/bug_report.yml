@@ -27,7 +27,7 @@ body:
     attributes:
       label: RustStream version
       description: The `ruststream-kinesis` version, plus the `ruststream` version.
-      placeholder: "ruststream-kinesis 0.6.0, ruststream 0.6.0"
+      placeholder: "ruststream-kinesis 0.7.0, ruststream 0.7.0"
     validations:
       required: true
   - type: input

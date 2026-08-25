@@ -7,8 +7,8 @@ splits and merges, shard leasing with fencing, and per-shard checkpointing. For 
 [RustStream documentation](https://powersemmi.github.io/ruststream/).
 
 ```toml
-ruststream = { version = "0.6", features = ["macros", "json"] }
-ruststream-kinesis = "0.6"
+ruststream = { version = "0.7", features = ["macros", "json"] }
+ruststream-kinesis = "0.7"
 serde = { version = "1", features = ["derive"] }
 ```
 
@@ -160,15 +160,31 @@ framework docs for the capability itself.
 `#[subscriber(.., publish("dest"))]` handler mounted without an explicit publisher replies through
 it. It pairs into `KinesisPublisher`, whose destination is the stream name or ARN.
 
-The `partition-key` header becomes the record's own partition key - the unit of shard routing and
-therefore of per-key ordering. Without one, a process-unique key spreads records across shards. The
-same header is set on every delivered record, and it feeds the framework's `Partitioned`
-capability, so the convention matches the in-memory broker and a service can switch brokers without
-changing its headers.
+RustStream 0.7 unified publishing behind a single builder: `message(..)` for a value and `raw(..)`
+for bytes, reached on every publish surface through the blanket `PublishExt` trait, then
+`to(..)`, `with_headers(..)`, `with_codec(..)`, and `publish()`. A broker implements
+`Publisher::publish` and the whole builder follows from it, so nothing on this page replaces the
+framework's publishing guide.
+
+What a broker does add is its own per-message arguments, and they join the chain one step *before*
+its entry point. The step lives on the publisher, returns a small adapter that is itself a
+`Publisher`, captures the argument, and applies it inside `publish(OutgoingMessage)` before
+delegating to the publisher it wraps. The builder that follows is the framework's, unchanged.
+
+On Kinesis the record's partition key is such an argument: per-message by nature, and the unit of
+shard routing and therefore of per-key ordering. `KinesisPublishExt::with_partition_key` names it,
+and returns a `PartitionKeyed<KinesisPublisher>` that publishes like any other publisher:
 
 ```rust
 --8<-- "crates/ruststream-kinesis/examples/kinesis_seek.rs:publish"
 ```
+
+Without a key a process-unique one spreads records across shards.
+
+The underlying wire is the `partition-key` header, and setting it by hand still works: the same
+header is set on every delivered record and feeds the framework's `Partitioned` capability, so the
+convention matches the in-memory broker and a service can switch brokers without changing its
+headers. A key named on the step wins over one already in the message's headers.
 
 Deliveries additionally expose `kinesis-sequence-number` and `kinesis-shard-id`
 (`SEQUENCE_HEADER` and `SHARD_HEADER`).

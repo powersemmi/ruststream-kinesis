@@ -5,14 +5,19 @@
 //! no longer wanted, and the seeding publish rides the scope's `after_startup` hook, where
 //! the publish policy is paired with the connected broker.
 //!
+//! The seeding publish names its partition key with `with_partition_key(..)`, the crate's step
+//! in front of the framework's publish builder.
+//!
 //! Run a local stack first (`just brokers-up`), then:
 //! `cargo run --example kinesis_seek -- run`
 
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream, Seek};
-use ruststream::{Headers, OutgoingMessage, Publisher, Seeker, subscriber};
+use ruststream::runtime::{
+    App, AppInfo, HandlerResult, PublishError, PublishExt, RustStream, Seek,
+};
+use ruststream::{Seeker, subscriber};
 use ruststream_kinesis::{
-    KinesisBroker, KinesisError, KinesisPosition, KinesisPublish, KinesisSeeker, KinesisStream,
-    PARTITION_KEY_HEADER,
+    KinesisBroker, KinesisError, KinesisPosition, KinesisPublish, KinesisPublishExt, KinesisSeeker,
+    KinesisStream,
 };
 use serde::Deserialize;
 
@@ -50,15 +55,15 @@ fn app() -> impl App {
         |b| {
             b.after_startup(
                 KinesisPublish,
-                async move |publisher| -> Result<(), KinesisError> {
-                    let mut headers = Headers::new();
-                    // The partition key decides the shard, and with it per-key ordering.
-                    headers.insert(PARTITION_KEY_HEADER, "tenant-acme");
+                async move |publisher| -> Result<(), PublishError<KinesisError>> {
+                    // The partition key decides the shard, and with it per-key ordering. It is
+                    // a step on the publisher, so the framework's publish builder follows it
+                    // unchanged.
                     publisher
-                        .publish(
-                            OutgoingMessage::new("jobs", b"{\"id\":1}".as_slice())
-                                .with_headers(headers),
-                        )
+                        .with_partition_key("tenant-acme")
+                        .raw(br#"{"id":1}"#)
+                        .to("jobs")
+                        .publish()
                         .await
                 },
             );
