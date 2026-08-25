@@ -27,9 +27,9 @@
 //!   publisher. The record's partition key is a step in front of it,
 //!   [`with_partition_key`](KinesisPublishExt::with_partition_key), rather than a header the
 //!   caller spells out.
-//! - A service imports [`prelude`]: it carries the framework's own prelude, the capabilities this
-//!   broker implements, and this crate's mount-site surface, so one glob covers a service file and
-//!   states what the broker can do.
+//! - A service imports [`prelude`]: it carries the framework's own prelude, the capability traits a
+//!   handler here writes, and this crate's mount-site surface, so one glob covers a service file
+//!   and states the vocabulary a service on this broker has.
 
 #![forbid(unsafe_code)]
 

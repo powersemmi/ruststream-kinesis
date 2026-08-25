@@ -49,8 +49,8 @@ serde = { version = "1", features = ["derive"] }
 
 One glob carries the lot: the framework's own prelude rides along inside this crate's, because
 naming the broker crate is already the choice a service makes for itself. It also carries the
-framework capabilities this broker implements and none it does not, so the glob doubles as a
-manifest of what this broker can do.
+capability traits a handler here writes - repositioning, and reading a record's position - and none
+this broker lacks, so the glob doubles as a manifest of the vocabulary a service on Kinesis has.
 
 ```rust
 use ruststream_kinesis::prelude::*;

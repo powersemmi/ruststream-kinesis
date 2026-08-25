@@ -30,9 +30,16 @@ Which of the framework's optional capability traits this crate implements native
 Acknowledgement is not a capability trait, and on this broker it is a per-shard checkpoint rather
 than a per-message settlement. See [Leases and checkpoints](#leases-and-checkpoints).
 
-`ruststream_kinesis::prelude` re-exports exactly the traits marked yes here, so the glob a service
-imports is this table in code: a handler written against it cannot reach for a capability this
-broker does not have, and a service spanning several brokers gets what their preludes agree on.
+`ruststream_kinesis::prelude` re-exports the rows marked yes here that service code names: `Seeker`
+(the trait behind `Seekable`) and `Positioned`, whose methods a handler calls on the seeker and the
+records it is handed. `Seekable` itself, `Subscribe`, and `DescribeServer` are yes rows too, but
+they ride through the contract - the runtime and the AsyncAPI generator read them off the subscriber
+and the broker, and a service never writes those names. `Partitioned` stays out for a different
+reason: the framework already surfaces `partition_key` as a defaulted method on `IncomingMessage`,
+which the prelude carries, so re-exporting the capability trait as well would make the natural call
+ambiguous. The glob is therefore the service-vocabulary subset of this table: a handler written
+against it cannot reach for a capability this broker does not have, and a service spanning several
+brokers gets what their preludes agree on.
 
 ## The lifecycle
 
@@ -56,8 +63,8 @@ longer consumes.
 
 `KinesisStream::new(name)` is the subscription descriptor. It takes a stream name or ARN and sits
 inline in the `#[subscriber(..)]` decorator. The imports come from `ruststream_kinesis::prelude`,
-which carries the framework's own prelude, the capabilities in the table above, and this crate's
-mount-site surface - the framework leaves brokers out of its prelude because a service states which
+which carries the framework's own prelude, the capability traits a handler here writes, and this
+crate's mount-site surface - the framework leaves brokers out of its prelude because a service states which
 one it runs on, and naming this crate is that statement:
 
 ```rust
