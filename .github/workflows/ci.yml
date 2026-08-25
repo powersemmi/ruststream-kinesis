@@ -145,6 +145,11 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@v2.86.5
+        with:
+          tool: cargo-hack
+
       # The full flag rather than -Z direct-minimal-versions: the narrow one leaves the assembled
       # graph unverified, and that is what a user builds. It costs a pinning list when a
       # third-party manifest declares a bound looser than the code it ships needs.
@@ -163,6 +168,22 @@ jobs:
         run: |
           cargo check --locked --workspace --all-targets --all-features
           cargo test --locked --workspace --all-features --no-fail-fast
+
+      # Everything above still sees dev-dependencies, which raise shared floors before the library
+      # is built: the run proves the workspace resolves, not that the manifest is honest for a
+      # consumer. Drop them and resolve again, so the graph is the one a dependent gets. Runs last
+      # because it rewrites the manifests in place.
+      - name: Resolve minimal versions without dev-dependencies
+        run: |
+          cargo hack --remove-dev-deps
+          cargo +nightly update -Z minimal-versions
+
+      # The library as a dependency, on the floor toolchain. No --locked: cargo-hack edits the
+      # manifests it checks.
+      - name: Check the library against its own declared floors
+        env:
+          RUSTUP_TOOLCHAIN: ${{ steps.floor.outputs.toolchain }}
+        run: cargo hack check --workspace --no-dev-deps --all-features
 
   broker-integration:
     name: Broker integration (LocalStack)
