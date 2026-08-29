@@ -4,7 +4,7 @@ use std::sync::{Arc, OnceLock};
 
 use futures::Stream;
 
-use ruststream::{AckError, Headers, IncomingMessage, Subscriber, testing::Coordinator};
+use ruststream::{AckError, HeaderMap, IncomingMessage, Subscriber, testing::Coordinator};
 
 use crate::error::KinesisError;
 use crate::testing::broker::TestState;
@@ -130,11 +130,11 @@ impl IncomingMessage for KinesisTestMessage {
             .unwrap_or_default()
     }
 
-    fn headers(&self) -> &Headers {
-        static EMPTY: OnceLock<Headers> = OnceLock::new();
+    fn headers(&self) -> &HeaderMap {
+        static EMPTY: OnceLock<HeaderMap> = OnceLock::new();
         self.delivery
             .as_ref()
-            .map_or_else(|| EMPTY.get_or_init(Headers::new), |d| &d.headers)
+            .map_or_else(|| EMPTY.get_or_init(HeaderMap::new), |d| &d.headers)
     }
 
     async fn ack(mut self) -> Result<(), AckError> {

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use ruststream::{AckError, Headers, IncomingMessage, Partitioned, Positioned};
+use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned, Positioned};
 
 use crate::lease::LeaseStore;
 use crate::track::Watermark;
@@ -31,7 +31,7 @@ pub(crate) const KPL_MAGIC: [u8; 4] = [0xF3, 0x89, 0x9A, 0xC2];
 pub(crate) const ENVELOPE_MAGIC: [u8; 4] = *b"RSK1";
 
 /// Encodes a payload with its user headers (partition key excluded - it travels natively).
-pub(crate) fn encode_envelope(headers: &Headers, payload: &[u8]) -> Vec<u8> {
+pub(crate) fn encode_envelope(headers: &HeaderMap, payload: &[u8]) -> Vec<u8> {
     let mut lines = String::new();
     for (name, value) in headers.iter() {
         if name == PARTITION_KEY_HEADER {
@@ -56,11 +56,11 @@ pub(crate) fn encode_envelope(headers: &Headers, payload: &[u8]) -> Vec<u8> {
 
 /// Splits an enveloped payload back into headers and raw payload; a payload without the
 /// magic reads as headerless.
-pub(crate) fn decode_envelope(data: &[u8]) -> (Headers, Bytes) {
+pub(crate) fn decode_envelope(data: &[u8]) -> (HeaderMap, Bytes) {
     if data.len() >= 8 && data[0..4] == ENVELOPE_MAGIC {
         let len = u32::from_be_bytes([data[4], data[5], data[6], data[7]]) as usize;
         if data.len() >= 8 + len {
-            let mut headers = Headers::new();
+            let mut headers = HeaderMap::new();
             let text = String::from_utf8_lossy(&data[8..8 + len]);
             for line in text.lines() {
                 if let Some((name, value)) = line.split_once(':') {
@@ -70,7 +70,7 @@ pub(crate) fn decode_envelope(data: &[u8]) -> (Headers, Bytes) {
             return (headers, Bytes::copy_from_slice(&data[8 + len..]));
         }
     }
-    (Headers::new(), Bytes::copy_from_slice(data))
+    (HeaderMap::new(), Bytes::copy_from_slice(data))
 }
 
 /// A position in the stream's retained log: the whole start vocabulary of this broker,
@@ -178,7 +178,7 @@ pub(crate) struct Settlement {
 /// message). `nack(requeue = false)` skips the record (checkpoints past it).
 pub struct KinesisMessage {
     payload: Bytes,
-    headers: Headers,
+    headers: HeaderMap,
     sequence: String,
     settlement: Settlement,
 }
@@ -258,7 +258,7 @@ impl IncomingMessage for KinesisMessage {
         &self.payload
     }
 
-    fn headers(&self) -> &Headers {
+    fn headers(&self) -> &HeaderMap {
         &self.headers
     }
 
@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn the_envelope_applies_only_when_user_headers_exist() {
-        let mut headers = Headers::new();
+        let mut headers = HeaderMap::new();
         headers.insert(PARTITION_KEY_HEADER, "user-42");
         // Only the partition key: no envelope, the payload stays plain.
         assert_eq!(encode_envelope(&headers, b"raw"), b"raw");

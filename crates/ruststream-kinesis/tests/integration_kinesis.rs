@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use ruststream::{
-    Broker, ConnectedBroker, Headers, IncomingMessage, OutgoingMessage, Publisher, Seekable,
+    Broker, ConnectedBroker, HeaderMap, IncomingMessage, OutgoingMessage, Publisher, Seekable,
     Seeker, StartAt, Subscriber, SubscriptionSource,
 };
 use ruststream_kinesis::{
@@ -70,7 +70,7 @@ async fn roundtrip_preserves_payload_headers_and_partition_key() {
         .await
         .expect("subscription opens");
 
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     headers.insert("content-type", "application/json");
     headers.insert("x-tenant", "acme");
     headers.insert(PARTITION_KEY_HEADER, "user-42");

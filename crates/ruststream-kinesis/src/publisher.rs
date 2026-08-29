@@ -1,7 +1,7 @@
 //! [`KinesisPublisher`], its [`KinesisPublish`] policy, and the crate's publish steps.
 
 use aws_sdk_kinesis::primitives::Blob;
-use ruststream::{Headers, OutgoingMessage, PairError, PublishPolicy, Publisher};
+use ruststream::{HeaderMap, OutgoingMessage, PairError, PublishPolicy, Publisher};
 
 use crate::broker::{ConnectedKinesisBroker, Core, CoreCell};
 use crate::error::{KinesisError, sdk_err};
@@ -186,7 +186,7 @@ impl KinesisPublishExt for KinesisPublisher {}
 #[derive(Debug, Clone)]
 pub struct PartitionKeyed<P> {
     inner: P,
-    base: Headers,
+    base: HeaderMap,
 }
 
 impl<P: Publisher> Publisher for PartitionKeyed<P> {
@@ -196,7 +196,7 @@ impl<P: Publisher> Publisher for PartitionKeyed<P> {
         self.inner.publish(msg).await
     }
 
-    fn base_headers(&self) -> Option<&Headers> {
+    fn base_headers(&self) -> Option<&HeaderMap> {
         // The header is the crate's one wire for the key: the envelope, `Partitioned`, and the
         // in-process broker all read it from here.
         Some(&self.base)
@@ -207,7 +207,7 @@ impl<P: Publisher> Publisher for PartitionKeyed<P> {
 mod tests {
     use ruststream::runtime::PublishExt;
     use ruststream::testing::TestableBroker;
-    use ruststream::{Broker, Headers};
+    use ruststream::{Broker, HeaderMap};
 
     use super::*;
     use crate::testing::KinesisTestBroker;
@@ -242,7 +242,7 @@ mod tests {
     #[tokio::test]
     async fn a_key_named_at_the_call_site_wins_over_the_step() {
         let broker = connected().await;
-        let mut headers = Headers::new();
+        let mut headers = HeaderMap::new();
         headers.insert(PARTITION_KEY_HEADER, "named-on-the-call");
         broker
             .publisher()
@@ -264,7 +264,7 @@ mod tests {
     #[tokio::test]
     async fn the_steps_key_survives_a_call_that_names_other_headers() {
         let broker = connected().await;
-        let mut headers = Headers::new();
+        let mut headers = HeaderMap::new();
         headers.insert("x-tenant", "acme");
         broker
             .publisher()
@@ -287,7 +287,7 @@ mod tests {
     #[tokio::test]
     async fn a_publish_without_the_step_keeps_the_header_route() {
         let broker = connected().await;
-        let mut headers = Headers::new();
+        let mut headers = HeaderMap::new();
         headers.insert(PARTITION_KEY_HEADER, "by-hand");
         broker
             .publisher()
