@@ -28,6 +28,22 @@ async fn kinesis_test_broker_passes_conformance_suite() {
     harness::run_suite(KinesisTestBroker::new).await;
 }
 
+/// The stand-in claims `Seekable` and `Positioned` over its retained log, so it owes the same
+/// contract the service does: a captured position redelivers exactly its record and the ordered
+/// suffix after it, and a forward seek skips what was queued. Running the framework's own suite
+/// against it is what keeps that emulation from decaying into a handle that accepts every seek
+/// and moves nothing.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kinesis_test_broker_passes_seeking_suite() {
+    capabilities::seeking(
+        KinesisTestBroker::new,
+        |name| KinesisStream::new(name),
+        |connected| connected.publisher(),
+    )
+    .await;
+}
+
 // `make_source` / `make_publisher` must stay closures: their bounds are higher-ranked
 // (`Fn(&str) -> _` / `Fn(&B) -> _`), so a bare method path - which binds one concrete lifetime -
 // would not type-check.
