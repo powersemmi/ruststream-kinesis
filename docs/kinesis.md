@@ -19,9 +19,9 @@ Which of the framework's optional capability traits this crate implements native
 | Capability | Native | Notes |
 | --- | --- | --- |
 | `Subscribe` | Yes | `ConnectedKinesisBroker` resolves a string-literal stream name, so `#[subscriber("orders")]` works without a descriptor. See [Subscriptions](#subscriptions). |
-| `Seekable` + `Positioned` | Yes | `KinesisSubscriber` mints a `KinesisSeeker`, and `KinesisMessage` reports a `KinesisPosition`. Shard iterators are the service's own repositioning primitive. See [Positions](#positions). |
+| `Seekable` + `Positioned` | Yes | `KinesisSubscriber` mints a `KinesisSeeker`, and `KinesisMessage` reports a `KinesisPosition`. Shard iterators are the service's own repositioning primitive. Handlers reach both through the delivery context. See [Positions](#positions). |
 | `Partitioned` | Yes | `KinesisMessage` exposes the record's partition key, which is the service's unit of shard routing and per-key ordering. See [Publishing](#publishing). |
-| `BatchSubscriber` | No | `GetRecords` returns batches, but the reader flattens them into one delivery stream so each record settles against the shard watermark on its own; the framework's batching layer applies unchanged. |
+| `BatchSubscriber` | No | `GetRecords` returns batches, but the reader flattens them into one delivery stream so each record settles against the shard watermark on its own; the framework's batching layer applies unchanged, and a page body reads `KinesisBatchContext`. |
 | `RequestReply` | No | Kinesis has no reply address and no correlation primitive; a reply would be a second stream the crate would have to invent. |
 | `TransactionalPublisher` | No | The service has no transaction. `PutRecords` is a batch whose entries fail individually, so it cannot provide atomic all-or-nothing publishing. |
 | `OwnedTransactions` | No | Same reason: there is no transaction to own. |
@@ -31,8 +31,9 @@ Acknowledgement is not a capability trait, and on this broker it is a per-shard 
 than a per-message settlement. See [Leases and checkpoints](#leases-and-checkpoints).
 
 `ruststream_kinesis::prelude` re-exports the traits a handler calls directly: `Seeker` to reposition
-and `Positioned` to read a delivered record's position. Read a record's partition key through
-`IncomingMessage::partition_key`.
+and `Positioned` to read a delivered record's position. It also carries the delivery context and its
+keys - `KinesisContext`, `KinesisBatchContext`, `Position`, `SeekHandle` - which is how a handler
+gets hold of either. Read a record's partition key through `IncomingMessage::partition_key`.
 
 ## The lifecycle
 
@@ -94,7 +95,7 @@ Acknowledgement is a checkpoint, not a per-message settlement. `ack` marks a rec
 shard's watermark advances - and is persisted to the lease store - once every earlier record on
 that shard is handled too, because a checkpoint implies everything before it.
 
-- `HandlerResult::Ack` marks the record handled.
+- `HandlerOutcome::ack()` marks the record handled.
 - `nack(requeue = true)` leaves it unhandled. The watermark stops there, so the shard replays from
   that record when its lease is next taken. A sharded log repositions; it cannot requeue one
   message.
@@ -147,11 +148,19 @@ seeking to it redelivers that very record, on that shard only, the way a partiti
 partition.
 
 `start_at(..)` on the decorator opens the subscription somewhere explicit and beats a stored
-checkpoint. A running subscription repositions through the injected `Seek` parameter:
+checkpoint. A running subscription repositions through the delivery context, which this broker fills
+with the record's position and the subscription's seeker. `Ctx<SeekHandle>` binds the seeker as a
+handler parameter:
 
 ```rust
 --8<-- "crates/ruststream-kinesis/examples/kinesis_seek.rs:seek"
 ```
+
+`Ctx<Position>` binds the record's own pinned position the same way, and a handler that wants both
+names `KinesisContext` as its context type and reads the keys with `ctx.context(..)`. Page handlers
+get `KinesisBatchContext` instead: it carries the same `SeekHandle`, because a seek is
+subscription-scoped, and no position, because a page spans many records - one that reacts to a
+position reads it off the elements' `kinesis-sequence-number` and `kinesis-shard-id` headers.
 
 Repositioning drops the watermark bookkeeping of every shard it moves, so an acknowledgement of a
 record delivered before the seek cannot drag the cursor back over the position just taken. Records
@@ -165,12 +174,14 @@ framework docs for the capability itself.
 `#[subscriber(.., publish("dest"))]` handler mounted without an explicit publisher replies through
 it. It pairs into `KinesisPublisher`, whose destination is the stream name or ARN.
 
-The prelude re-exports it as `Publish`, so a mount site reads the same on every broker; the prefixed
-name stays at the crate root for a file that mounts two brokers. `Publish` is the publish policy,
-not the framework's `runtime::Publish` builder.
+The prelude carries it under its own prefixed name. The bare `Publish` belongs to the framework -
+it is the slot trait a handler bounds an injected publisher with - so the broker glob leaves that
+name alone.
 
-Publishing itself is the framework's: `message(..)` for a value or `raw(..)` for bytes, then
-`to(..)`, `with_headers(..)`, `with_codec(..)`, and `publish()`. See the
+Publishing itself is the framework's: `message(..)` with a declared type, then `to(..)`,
+`with_headers(..)`, `with_codec(..)`, and `publish()`. Bytes the service already holds encoded go
+out as a `#[derive(Outgoing, Serialized)]` newtype, which skips the codec and still names the
+message in the generated document. See the
 [publishing guide](https://powersemmi.github.io/ruststream/latest/guides/publishing/).
 
 The record's partition key goes one step in front of that builder.
@@ -229,9 +240,12 @@ harness: inject traffic with `broker.inject(OutgoingMessage::new(..))` and asser
 output with the free `ruststream::testing::expect_published`. See
 [Unit-testing a service with TestApp](https://powersemmi.github.io/ruststream/latest/guides/testing/#unit-testing-a-service-with-testapp).
 
-It routes by exact address match and simulates none of the product behaviour. Shard leases,
-checkpoint resume, replay of unacknowledged records, and resharding are covered by the live suite
-instead, gated behind `KINESIS_TEST_ENDPOINT`:
+It routes by exact address match and simulates none of the product behaviour. Repositioning is
+product behaviour, so the in-process transport delivers no `KinesisContext` either: a handler that
+reads `Position` or `SeekHandle` does not mount on it, and a stand-in seeker that silently accepted
+every seek would be worse than the compile error. Shard leases, checkpoint resume, replay of
+unacknowledged records, resharding, and the delivery context are covered by the live suite instead,
+gated behind `KINESIS_TEST_ENDPOINT`:
 
 ```text
 just test-brokers
