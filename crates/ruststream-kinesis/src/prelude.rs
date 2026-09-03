@@ -3,10 +3,13 @@
 //! The framework's own prelude, the broker, its subscription descriptor, its positions and seeker,
 //! the delivery context with the keys that read it, and its publish policy.
 //!
-//! Context keys carry their concept name with the broker prefix stripped, so a mount site reads
-//! the same on every broker. The publish policy keeps its prefixed name, [`KinesisPublish`]: the
-//! bare `Publish` is the framework's slot trait, which a handler bounds an injected publisher
-//! with, and the glob must not shadow it.
+//! A service writes two kinds of file, and they import different things. A handler body names
+//! only what it needs of the framework (`use ruststream::prelude::*`) and bounds an injected
+//! publisher with a capability trait, so it never learns which broker it runs on. The file that
+//! mounts those handlers imports this glob, where the broker's policies and context keys carry
+//! their concept name with the prefix stripped - [`Publish`] here - so a mount site reads the
+//! same on every broker; each prefixed original stays at the crate root, for a file that mounts
+//! two brokers and has to say which [`Publish`] it means.
 //!
 //! # Examples
 //!
@@ -22,7 +25,7 @@
 //!
 //! let orders = KinesisStream::new("orders").batch(500);
 //! let broker = KinesisBroker::new();
-//! let reply_with = KinesisPublish;
+//! let reply_with = Publish::default();
 //! # let _ = (orders, broker, reply_with, handle);
 //! ```
 
@@ -37,6 +40,6 @@ pub use crate::context::{KinesisBatchContext, KinesisContext, Position, SeekHand
 #[cfg(feature = "dynamodb-lease")]
 pub use crate::dynamo::DynamoLeaseStore;
 pub use crate::message::KinesisPosition;
-pub use crate::publisher::{KinesisPublish, KinesisPublishExt};
+pub use crate::publisher::{KinesisPublish as Publish, KinesisPublishExt};
 pub use crate::stream::KinesisStream;
 pub use crate::subscriber::KinesisSeeker;

@@ -174,9 +174,12 @@ framework docs for the capability itself.
 `#[subscriber(.., publish("dest"))]` handler mounted without an explicit publisher replies through
 it. It pairs into `KinesisPublisher`, whose destination is the stream name or ARN.
 
-The prelude carries it under its own prefixed name. The bare `Publish` belongs to the framework -
-it is the slot trait a handler bounds an injected publisher with - so the broker glob leaves that
-name alone.
+A service writes two kinds of file, and they import different things. A handler body takes
+`use ruststream::prelude::*` and bounds an injected publisher with a capability trait, so it never
+learns which broker it runs on. The file that mounts those handlers takes
+`use ruststream_kinesis::prelude::*`, where this broker's policies carry the uniform mount-site
+name - `Publish` - so a mount site reads the same whichever broker is underneath; `KinesisPublish`
+stays at the crate root for a file that mounts two of them.
 
 Publishing itself is the framework's: `message(..)` with a declared type, then `to(..)`,
 `with_headers(..)`, `with_codec(..)`, and `publish()`. Bytes the service already holds encoded go

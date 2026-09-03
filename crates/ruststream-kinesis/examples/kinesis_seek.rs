@@ -50,7 +50,7 @@ fn app() -> impl App {
             .test_credentials()
             .region("us-east-1"),
         |b| {
-            b.after_startup(KinesisPublish, async move |publisher| {
+            b.after_startup(Publish, async move |publisher| {
                 // The partition key decides the shard, and with it per-key ordering.
                 publisher
                     .with_partition_key("tenant-acme")
