@@ -15,9 +15,9 @@ struct Order {
 // Without the `start_at` clause each shard would resume from its checkpoint and otherwise
 // open at the tip; the horizon replays everything the stream still retains.
 #[subscriber(KinesisStream::new("orders"), start_at(KinesisPosition::horizon()))]
-async fn handle(order: &Order) -> HandlerResult {
+async fn handle(order: &Order) -> HandlerOutcome {
     println!("got order {}", order.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:handler]
 

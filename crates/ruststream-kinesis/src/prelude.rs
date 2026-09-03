@@ -1,25 +1,28 @@
-//! The imports a service on Kinesis writes every time, in one glob: the framework's own prelude,
-//! the broker, its subscription descriptor, its positions and seeker, and its publish policy.
+//! The imports a service on Kinesis writes every time, in one glob.
 //!
-//! Policies carry their concept name with the broker prefix stripped, so a mount site reads the
-//! same on every broker; `ruststream_kinesis::KinesisPublish` is the prefixed original, for a file
-//! that mounts two brokers and has to say which [`Publish`] it means.
+//! The framework's own prelude, the broker, its subscription descriptor, its positions and seeker,
+//! the delivery context with the keys that read it, and its publish policy.
 //!
-//! [`Publish`] is a publish policy, not the framework's `runtime::Publish` builder.
+//! Context keys carry their concept name with the broker prefix stripped, so a mount site reads
+//! the same on every broker. The publish policy keeps its prefixed name, [`KinesisPublish`]: the
+//! bare `Publish` is the framework's slot trait, which a handler bounds an injected publisher
+//! with, and the glob must not shadow it.
 //!
 //! # Examples
 //!
 //! ```
 //! use ruststream_kinesis::prelude::*;
+//! # #[derive(serde::Deserialize)]
+//! # struct Order { id: u64 }
 //!
-//! async fn handle(order: &[u8]) -> HandlerResult {
-//!     let _ = order.len();
-//!     HandlerResult::Ack
+//! async fn handle(order: &Order, Ctx(at): Ctx<Position>) -> HandlerOutcome {
+//!     println!("order {} sits at {at:?}", order.id);
+//!     HandlerOutcome::ack()
 //! }
 //!
 //! let orders = KinesisStream::new("orders").batch(500);
 //! let broker = KinesisBroker::new();
-//! let reply_with = Publish;
+//! let reply_with = KinesisPublish;
 //! # let _ = (orders, broker, reply_with, handle);
 //! ```
 
@@ -30,9 +33,10 @@ pub use ruststream::prelude::*;
 pub use ruststream::{Positioned, Seeker};
 
 pub use crate::broker::KinesisBroker;
+pub use crate::context::{KinesisBatchContext, KinesisContext, Position, SeekHandle};
 #[cfg(feature = "dynamodb-lease")]
 pub use crate::dynamo::DynamoLeaseStore;
 pub use crate::message::KinesisPosition;
-pub use crate::publisher::{KinesisPublish as Publish, KinesisPublishExt};
+pub use crate::publisher::{KinesisPublish, KinesisPublishExt};
 pub use crate::stream::KinesisStream;
 pub use crate::subscriber::KinesisSeeker;

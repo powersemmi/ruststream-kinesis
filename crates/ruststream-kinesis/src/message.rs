@@ -6,6 +6,7 @@ use bytes::Bytes;
 use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned, Positioned};
 
 use crate::lease::LeaseStore;
+use crate::subscriber::KinesisSeeker;
 use crate::track::Watermark;
 
 /// Header carrying the partition key, mapped onto the record's own partition key.
@@ -160,8 +161,11 @@ pub(crate) struct Settlement {
     pub(crate) tracker: Arc<Watermark>,
     pub(crate) index: u64,
     pub(crate) store: Arc<dyn LeaseStore>,
-    pub(crate) shard: String,
-    pub(crate) owner: String,
+    // Shard and owner are per-reader constants stamped onto every record it forwards, and the
+    // per-delivery context reads the shard back: sharing them keeps both paths to
+    // reference-count bumps instead of a string copy per record.
+    pub(crate) shard: Arc<str>,
+    pub(crate) owner: Arc<str>,
     /// The reader's delivery generation at delivery time; a seek bumps the shared gate, and
     /// stale settlements skip checkpointing (the watermark was reset).
     pub(crate) epoch: u64,
@@ -179,7 +183,8 @@ pub(crate) struct Settlement {
 pub struct KinesisMessage {
     payload: Bytes,
     headers: HeaderMap,
-    sequence: String,
+    sequence: Arc<str>,
+    seeker: KinesisSeeker,
     settlement: Settlement,
 }
 
@@ -197,18 +202,35 @@ impl KinesisMessage {
         data: &[u8],
         partition_key: &str,
         sequence: &str,
+        seeker: KinesisSeeker,
         settlement: Settlement,
     ) -> Self {
         let (mut headers, payload) = decode_envelope(data);
         headers.insert(PARTITION_KEY_HEADER, partition_key.to_owned());
         headers.insert(SEQUENCE_HEADER, sequence.to_owned());
-        headers.insert(SHARD_HEADER, settlement.shard.clone());
+        headers.insert(SHARD_HEADER, settlement.shard.to_string());
         Self {
             payload,
             headers,
-            sequence: sequence.to_owned(),
+            sequence: Arc::from(sequence),
+            seeker,
             settlement,
         }
+    }
+
+    /// The shard this record arrived on; the per-delivery context borrows it.
+    pub(crate) fn shard(&self) -> &Arc<str> {
+        &self.settlement.shard
+    }
+
+    /// This record's sequence number; the per-delivery context borrows it.
+    pub(crate) fn sequence(&self) -> &Arc<str> {
+        &self.sequence
+    }
+
+    /// The subscription's reposition handle, minted once when the subscription opened.
+    pub(crate) fn seeker(&self) -> &KinesisSeeker {
+        &self.seeker
     }
 
     async fn settle(self) -> Result<(), AckError> {
@@ -243,7 +265,7 @@ impl Positioned for KinesisMessage {
     type Position = KinesisPosition;
 
     fn position(&self) -> KinesisPosition {
-        KinesisPosition::sequence(self.settlement.shard.clone(), self.sequence.clone())
+        KinesisPosition::sequence(&*self.settlement.shard, &*self.sequence)
     }
 }
 

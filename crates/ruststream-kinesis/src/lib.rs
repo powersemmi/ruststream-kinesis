@@ -17,14 +17,14 @@
 //!   preserves per-key ordering across resharding.
 //! - A subscription's start position is always a [`KinesisPosition`]: a shard resumes from
 //!   its stored checkpoint and otherwise opens at the tip, and a position repositions it -
-//!   through the framework's `start_at(..)` clause at startup, or the `Seekable` capability
-//!   while it runs.
+//!   through the framework's `start_at(..)` clause at startup, or the [`SeekHandle`] key of
+//!   the delivery context ([`KinesisContext`], [`KinesisBatchContext`]) while it runs.
 //! - Shared polling only in this release: enhanced fan-out is a different resume machine on
 //!   an HTTP/2 push stream with no local emulator support, and is not implemented.
 //!   KPL-aggregated records are rejected with an error rather than delivered as opaque
 //!   protobuf.
-//! - Publishing rides the framework's builder, entered with `message(..)` or `raw(..)` on any
-//!   publisher. The record's partition key is a step in front of it,
+//! - Publishing rides the framework's builder, entered with `message(..)` on any publisher.
+//!   The record's partition key is a step in front of it,
 //!   [`with_partition_key`](KinesisPublishExt::with_partition_key).
 //! - A service imports [`prelude`]: the framework's own prelude plus this crate's mount-site
 //!   surface, in one glob.
@@ -32,6 +32,7 @@
 #![forbid(unsafe_code)]
 
 mod broker;
+mod context;
 #[cfg(feature = "dynamodb-lease")]
 mod dynamo;
 mod error;
@@ -54,6 +55,7 @@ pub mod sealed {
 }
 
 pub use broker::{ConnectedKinesisBroker, KinesisBroker};
+pub use context::{KinesisBatchContext, KinesisContext, Position, SeekHandle};
 #[cfg(feature = "dynamodb-lease")]
 pub use dynamo::DynamoLeaseStore;
 pub use error::KinesisError;

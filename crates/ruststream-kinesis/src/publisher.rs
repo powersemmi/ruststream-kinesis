@@ -105,7 +105,7 @@ impl PublishPolicy<ConnectedKinesisBroker> for KinesisPublish {
 /// The Kinesis publish steps, on this crate's publishers.
 ///
 /// A step goes in front of the framework's publish builder and returns a publisher, so
-/// `message(..)` and `raw(..)` follow it unchanged.
+/// `message(..)` follows it unchanged.
 ///
 /// # Examples
 ///
@@ -113,13 +113,19 @@ impl PublishPolicy<ConnectedKinesisBroker> for KinesisPublish {
 /// # #[cfg(feature = "testing")]
 /// # async fn demo() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 /// use ruststream::runtime::PublishExt;
+/// use ruststream::{Outgoing, Serialized};
 /// use ruststream_kinesis::KinesisPublishExt;
 /// use ruststream_kinesis::testing::KinesisTestBroker;
+///
+/// // The record is already encoded, so it declares itself serialized: no codec runs on it,
+/// // and the name still puts it in the generated document.
+/// #[derive(Outgoing, Serialized)]
+/// struct Job(Vec<u8>);
 ///
 /// let publisher = KinesisTestBroker::new().publisher();
 /// publisher
 ///     .with_partition_key("tenant-acme")
-///     .raw(br#"{"id":1}"#)
+///     .message(&Job(br#"{"id":1}"#.to_vec()))
 ///     .to("jobs")
 ///     .publish()
 ///     .await?;
@@ -141,13 +147,17 @@ pub trait KinesisPublishExt: Publisher + Clone + crate::sealed::Sealed {
     /// # #[cfg(feature = "testing")]
     /// # async fn demo() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     /// use ruststream::runtime::PublishExt;
+    /// use ruststream::{Outgoing, Serialized};
     /// use ruststream_kinesis::KinesisPublishExt;
     /// use ruststream_kinesis::testing::KinesisTestBroker;
+    ///
+    /// #[derive(Outgoing, Serialized)]
+    /// struct Job(Vec<u8>);
     ///
     /// let publisher = KinesisTestBroker::new().publisher();
     /// publisher
     ///     .with_partition_key("tenant-acme")
-    ///     .raw(br#"{"id":1}"#)
+    ///     .message(&Job(br#"{"id":1}"#.to_vec()))
     ///     .to("jobs")
     ///     .publish()
     ///     .await?;
@@ -172,8 +182,8 @@ impl KinesisPublishExt for KinesisPublisher {}
 /// The publisher returned by [`with_partition_key`](KinesisPublishExt::with_partition_key): it
 /// carries the key as a base header and otherwise delegates to the publisher it wraps.
 ///
-/// It is a [`Publisher`] like any other, so the framework's publish builder (`message(..)`,
-/// `raw(..)`) applies to it unchanged.
+/// It is a [`Publisher`] like any other, so the framework's publish builder (`message(..)`)
+/// applies to it unchanged.
 ///
 /// # Examples
 ///
@@ -212,10 +222,19 @@ impl<P: Publisher> Publisher for PartitionKeyed<P> {
 mod tests {
     use ruststream::runtime::PublishExt;
     use ruststream::testing::TestableBroker;
-    use ruststream::{Broker, HeaderMap};
+    use ruststream::{Broker, HeaderMap, Outgoing, Serialized};
 
     use super::*;
     use crate::testing::KinesisTestBroker;
+
+    /// Bytes the test already holds encoded: a serialized type publishes them as they are, so
+    /// these checks stay about the headers rather than about a codec.
+    #[derive(Outgoing, Serialized)]
+    struct Payload(Vec<u8>);
+
+    fn payload() -> Payload {
+        Payload(b"payload".to_vec())
+    }
 
     async fn connected() -> crate::testing::ConnectedKinesisTestBroker {
         KinesisTestBroker::new()
@@ -230,7 +249,7 @@ mod tests {
         broker
             .publisher()
             .with_partition_key("tenant-acme")
-            .raw(b"payload")
+            .message(&payload())
             .to("jobs")
             .publish()
             .await
@@ -252,7 +271,7 @@ mod tests {
         broker
             .publisher()
             .with_partition_key("named-on-the-step")
-            .raw(b"payload")
+            .message(&payload())
             .to("jobs")
             .with_headers(headers)
             .publish()
@@ -274,7 +293,7 @@ mod tests {
         broker
             .publisher()
             .with_partition_key("named-on-the-step")
-            .raw(b"payload")
+            .message(&payload())
             .to("jobs")
             .with_headers(headers)
             .publish()

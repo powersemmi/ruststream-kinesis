@@ -26,9 +26,9 @@ struct Order {
 // No `start_at` clause: each shard resumes from its stored checkpoint, which is what the
 // shared lease table is for.
 #[subscriber(KinesisStream::new("orders"))]
-async fn handle(order: &Order) -> HandlerResult {
+async fn handle(order: &Order) -> HandlerOutcome {
     println!("got order {}", order.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 
 #[tokio::main]

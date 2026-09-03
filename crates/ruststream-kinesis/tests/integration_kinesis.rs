@@ -8,12 +8,13 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use ruststream::{
-    Broker, ConnectedBroker, HeaderMap, IncomingMessage, OutgoingMessage, Publisher, Seekable,
-    Seeker, StartAt, Subscriber, SubscriptionSource,
+    Broker, BuildBatchContext, BuildContext, ConnectedBroker, ContextField, Field, HeaderMap,
+    IncomingMessage, OutgoingMessage, Positioned, Publisher, Seekable, Seeker, StartAt, Subscriber,
+    SubscriptionSource,
 };
 use ruststream_kinesis::{
-    ConnectedKinesisBroker, KinesisBroker, KinesisPosition, KinesisStream, PARTITION_KEY_HEADER,
-    SEQUENCE_HEADER,
+    ConnectedKinesisBroker, KinesisBatchContext, KinesisBroker, KinesisContext, KinesisPosition,
+    KinesisStream, PARTITION_KEY_HEADER, Position, SEQUENCE_HEADER, SeekHandle,
 };
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(30);
@@ -222,6 +223,83 @@ async fn an_unacknowledged_record_replays_on_the_next_lease() {
         .expect("replay is ok");
     assert_eq!(replayed.payload(), b"sticky");
     replayed.ack().await.expect("ack succeeds");
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// The delivery context is what a handler reads its broker fields off, so it is checked here at
+/// the level the crate owns: the runtime builds one per delivery (and one per page off the page's
+/// first delivery) exactly the way this test does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_delivery_context_carries_the_position_and_a_working_seeker() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    let connected = connect(&endpoint).await;
+
+    let stream_name = unique("context");
+    let mut subscriber = from_horizon(&stream_name)
+        .subscribe(&connected)
+        .await
+        .expect("subscription opens");
+    connected
+        .publisher()
+        .publish(OutgoingMessage::new(&stream_name, b"once".as_slice()))
+        .await
+        .expect("publish succeeds");
+
+    let (first_position, seeker) = {
+        let mut stream = pin!(subscriber.stream());
+        let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+            .await
+            .expect("delivery arrives")
+            .expect("stream is open")
+            .expect("delivery is ok");
+        let context = KinesisContext::build(&message);
+        // The key reports the delivery's own pinned position, not a fresh read of the log.
+        assert_eq!(Position.read(&context), message.position());
+        let captured = (Position.read(&context), SeekHandle.read(&context));
+        message.ack().await.expect("ack succeeds");
+        captured
+    };
+
+    // The handle a delivery carries repositions the subscription it came from, so seeking to the
+    // captured position redelivers exactly that record.
+    seeker
+        .seek(first_position.clone())
+        .await
+        .expect("the delivery context's seeker repositions the subscription");
+
+    let replayed_position = {
+        let mut stream = pin!(subscriber.stream());
+        let replayed = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+            .await
+            .expect("replay arrives")
+            .expect("stream is open")
+            .expect("replay is ok");
+        assert_eq!(replayed.payload(), b"once");
+        // A page context is built off the page's first delivery and carries the subscription's
+        // handle without a position: the same reposition surface, page-scoped.
+        let page_context = KinesisBatchContext::build(&replayed);
+        let position = replayed.position();
+        SeekHandle
+            .get(&page_context)
+            .seek(position.clone())
+            .await
+            .expect("the page context's seeker repositions the subscription");
+        replayed.ack().await.expect("ack succeeds");
+        position
+    };
+    assert_eq!(replayed_position, first_position);
+
+    let mut stream = pin!(subscriber.stream());
+    let again = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+        .await
+        .expect("the page-context seek replays the record")
+        .expect("stream is open")
+        .expect("replay is ok");
+    assert_eq!(again.payload(), b"once");
+    again.ack().await.expect("ack succeeds");
 
     connected.shutdown().await.expect("shutdown succeeds");
 }

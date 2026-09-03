@@ -203,6 +203,12 @@ impl std::fmt::Debug for KinesisSeeker {
 }
 
 impl KinesisSeeker {
+    /// Mints a handle onto one subscription's seek surface: a reference-count bump, so the
+    /// delivery path can carry one per record.
+    pub(crate) fn new(bus: SeekBus) -> Self {
+        Self { bus }
+    }
+
     /// Repositions the one shard the captured position names.
     async fn seek_shard(&self, shard: String, start: ShardStart) -> Result<(), KinesisError> {
         let Some(handle) = self.bus.handle(&shard) else {
@@ -291,9 +297,7 @@ impl ruststream::Seekable for KinesisSubscriber {
     type Seeker = KinesisSeeker;
 
     fn seeker(&self) -> KinesisSeeker {
-        KinesisSeeker {
-            bus: Arc::clone(&self.bus),
-        }
+        KinesisSeeker::new(Arc::clone(&self.bus))
     }
 }
 
@@ -362,6 +366,8 @@ async fn coordinate(
     bus: SeekBus,
 ) {
     let stream = descriptor.stream().to_owned();
+    // Shared with every reader this coordinator spawns, and with every record they forward.
+    let owner: Arc<str> = Arc::from(owner);
     let mut readers: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
     loop {
         readers.retain(|_, handle| !handle.is_finished());
@@ -399,14 +405,15 @@ async fn coordinate(
                                 tx: seek_tx,
                             };
                             bus.register(id.clone(), handle.clone());
+                            let shard_id: Arc<str> = Arc::from(id.as_str());
                             readers.insert(
-                                id.clone(),
+                                id,
                                 tokio::spawn(read_shard(
                                     client.clone(),
                                     Arc::clone(&store),
-                                    owner.clone(),
+                                    Arc::clone(&owner),
                                     descriptor.clone(),
-                                    id,
+                                    shard_id,
                                     out.clone(),
                                     handle.gate,
                                     seek_rx,
@@ -596,9 +603,9 @@ async fn apply_shard_seek(
 async fn read_shard(
     client: aws_sdk_kinesis::Client,
     store: Arc<dyn LeaseStore>,
-    owner: String,
+    owner: Arc<str>,
     descriptor: KinesisStream,
-    shard: String,
+    shard: Arc<str>,
     out: mpsc::Sender<Stamped>,
     gate: Arc<AtomicU64>,
     mut seek_rx: mpsc::UnboundedReceiver<ShardSeek>,
@@ -607,7 +614,7 @@ async fn read_shard(
     // Every exit path must deregister this shard's seek surface.
     struct BusGuard {
         bus: SeekBus,
-        shard: String,
+        shard: Arc<str>,
     }
     impl Drop for BusGuard {
         fn drop(&mut self) {
@@ -616,8 +623,11 @@ async fn read_shard(
     }
     let _bus_guard = BusGuard {
         bus: Arc::clone(&bus),
-        shard: shard.clone(),
+        shard: Arc::clone(&shard),
     };
+    // Minted once, before the first delivery: every record carries a clone so a handler can
+    // reposition the subscription from its per-delivery context.
+    let seeker = KinesisSeeker::new(Arc::clone(&bus));
     let stream = descriptor.stream().to_owned();
     let mut tracker = Arc::new(Watermark::default());
     let mut iterator = match initial_iterator(
@@ -680,7 +690,7 @@ async fn read_shard(
                                 epoch,
                                 &gate,
                                 Err(KinesisError::AggregatedRecord {
-                                    shard: shard.clone(),
+                                    shard: shard.to_string(),
                                 }),
                             ))
                             .await
@@ -694,8 +704,8 @@ async fn read_shard(
                         tracker: Arc::clone(&tracker),
                         index: tracker.deliver(record.sequence_number()),
                         store: Arc::clone(&store),
-                        shard: shard.clone(),
-                        owner: owner.clone(),
+                        shard: Arc::clone(&shard),
+                        owner: Arc::clone(&owner),
                         epoch,
                         gate: Arc::clone(&gate),
                     };
@@ -703,6 +713,7 @@ async fn read_shard(
                         data,
                         record.partition_key(),
                         record.sequence_number(),
+                        seeker.clone(),
                         settlement,
                     );
                     if out
@@ -754,7 +765,7 @@ async fn read_shard(
                     && out
                         .send(Stamped::unstamped(Err(KinesisError::Read {
                             stream: stream.clone(),
-                            shard: shard.clone(),
+                            shard: shard.to_string(),
                             source: sdk_err(&err),
                         })))
                         .await
