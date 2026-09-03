@@ -1,6 +1,7 @@
 //! [`KinesisTestBroker`]: the in-process transport and its connected form.
 
 use std::future::{Future, ready};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
@@ -14,21 +15,33 @@ use crate::error::KinesisError;
 use crate::testing::router::AddressRouter;
 use crate::testing::subscriber::KinesisTestSubscriber;
 
-/// Shared state of one in-process broker: the router plus the harness coordinator.
+/// Shared state of one in-process broker: the retained log and its subscriptions, plus the
+/// harness coordinator.
 #[derive(Debug, Default)]
 pub(crate) struct TestState {
     pub(crate) router: AddressRouter,
     coordinator: OnceLock<Coordinator>,
+    /// Set by `shutdown`. A seek handle a handler holds is an aliasing handle, and the real
+    /// broker's aliasing handles report `NotConnected` after shutdown rather than succeeding
+    /// against a dead connection; the stand-in reports the same.
+    closed: AtomicBool,
 }
 
 impl TestState {
-    fn coordinator(&self) -> Option<&Coordinator> {
+    pub(crate) fn coordinator(&self) -> Option<&Coordinator> {
         self.coordinator.get()
     }
 
     pub(crate) fn publish(&self, name: &str, payload: Bytes, headers: ruststream::HeaderMap) {
         self.router
             .publish(name, payload, headers, self.coordinator());
+    }
+
+    pub(crate) fn ensure_open(&self) -> Result<(), KinesisError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(KinesisError::NotConnected);
+        }
+        Ok(())
     }
 }
 
@@ -88,6 +101,13 @@ impl ConnectedKinesisTestBroker {
             state: Arc::clone(&self.state),
         }
     }
+
+    /// Opens a subscription on `name`. The subscription starts at the tip of the retained log,
+    /// which is where a Kinesis shard without a checkpoint starts; `start_at(..)` and the seek
+    /// handle move it from there.
+    pub(crate) fn open(&self, name: &str) -> KinesisTestSubscriber {
+        KinesisTestSubscriber::new(Arc::clone(&self.state), name)
+    }
 }
 
 impl ConnectedBroker for ConnectedKinesisTestBroker {
@@ -95,6 +115,7 @@ impl ConnectedBroker for ConnectedKinesisTestBroker {
     type Closed = ();
 
     fn shutdown(self) -> impl Future<Output = Result<(), Self::Error>> {
+        self.state.closed.store(true, Ordering::Release);
         self.state.router.clear();
         ready(Ok(()))
     }
@@ -104,14 +125,7 @@ impl Subscribe for ConnectedKinesisTestBroker {
     type Subscriber = KinesisTestSubscriber;
 
     fn subscribe(&self, name: &str) -> impl Future<Output = Result<Self::Subscriber, Self::Error>> {
-        let (id, requeue, rx) = self.state.router.subscribe(name.to_owned());
-        ready(Ok(KinesisTestSubscriber::new(
-            Arc::clone(&self.state),
-            id,
-            rx,
-            requeue,
-            self.state.coordinator().cloned(),
-        )))
+        ready(Ok(self.open(name)))
     }
 }
 

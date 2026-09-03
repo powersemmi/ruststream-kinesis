@@ -1,15 +1,32 @@
 //! [`KinesisTestSubscriber`] and [`KinesisTestMessage`].
+//!
+//! The subscription reads its stream's retained log. It opens at the tip, the way a shard
+//! without a checkpoint does, and a reposition - from `start_at(..)` at startup or from a
+//! handler's [`SeekHandle`](crate::SeekHandle) while it runs - swaps its queue for the log
+//! suffix at the target. Like the real reader, the swap happens inside the subscriber's own
+//! poll, where the mutable borrow of the receiver is available, so no state is buffered between
+//! polls and the stream stays cancel-safe.
 
 use std::future::{Future, ready};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
+use std::task::Poll;
 
+use bytes::Bytes;
 use futures::Stream;
 
-use ruststream::{AckError, HeaderMap, IncomingMessage, Subscriber, testing::Coordinator};
+use ruststream::testing::Coordinator;
+use ruststream::{
+    AckError, HeaderMap, IncomingMessage, Partitioned, Positioned, Seekable, Subscriber,
+};
 
 use crate::error::KinesisError;
+use crate::message::{
+    KinesisPosition, PARTITION_KEY_HEADER, SEQUENCE_HEADER, SHARD_HEADER, decode_envelope,
+};
+use crate::subscriber::KinesisSeeker;
 use crate::testing::broker::TestState;
 use crate::testing::router::{Delivery, DeliveryReceiver, DeliverySender, SubscriptionId};
+use crate::testing::seek::{IN_PROCESS_SHARD, LogSeeker, SeekControl, sequence_of};
 
 /// Subscriber returned by [`ConnectedKinesisTestBroker`](crate::testing::ConnectedKinesisTestBroker).
 ///
@@ -18,8 +35,13 @@ use crate::testing::router::{Delivery, DeliveryReceiver, DeliverySender, Subscri
 pub struct KinesisTestSubscriber {
     state: Arc<TestState>,
     id: SubscriptionId,
+    address: Arc<str>,
     rx: DeliveryReceiver,
     requeue: DeliverySender,
+    control: Arc<SeekControl>,
+    /// Minted once, before the first delivery: every record carries a clone, so a handler can
+    /// reposition this subscription from its delivery context.
+    seeker: KinesisSeeker,
     /// A clone of the broker's harness coordinator, threaded into each yielded message so a
     /// requeue re-counts and a consumed delivery decrements. `None` outside a harness run.
     coordinator: Option<Coordinator>,
@@ -28,24 +50,60 @@ pub struct KinesisTestSubscriber {
 impl std::fmt::Debug for KinesisTestSubscriber {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KinesisTestSubscriber")
+            .field("address", &self.address)
             .finish_non_exhaustive()
     }
 }
 
 impl KinesisTestSubscriber {
-    pub(crate) fn new(
-        state: Arc<TestState>,
-        id: SubscriptionId,
-        rx: DeliveryReceiver,
-        requeue: DeliverySender,
-        coordinator: Option<Coordinator>,
-    ) -> Self {
+    pub(crate) fn new(state: Arc<TestState>, address: &str) -> Self {
+        let registration = state.router.subscribe(address.to_owned());
+        let address: Arc<str> = Arc::from(address);
+        let seeker = KinesisSeeker::in_process(LogSeeker::new(
+            Arc::clone(&state),
+            Arc::clone(&address),
+            Arc::clone(&registration.control),
+        ));
+        let coordinator = state.coordinator().cloned();
         Self {
             state,
-            id,
-            rx,
-            requeue,
+            id: registration.id,
+            address,
+            rx: registration.deliveries,
+            requeue: registration.requeue,
+            control: registration.control,
+            seeker,
             coordinator,
+        }
+    }
+
+    /// Applies a reposition requested through this subscription's seek handle, if one is
+    /// pending: everything queued before the seek is drained, and the retained suffix from the
+    /// target on is enqueued in its place.
+    fn apply_pending_seek(&mut self) {
+        let Some(plan) = self.control.take_pending() else {
+            return;
+        };
+        let replay = self.state.router.replay_from(&self.address, plan.target);
+
+        // The seek already counted the records the log held when it resolved. Anything
+        // published into the replay window since was counted by its own fanout, drained just
+        // below, and is re-enqueued here - so only the growth needs counting, and the in-flight
+        // total never touches zero mid-swap.
+        if let Some(coordinator) = &self.coordinator {
+            for _ in plan.count..replay.len() {
+                coordinator.enqueued();
+            }
+        }
+        while self.rx.try_recv().is_ok() {
+            // Every drained delivery was counted in flight when it was enqueued.
+            if let Some(coordinator) = &self.coordinator {
+                coordinator.consumed();
+            }
+        }
+        for delivery in replay {
+            // The send cannot fail: this subscription holds both ends of its own channel.
+            let _ = self.requeue.send(delivery);
         }
     }
 }
@@ -56,6 +114,16 @@ impl Drop for KinesisTestSubscriber {
     }
 }
 
+/// Seeking is native to the stand-in: the router keeps an append-only log per stream, so a
+/// subscription can re-read any suffix of it.
+impl Seekable for KinesisTestSubscriber {
+    type Seeker = KinesisSeeker;
+
+    fn seeker(&self) -> KinesisSeeker {
+        self.seeker.clone()
+    }
+}
+
 impl Subscriber for KinesisTestSubscriber {
     type Message = KinesisTestMessage;
     type Error = KinesisError;
@@ -63,30 +131,57 @@ impl Subscriber for KinesisTestSubscriber {
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
         let requeue = self.requeue.clone();
         let coordinator = self.coordinator.clone();
+        let seeker = self.seeker.clone();
         // Poll the receiver in place rather than wrapping it in an owning stream, so `stream`
         // can be called again after the returned stream is dropped (the runtime and the
         // conformance helpers re-enter it per call).
         futures::stream::poll_fn(move |cx| {
-            self.rx.poll_recv(cx).map(|next| {
-                next.map(|delivery| {
-                    Ok(KinesisTestMessage::new(
-                        delivery,
-                        requeue.clone(),
-                        coordinator.clone(),
-                    ))
-                })
-            })
+            // Register, then apply a pending seek: a reposition installed between the two still
+            // arrives, because installing it wakes this task again.
+            self.control.waker.register(cx.waker());
+            self.apply_pending_seek();
+            loop {
+                match self.rx.poll_recv(cx) {
+                    // A stale pre-seek copy (a requeue that raced the seek): drop it, the
+                    // replay already covers everything from the watermark on.
+                    Poll::Ready(Some(delivery)) if delivery.sequence < self.control.watermark() => {
+                        if let Some(coordinator) = &coordinator {
+                            coordinator.consumed();
+                        }
+                    }
+                    Poll::Ready(Some(delivery)) => {
+                        return Poll::Ready(Some(Ok(KinesisTestMessage::new(
+                            delivery,
+                            requeue.clone(),
+                            seeker.clone(),
+                            coordinator.clone(),
+                        ))));
+                    }
+                    Poll::Ready(None) => return Poll::Ready(None),
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
         })
     }
 }
 
-/// Message handed to handlers from an [`KinesisTestSubscriber`].
+/// Message handed to handlers from a [`KinesisTestSubscriber`].
+///
+/// It carries the delivery surface a record from the service carries: the payload out of the
+/// crate's header envelope, the `partition-key`, `kinesis-sequence-number` and `kinesis-shard-id`
+/// headers, its own [`KinesisPosition`], and the subscription's seek handle - so a handler that
+/// reads its delivery context runs here unchanged.
 ///
 /// `ack` consumes the handle; `nack(requeue = true)` re-queues the delivery on the owning
 /// subscription's channel so the next handler invocation sees it again; `nack(requeue = false)`
 /// drops it, matching the real subscriber's reject path in effect.
 pub struct KinesisTestMessage {
     delivery: Option<Delivery>,
+    payload: Bytes,
+    headers: HeaderMap,
+    shard: Arc<str>,
+    sequence: Arc<str>,
+    seeker: KinesisSeeker,
     requeue: DeliverySender,
     /// A clone of the broker's harness coordinator. When set, this delivery is counted in
     /// flight and is decremented exactly once when the message is consumed or dropped.
@@ -105,7 +200,10 @@ impl Drop for KinesisTestMessage {
 
 impl std::fmt::Debug for KinesisTestMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("KinesisTestMessage").finish_non_exhaustive()
+        f.debug_struct("KinesisTestMessage")
+            .field("shard", &self.shard)
+            .field("sequence", &self.sequence)
+            .finish_non_exhaustive()
     }
 }
 
@@ -113,29 +211,71 @@ impl KinesisTestMessage {
     pub(crate) fn new(
         delivery: Delivery,
         requeue: DeliverySender,
+        seeker: KinesisSeeker,
         coordinator: Option<Coordinator>,
     ) -> Self {
+        let sequence: Arc<str> = Arc::from(sequence_of(delivery.sequence));
+        let shard: Arc<str> = Arc::from(IN_PROCESS_SHARD);
+        // The same delivery contract the reader gives a record: the envelope is unwrapped, the
+        // publish headers ride on top of whatever it carried, and the position is surfaced as
+        // headers so a page body can read it off the elements.
+        let (mut headers, payload) = decode_envelope(&delivery.payload);
+        for (name, value) in delivery.headers.iter() {
+            headers.insert(name, value.to_vec());
+        }
+        headers.insert(SEQUENCE_HEADER, sequence.to_string());
+        headers.insert(SHARD_HEADER, shard.to_string());
         Self {
             delivery: Some(delivery),
+            payload,
+            headers,
+            shard,
+            sequence,
+            seeker,
             requeue,
             coordinator,
         }
+    }
+
+    /// The shard this record arrived on; the per-delivery context borrows it.
+    pub(crate) fn shard(&self) -> &Arc<str> {
+        &self.shard
+    }
+
+    /// This record's sequence number; the per-delivery context borrows it.
+    pub(crate) fn sequence(&self) -> &Arc<str> {
+        &self.sequence
+    }
+
+    /// The subscription's reposition handle, minted once when the subscription opened.
+    pub(crate) fn seeker(&self) -> &KinesisSeeker {
+        &self.seeker
+    }
+}
+
+/// The position is the record's stable index in its stream's retained log, assigned at publish
+/// and preserved across requeues, so a redelivered record reports the same position.
+impl Positioned for KinesisTestMessage {
+    type Position = KinesisPosition;
+
+    fn position(&self) -> KinesisPosition {
+        KinesisPosition::sequence(&*self.shard, &*self.sequence)
+    }
+}
+
+impl Partitioned for KinesisTestMessage {
+    fn partition_key(&self) -> Option<&[u8]> {
+        self.headers.get(PARTITION_KEY_HEADER)
     }
 }
 
 impl IncomingMessage for KinesisTestMessage {
     fn payload(&self) -> &[u8] {
-        self.delivery
-            .as_ref()
-            .map(|d| d.payload.as_ref())
-            .unwrap_or_default()
+        &self.payload
     }
 
     fn headers(&self) -> &HeaderMap {
-        static EMPTY: OnceLock<HeaderMap> = OnceLock::new();
-        self.delivery
-            .as_ref()
-            .map_or_else(|| EMPTY.get_or_init(HeaderMap::new), |d| &d.headers)
+        &self.headers
     }
 
     fn ack(mut self) -> impl Future<Output = Result<(), AckError>> {
@@ -159,5 +299,9 @@ impl IncomingMessage for KinesisTestMessage {
             }
         }
         ready(Ok(()))
+    }
+
+    fn partition_key(&self) -> Option<&[u8]> {
+        Partitioned::partition_key(self)
     }
 }

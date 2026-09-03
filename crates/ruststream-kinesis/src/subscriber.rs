@@ -191,9 +191,25 @@ impl KinesisSubscriber {
 /// [`Sequence`](KinesisPosition::Sequence) position moves the one shard it names. Either way
 /// the affected shards drop their watermark bookkeeping: acknowledgements of records delivered
 /// before the seek no longer checkpoint.
+///
+/// The same handle serves the in-process stand-in
+/// ([`KinesisTestBroker`](crate::testing::KinesisTestBroker)), where it re-reads that transport's
+/// retained log instead, so a handler that repositions its subscription is the same code in a
+/// unit test and against the service.
 #[derive(Clone)]
 pub struct KinesisSeeker {
-    bus: SeekBus,
+    target: SeekTarget,
+}
+
+/// What this handle repositions. The two transports reposition different things, and an enum is
+/// what keeps that from being a nullable field with only some combinations legal.
+#[derive(Clone)]
+enum SeekTarget {
+    /// The service: one command channel per owned shard, behind a shared seek bus.
+    Shards(ShardSeeker),
+    /// The in-process stand-in: one retained log per stream.
+    #[cfg(feature = "testing")]
+    Log(crate::testing::LogSeeker),
 }
 
 impl std::fmt::Debug for KinesisSeeker {
@@ -203,12 +219,30 @@ impl std::fmt::Debug for KinesisSeeker {
 }
 
 impl KinesisSeeker {
-    /// Mints a handle onto one subscription's seek surface: a reference-count bump, so the
+    /// Mints a handle onto one live subscription's seek surface: a reference-count bump, so the
     /// delivery path can carry one per record.
-    pub(crate) fn new(bus: SeekBus) -> Self {
-        Self { bus }
+    pub(crate) fn shards(bus: SeekBus) -> Self {
+        Self {
+            target: SeekTarget::Shards(ShardSeeker { bus }),
+        }
     }
 
+    /// Mints a handle onto one in-process subscription's retained log.
+    #[cfg(feature = "testing")]
+    pub(crate) fn in_process(log: crate::testing::LogSeeker) -> Self {
+        Self {
+            target: SeekTarget::Log(log),
+        }
+    }
+}
+
+/// The service's half of [`KinesisSeeker`]: the shard readers a reposition is broadcast to.
+#[derive(Clone)]
+struct ShardSeeker {
+    bus: SeekBus,
+}
+
+impl ShardSeeker {
     /// Repositions the one shard the captured position names.
     async fn seek_shard(&self, shard: String, start: ShardStart) -> Result<(), KinesisError> {
         let Some(handle) = self.bus.handle(&shard) else {
@@ -275,10 +309,7 @@ impl KinesisSeeker {
     }
 }
 
-impl ruststream::Seeker for KinesisSeeker {
-    type Position = KinesisPosition;
-    type Error = KinesisError;
-
+impl ShardSeeker {
     async fn seek(&self, to: KinesisPosition) -> Result<(), KinesisError> {
         match to {
             KinesisPosition::Horizon => self.seek_stream(StreamStart::Horizon).await,
@@ -293,11 +324,25 @@ impl ruststream::Seeker for KinesisSeeker {
     }
 }
 
+impl ruststream::Seeker for KinesisSeeker {
+    type Position = KinesisPosition;
+    type Error = KinesisError;
+
+    async fn seek(&self, to: KinesisPosition) -> Result<(), KinesisError> {
+        match &self.target {
+            SeekTarget::Shards(shards) => shards.seek(to).await,
+            // Nothing here leaves the process, so the reposition resolves without awaiting.
+            #[cfg(feature = "testing")]
+            SeekTarget::Log(log) => log.seek(&to),
+        }
+    }
+}
+
 impl ruststream::Seekable for KinesisSubscriber {
     type Seeker = KinesisSeeker;
 
     fn seeker(&self) -> KinesisSeeker {
-        KinesisSeeker::new(Arc::clone(&self.bus))
+        KinesisSeeker::shards(Arc::clone(&self.bus))
     }
 }
 
@@ -627,7 +672,7 @@ async fn read_shard(
     };
     // Minted once, before the first delivery: every record carries a clone so a handler can
     // reposition the subscription from its per-delivery context.
-    let seeker = KinesisSeeker::new(Arc::clone(&bus));
+    let seeker = KinesisSeeker::shards(Arc::clone(&bus));
     let stream = descriptor.stream().to_owned();
     let mut tracker = Arc::new(Watermark::default());
     let mut iterator = match initial_iterator(

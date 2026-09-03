@@ -68,6 +68,20 @@ impl BuildContext<KinesisMessage> for KinesisContext {
     }
 }
 
+/// The in-process stand-in fills the same context off its retained log, so a handler that reads
+/// its position or repositions its subscription mounts on
+/// [`KinesisTestBroker`](crate::testing::KinesisTestBroker) unchanged.
+#[cfg(feature = "testing")]
+impl BuildContext<crate::testing::KinesisTestMessage> for KinesisContext {
+    fn build(msg: &crate::testing::KinesisTestMessage) -> Self {
+        Self {
+            shard: Arc::clone(msg.shard()),
+            sequence: Arc::clone(msg.sequence()),
+            seeker: msg.seeker().clone(),
+        }
+    }
+}
+
 /// This broker's page context: the subscription's reposition handle, shared by every record of
 /// the page.
 ///
@@ -116,6 +130,16 @@ pub struct KinesisBatchContext {
 
 impl BuildBatchContext<KinesisMessage> for KinesisBatchContext {
     fn build(first: &KinesisMessage) -> Self {
+        Self {
+            seeker: first.seeker().clone(),
+        }
+    }
+}
+
+/// The in-process counterpart, so a page body that repositions is unit-testable too.
+#[cfg(feature = "testing")]
+impl BuildBatchContext<crate::testing::KinesisTestMessage> for KinesisBatchContext {
+    fn build(first: &crate::testing::KinesisTestMessage) -> Self {
         Self {
             seeker: first.seeker().clone(),
         }

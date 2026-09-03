@@ -7,6 +7,9 @@
 
 use std::time::Duration;
 
+#[cfg(feature = "testing")]
+use std::future::{Future, ready};
+
 use ruststream::SubscriptionSource;
 
 use crate::broker::ConnectedKinesisBroker;
@@ -122,6 +125,29 @@ impl SubscriptionSource<ConnectedKinesisBroker> for KinesisStream {
         connected: &ConnectedKinesisBroker,
     ) -> Result<KinesisSubscriber, KinesisError> {
         connected.subscribe_stream(self).await
+    }
+}
+
+/// The same descriptor opens a subscription on the in-process stand-in, so a service keeps its
+/// own mount - `#[subscriber(KinesisStream::new("orders"))]` - in its unit tests.
+///
+/// The settings that price a real read (`batch`, `poll_interval`) have nothing to bill in
+/// process, and `create_if_missing` has no stream to create: a name is a log as soon as
+/// something is published to it. The descriptor is still validated, so a mount the service would
+/// reject fails here too.
+#[cfg(feature = "testing")]
+impl SubscriptionSource<crate::testing::ConnectedKinesisTestBroker> for KinesisStream {
+    type Subscriber = crate::testing::KinesisTestSubscriber;
+
+    fn name(&self) -> &str {
+        self.stream()
+    }
+
+    fn subscribe(
+        self,
+        connected: &crate::testing::ConnectedKinesisTestBroker,
+    ) -> impl Future<Output = Result<Self::Subscriber, KinesisError>> + Send {
+        ready(self.validate().map(|()| connected.open(self.stream())))
     }
 }
 
