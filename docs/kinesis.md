@@ -236,23 +236,39 @@ per call by default, so the compose file sets `KINESIS_LATENCY=0`.
 
 ## Testing
 
-The `testing` feature ships `KinesisTestBroker`: an in-process transport that reproduces the
-crate's core routing with no server and no network. It follows the same ladder as the real broker,
-and its connected form implements `ruststream::testing::TestableBroker`, so it drives the `TestApp`
-harness: inject traffic with `broker.inject(OutgoingMessage::new(..))` and assert on published
-output with the free `ruststream::testing::expect_published`. See
+The `testing` feature ships `KinesisTestBroker`: an in-process transport with no server and no
+network. It follows the same ladder as the real broker, and its connected form implements
+`ruststream::testing::TestableBroker`, so it drives the `TestApp` harness. See
 [Unit-testing a service with TestApp](https://powersemmi.github.io/ruststream/latest/guides/testing/#unit-testing-a-service-with-testapp).
 
-It routes by exact address match and simulates none of the product behaviour. Repositioning is
-product behaviour, so the in-process transport delivers no `KinesisContext` either: a handler that
-reads `Position` or `SeekHandle` does not mount on it, and a stand-in seeker that silently accepted
-every seek would be worse than the compile error. Shard leases, checkpoint resume, replay of
-unacknowledged records, resharding, and the delivery context are covered by the live suite instead,
+Kinesis is a retained log, and the stand-in keeps one per stream, because that is the property a
+handler can observe without a server. A subscription opens at the tip - where a shard without a
+checkpoint opens - and `start_at(..)` or a handler's `SeekHandle` really re-reads the log from the
+position it names. Deliveries carry the full delivery surface: a `KinesisPosition`, the
+`kinesis-sequence-number` and `kinesis-shard-id` headers, the partition key, and the
+`KinesisContext` / `KinesisBatchContext` the keys read. So a service mounts unchanged:
+
+```rust
+--8<-- "crates/ruststream-kinesis/tests/harness_kinesis.rs:seek_handler"
+```
+
+```rust
+--8<-- "crates/ruststream-kinesis/tests/harness_kinesis.rs:seek_test"
+```
+
+The stand-in passes the framework's own `Seekable` suite
+(`conformance::capabilities::seeking`) in process, which is what keeps the emulation honest: a
+handle that accepted every seek and moved nothing would fail it.
+
+What it still does not have is everything a server owns: it routes one shard
+(`testing::IN_PROCESS_SHARD`), so there are no leases, no checkpoint durability, no retention
+limits, no resharding, and no redelivery timing. Those are covered by the live suite instead,
 gated behind `KINESIS_TEST_ENDPOINT`:
 
 ```text
 just test-brokers
 ```
 
-That starts LocalStack and runs the integration tests plus the framework's conformance lifecycle
-against it, single-threaded so the runs do not observe each other's streams.
+That starts LocalStack and runs the wire and lease checks plus the framework's conformance
+lifecycle and `Seekable` suite against it, single-threaded so the runs do not observe each
+other's streams.
