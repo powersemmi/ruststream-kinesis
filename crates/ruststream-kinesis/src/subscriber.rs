@@ -901,6 +901,19 @@ async fn read_shard(
                 let fatal = err
                     .as_service_error()
                     .is_some_and(GetRecordsError::is_resource_not_found_exception);
+                // Throttling is the service asking for a slower cadence, not a failed read:
+                // the iterator is still good, so the reader waits and reuses it. Reporting it
+                // would put an error in front of a handler that did nothing wrong, and the
+                // recovery below would rewind the shard to its checkpoint and redeliver
+                // everything since. A page smaller than a read's natural size makes this the
+                // common answer to a backlog, so it must not cost either.
+                if err
+                    .as_service_error()
+                    .is_some_and(GetRecordsError::is_provisioned_throughput_exceeded_exception)
+                {
+                    tokio::time::sleep(descriptor.poll_value()).await;
+                    continue;
+                }
                 if !expired
                     && out
                         .send(Stamped::unstamped(Err(KinesisError::Read {

@@ -112,7 +112,9 @@ its own against its shard's watermark, so a page body that returns one outcome p
 checkpoints per record.
 
 The size the mount site names is also a cost decision: a small page means small reads, and the
-service allows five per second per shard. `poll_interval(..)` above is where that budget is spent.
+service allows five per second per shard. `poll_interval(..)` above is where that budget is spent,
+and a read the service throttles is not a delivery failure - the reader waits that interval and
+reads again from where it was, so a handler sees a pause rather than an error.
 
 A page body reads `KinesisBatchContext` rather than `KinesisContext` - see
 [Positions](#positions).
