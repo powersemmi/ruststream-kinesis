@@ -19,6 +19,10 @@
 //!   its stored checkpoint and otherwise opens at the tip, and a position repositions it -
 //!   through the framework's `start_at(..)` clause at startup, or the [`SeekHandle`] key of
 //!   the delivery context ([`KinesisContext`], [`KinesisBatchContext`]) while it runs.
+//! - Pages are the service's own: `batch(n)` at the mount site becomes the `GetRecords` limit
+//!   every shard reader asks with, and no page carries more records than it named. The
+//!   settings that price a read - [`poll_interval`](KinesisSubscriberExt::poll_interval) and
+//!   the rest - chain after it.
 //! - Shared polling only in this release: enhanced fan-out is a different resume machine on
 //!   an HTTP/2 push stream with no local emulator support, and is not implemented.
 //!   KPL-aggregated records are rejected with an error rather than delivered as opaque
@@ -64,5 +68,5 @@ pub use message::{
     KinesisMessage, KinesisPosition, PARTITION_KEY_HEADER, SEQUENCE_HEADER, SHARD_HEADER,
 };
 pub use publisher::{KinesisPublish, KinesisPublishExt, KinesisPublisher, PartitionKeyed};
-pub use stream::KinesisStream;
+pub use stream::{KinesisStream, KinesisSubscriberExt};
 pub use subscriber::{KinesisSeeker, KinesisSubscriber};

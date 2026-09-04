@@ -7,10 +7,11 @@
 //! `SHARD_END` once every delivery has settled.
 
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use aws_sdk_kinesis::operation::get_records::GetRecordsError;
@@ -18,7 +19,7 @@ use aws_sdk_kinesis::operation::get_shard_iterator::builders::GetShardIteratorFl
 use aws_sdk_kinesis::primitives::DateTime;
 use aws_sdk_kinesis::types::{Shard, ShardIteratorType};
 use futures::Stream;
-use ruststream::Subscriber;
+use ruststream::{BatchSubscriber, BufferedSubscriber, Subscriber};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::broker::Core;
@@ -35,6 +36,15 @@ const LEASE_TTL: Duration = Duration::from_secs(10);
 const RENEW_EVERY: Duration = Duration::from_secs(3);
 /// How many deliveries may sit between the readers and the consumer.
 const CHANNEL_CAPACITY: usize = 64;
+/// Records one `GetRecords` call asks for while the subscription delivers single messages. A
+/// page subscription replaces it with the size its mount site named.
+const DEFAULT_READ_LIMIT: i32 = 1000;
+/// The service's own cap on one read.
+const MAX_READ_LIMIT: i32 = 10_000;
+/// How long a partial page waits for more records before it goes out. Chosen once here because
+/// the size is the mount site's and the deadline is the broker's; it is short next to the
+/// second the reader waits between reads of an idle shard.
+const PAGE_FILL_WINDOW: Duration = Duration::from_millis(50);
 
 /// A position every shard of the subscription can open at: the stream-wide half of
 /// [`KinesisPosition`]. Kept apart from the shard-scoped forms so that "install this for the
@@ -143,12 +153,20 @@ impl Stamped {
 
 /// A subscription to one Kinesis stream; yields [`KinesisMessage`]s from every owned shard.
 ///
+/// Deliveries arrive one record at a time, because acknowledgement is a per-record checkpoint
+/// against the shard's watermark, and a page mount groups them: the size the mount site named
+/// becomes the `GetRecords` limit every reader asks with, so a read never fetches more than one
+/// page's worth, and the page itself is closed by that size or, when the shards had less to
+/// give, 50 ms after its first record.
+///
 /// Dropping the subscriber stops the coordinator and every reader; unsettled records
 /// redeliver from the last checkpoint when the leases are next taken.
 pub struct KinesisSubscriber {
     stream: String,
-    rx: mpsc::Receiver<Stamped>,
-    bus: SeekBus,
+    /// The live `GetRecords` limit, shared with every reader. This is how the mount site's page
+    /// size reaches the wire: [`BatchSubscriber::batches`] stores it before the first page.
+    limit: Arc<AtomicI32>,
+    deliveries: BufferedSubscriber<ShardDeliveries>,
 }
 
 impl std::fmt::Debug for KinesisSubscriber {
@@ -170,16 +188,50 @@ impl KinesisSubscriber {
         let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
         let stream = descriptor.stream().to_owned();
         let bus: SeekBus = Arc::new(SeekState::default());
-        tokio::spawn(coordinate(
-            core.client.clone(),
-            Arc::clone(&core.store),
-            core.owner.clone(),
+        let limit = Arc::new(AtomicI32::new(DEFAULT_READ_LIMIT));
+        tokio::spawn(coordinate(Arc::new(Subscription {
+            client: core.client.clone(),
+            store: Arc::clone(&core.store),
+            owner: Arc::from(core.owner.as_str()),
             descriptor,
-            tx,
-            Arc::clone(&bus),
-        ));
-        Self { stream, rx, bus }
+            out: tx,
+            bus: Arc::clone(&bus),
+            limit: Arc::clone(&limit),
+        })));
+        Self {
+            stream,
+            limit,
+            deliveries: BufferedSubscriber::new(ShardDeliveries { rx, bus })
+                .max_wait(PAGE_FILL_WINDOW),
+        }
     }
+}
+
+/// The subscription's raw delivery stream: the one channel every owned shard's reader feeds.
+///
+/// Kept apart from [`KinesisSubscriber`] so the framework's page adapter can wrap it - the
+/// adapter owns what it pages, and the public subscriber keeps its name and its stream-wide
+/// surface.
+struct ShardDeliveries {
+    rx: mpsc::Receiver<Stamped>,
+    bus: SeekBus,
+}
+
+impl std::fmt::Debug for ShardDeliveries {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ShardDeliveries").finish_non_exhaustive()
+    }
+}
+
+/// The mount site's page size as a `GetRecords` limit.
+///
+/// The service caps one read at 10000 records, so a larger page is filled from several reads or
+/// closes short when [`PAGE_FILL_WINDOW`] elapses: a page carrying fewer records than the size
+/// asked for is what the contract permits, one carrying more is not.
+fn read_limit(size: NonZeroUsize) -> i32 {
+    i32::try_from(size.get())
+        .unwrap_or(MAX_READ_LIMIT)
+        .min(MAX_READ_LIMIT)
 }
 
 /// Repositions a [`KinesisSubscriber`] while its stream runs; minted by
@@ -338,7 +390,7 @@ impl ruststream::Seeker for KinesisSeeker {
     }
 }
 
-impl ruststream::Seekable for KinesisSubscriber {
+impl ruststream::Seekable for ShardDeliveries {
     type Seeker = KinesisSeeker;
 
     fn seeker(&self) -> KinesisSeeker {
@@ -346,7 +398,7 @@ impl ruststream::Seekable for KinesisSubscriber {
     }
 }
 
-impl Subscriber for KinesisSubscriber {
+impl Subscriber for ShardDeliveries {
     type Message = KinesisMessage;
     type Error = KinesisError;
 
@@ -368,6 +420,45 @@ impl Subscriber for KinesisSubscriber {
                 }
             }
         })
+    }
+}
+
+/// Repositioning reaches through the page buffer to the readers, so a page subscription opens
+/// at a chosen position and repositions from a handler exactly as a single-message one does.
+impl ruststream::Seekable for KinesisSubscriber {
+    type Seeker = KinesisSeeker;
+
+    fn seeker(&self) -> KinesisSeeker {
+        ruststream::Seekable::seeker(&self.deliveries)
+    }
+}
+
+impl Subscriber for KinesisSubscriber {
+    type Message = KinesisMessage;
+    type Error = KinesisError;
+
+    fn stream(&mut self) -> impl Stream<Item = Result<KinesisMessage, KinesisError>> + Send + '_ {
+        self.deliveries.stream()
+    }
+}
+
+impl BatchSubscriber for KinesisSubscriber {
+    type Batch = Vec<KinesisMessage>;
+
+    /// # Cancel safety
+    ///
+    /// Cancel-safe between polls: a page being filled lives inside the returned stream and
+    /// survives a cancelled poll. Dropping the stream abandons that page's records unsettled,
+    /// so the shard replays them from its checkpoint when its lease is next taken.
+    fn batches(
+        &mut self,
+        size: NonZeroUsize,
+    ) -> impl Stream<Item = Result<Self::Batch, KinesisError>> + Send + '_ {
+        // The page size is the read limit: from the readers' next call on, one read fetches at
+        // most one page's worth. A read already in flight under the previous limit can still
+        // return more, which is why the page itself is capped below rather than here.
+        self.limit.store(read_limit(size), Ordering::Relaxed);
+        self.deliveries.batches(size)
     }
 }
 
@@ -402,22 +493,35 @@ fn is_closed(shard: &Shard) -> bool {
         .is_some()
 }
 
-async fn coordinate(
+/// What one subscription's coordinator and every reader it spawns work from: one allocation per
+/// subscription, one reference-count bump per reader.
+struct Subscription {
     client: aws_sdk_kinesis::Client,
     store: Arc<dyn LeaseStore>,
-    owner: String,
+    /// This instance's lease-owner id, shared with every record a reader forwards.
+    owner: Arc<str>,
     descriptor: KinesisStream,
     out: mpsc::Sender<Stamped>,
     bus: SeekBus,
-) {
-    let stream = descriptor.stream().to_owned();
-    // Shared with every reader this coordinator spawns, and with every record they forward.
-    let owner: Arc<str> = Arc::from(owner);
+    limit: Arc<AtomicI32>,
+}
+
+async fn coordinate(subscription: Arc<Subscription>) {
+    let Subscription {
+        client,
+        store,
+        owner,
+        descriptor,
+        out,
+        bus,
+        ..
+    } = subscription.as_ref();
+    let stream = descriptor.stream();
     let mut readers: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
     loop {
         readers.retain(|_, handle| !handle.is_finished());
 
-        match list_all_shards(&client, &stream).await {
+        match list_all_shards(client, stream).await {
             Ok(shards) => {
                 let by_id: HashMap<&str, &Shard> =
                     shards.iter().map(|s| (s.shard_id(), s)).collect();
@@ -426,7 +530,7 @@ async fn coordinate(
                     if readers.contains_key(&id) {
                         continue;
                     }
-                    if !parents_done(&bus, shard, &by_id, store.as_ref()).await {
+                    if !parents_done(bus, shard, &by_id, store.as_ref()).await {
                         continue;
                     }
                     match store.read(&id).await {
@@ -442,7 +546,7 @@ async fn coordinate(
                             continue;
                         }
                     }
-                    match store.acquire(&id, &owner, LEASE_TTL).await {
+                    match store.acquire(&id, owner, LEASE_TTL).await {
                         Ok(true) => {
                             let (seek_tx, seek_rx) = mpsc::unbounded_channel();
                             let handle = ShardHandle {
@@ -454,15 +558,10 @@ async fn coordinate(
                             readers.insert(
                                 id,
                                 tokio::spawn(read_shard(
-                                    client.clone(),
-                                    Arc::clone(&store),
-                                    Arc::clone(&owner),
-                                    descriptor.clone(),
+                                    Arc::clone(&subscription),
                                     shard_id,
-                                    out.clone(),
                                     handle.gate,
                                     seek_rx,
-                                    Arc::clone(&bus),
                                 )),
                             );
                         }
@@ -644,17 +743,12 @@ async fn apply_shard_seek(
     let _ = seek.done.send(outcome);
 }
 
-#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 async fn read_shard(
-    client: aws_sdk_kinesis::Client,
-    store: Arc<dyn LeaseStore>,
-    owner: Arc<str>,
-    descriptor: KinesisStream,
+    subscription: Arc<Subscription>,
     shard: Arc<str>,
-    out: mpsc::Sender<Stamped>,
     gate: Arc<AtomicU64>,
     mut seek_rx: mpsc::UnboundedReceiver<ShardSeek>,
-    bus: SeekBus,
 ) {
     // Every exit path must deregister this shard's seek surface.
     struct BusGuard {
@@ -666,48 +760,49 @@ async fn read_shard(
             self.bus.deregister(&self.shard);
         }
     }
+    let Subscription {
+        client,
+        store,
+        owner,
+        descriptor,
+        out,
+        bus,
+        limit,
+    } = subscription.as_ref();
     let _bus_guard = BusGuard {
-        bus: Arc::clone(&bus),
+        bus: Arc::clone(bus),
         shard: Arc::clone(&shard),
     };
     // Minted once, before the first delivery: every record carries a clone so a handler can
     // reposition the subscription from its per-delivery context.
-    let seeker = KinesisSeeker::shards(Arc::clone(&bus));
-    let stream = descriptor.stream().to_owned();
+    let seeker = KinesisSeeker::shards(Arc::clone(bus));
+    let stream = descriptor.stream();
     let mut tracker = Arc::new(Watermark::default());
-    let mut iterator = match initial_iterator(
-        &client,
-        &stream,
-        &shard,
-        &bus,
-        store.as_ref(),
-        Reopen::Start,
-    )
-    .await
-    {
-        Ok(Some(iterator)) => iterator,
-        Ok(None) => return, // already at SHARD_END
-        Err(err) => {
-            let _ = out.send(Stamped::unstamped(Err(err))).await;
-            return;
-        }
-    };
+    let mut iterator =
+        match initial_iterator(client, stream, &shard, bus, store.as_ref(), Reopen::Start).await {
+            Ok(Some(iterator)) => iterator,
+            Ok(None) => return, // already at SHARD_END
+            Err(err) => {
+                let _ = out.send(Stamped::unstamped(Err(err))).await;
+                return;
+            }
+        };
     let mut last_renew = tokio::time::Instant::now();
     let mut failures: u32 = 0;
 
     loop {
         if out.is_closed() {
-            let _ = store.release(&shard, &owner).await;
+            let _ = store.release(&shard, owner).await;
             return;
         }
         // A reposition replaces the iterator and resets the watermark; deliveries stamped
         // under the previous generation are discarded by their settlements and were already
         // filtered from checkpointing by the gate bump at enqueue.
         while let Ok(seek) = seek_rx.try_recv() {
-            apply_shard_seek(&client, &stream, &shard, seek, &mut iterator, &mut tracker).await;
+            apply_shard_seek(client, stream, &shard, seek, &mut iterator, &mut tracker).await;
         }
         if last_renew.elapsed() >= RENEW_EVERY {
-            match store.renew(&shard, &owner, LEASE_TTL).await {
+            match store.renew(&shard, owner, LEASE_TTL).await {
                 Ok(true) => last_renew = tokio::time::Instant::now(),
                 // Fenced: stop immediately, without checkpointing - the new owner replays
                 // from the last checkpoint, which at-least-once permits.
@@ -721,7 +816,7 @@ async fn read_shard(
         let response = client
             .get_records()
             .shard_iterator(&iterator)
-            .limit(descriptor.batch_value())
+            .limit(limit.load(Ordering::Relaxed))
             .send()
             .await;
         match response {
@@ -748,9 +843,9 @@ async fn read_shard(
                     let settlement = Settlement {
                         tracker: Arc::clone(&tracker),
                         index: tracker.deliver(record.sequence_number()),
-                        store: Arc::clone(&store),
+                        store: Arc::clone(store),
                         shard: Arc::clone(&shard),
-                        owner: Arc::clone(&owner),
+                        owner: Arc::clone(owner),
                         epoch,
                         gate: Arc::clone(&gate),
                     };
@@ -766,7 +861,7 @@ async fn read_shard(
                         .await
                         .is_err()
                     {
-                        let _ = store.release(&shard, &owner).await;
+                        let _ = store.release(&shard, owner).await;
                         return;
                     }
                 }
@@ -778,9 +873,9 @@ async fn read_shard(
                         tokio::time::sleep(Duration::from_millis(100)).await;
                     }
                     if tracker.drained() {
-                        let _ = store.checkpoint(&shard, &owner, SHARD_END).await;
+                        let _ = store.checkpoint(&shard, owner, SHARD_END).await;
                     }
-                    let _ = store.release(&shard, &owner).await;
+                    let _ = store.release(&shard, owner).await;
                     return;
                 };
                 iterator = next.to_owned();
@@ -790,7 +885,7 @@ async fn read_shard(
                         seek = seek_rx.recv() => {
                             if let Some(seek) = seek {
                                 apply_shard_seek(
-                                    &client, &stream, &shard, seek, &mut iterator, &mut tracker,
+                                    client, stream, &shard, seek, &mut iterator, &mut tracker,
                                 )
                                 .await;
                             }
@@ -809,7 +904,7 @@ async fn read_shard(
                 if !expired
                     && out
                         .send(Stamped::unstamped(Err(KinesisError::Read {
-                            stream: stream.clone(),
+                            stream: stream.to_owned(),
                             shard: shard.to_string(),
                             source: sdk_err(&err),
                         })))
@@ -819,26 +914,19 @@ async fn read_shard(
                     return;
                 }
                 if fatal {
-                    let _ = store.release(&shard, &owner).await;
+                    let _ = store.release(&shard, owner).await;
                     return;
                 }
                 failures += 1;
                 if failures > 10 {
-                    let _ = store.release(&shard, &owner).await;
+                    let _ = store.release(&shard, owner).await;
                     return;
                 }
                 // Expired iterators are refetched from the checkpoint (never Latest, which
                 // would silently skip data); everything else backs off and retries.
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                match initial_iterator(
-                    &client,
-                    &stream,
-                    &shard,
-                    &bus,
-                    store.as_ref(),
-                    Reopen::Recover,
-                )
-                .await
+                match initial_iterator(client, stream, &shard, bus, store.as_ref(), Reopen::Recover)
+                    .await
                 {
                     Ok(Some(fresh)) => iterator = fresh,
                     Ok(None) => return,

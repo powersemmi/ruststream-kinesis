@@ -1,7 +1,8 @@
 //! The imports a service on Kinesis writes every time, in one glob.
 //!
-//! The framework's own prelude, the broker, its subscription descriptor, its positions and seeker,
-//! the delivery context with the keys that read it, and its publish policy.
+//! The framework's own prelude, the broker, its subscription descriptor and the settings that
+//! chain onto a mount site, its positions and seeker, the delivery context with the keys that
+//! read it, and its publish policy.
 //!
 //! A service writes two kinds of file, and they import different things. A handler body names
 //! only what it needs of the framework (`use ruststream::prelude::*`) and bounds an injected
@@ -14,6 +15,8 @@
 //! # Examples
 //!
 //! ```
+//! use std::time::Duration;
+//!
 //! use ruststream_kinesis::prelude::*;
 //! # #[derive(serde::Deserialize)]
 //! # struct Order { id: u64 }
@@ -23,7 +26,7 @@
 //!     HandlerOutcome::ack()
 //! }
 //!
-//! let orders = KinesisStream::new("orders").batch(500);
+//! let orders = KinesisStream::new("orders").poll_interval(Duration::from_millis(500));
 //! let broker = KinesisBroker::new();
 //! let reply_with = Publish::default();
 //! # let _ = (orders, broker, reply_with, handle);
@@ -41,5 +44,5 @@ pub use crate::context::{KinesisBatchContext, KinesisContext, Position, SeekHand
 pub use crate::dynamo::DynamoLeaseStore;
 pub use crate::message::KinesisPosition;
 pub use crate::publisher::{KinesisPublish as Publish, KinesisPublishExt};
-pub use crate::stream::KinesisStream;
+pub use crate::stream::{KinesisStream, KinesisSubscriberExt};
 pub use crate::subscriber::KinesisSeeker;

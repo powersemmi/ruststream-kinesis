@@ -21,7 +21,7 @@ Which of the framework's optional capability traits this crate implements native
 | `Subscribe` | Yes | `ConnectedKinesisBroker` resolves a string-literal stream name, so `#[subscriber("orders")]` works without a descriptor. See [Subscriptions](#subscriptions). |
 | `Seekable` + `Positioned` | Yes | `KinesisSubscriber` mints a `KinesisSeeker`, and `KinesisMessage` reports a `KinesisPosition`. Shard iterators are the service's own repositioning primitive. Handlers reach both through the delivery context. See [Positions](#positions). |
 | `Partitioned` | Yes | `KinesisMessage` exposes the record's partition key, which is the service's unit of shard routing and per-key ordering. See [Publishing](#publishing). |
-| `BatchSubscriber` | No | `GetRecords` returns batches, but the reader flattens them into one delivery stream so each record settles against the shard watermark on its own; the framework's batching layer applies unchanged, and a page body reads `KinesisBatchContext`. |
+| `BatchSubscriber` | Yes | `GetRecords` takes a record limit, and the page size a mount site names becomes it, so a read never fetches more than one page's worth. A page body reads `KinesisBatchContext`. See [Pages](#pages). |
 | `RequestReply` | No | Kinesis has no reply address and no correlation primitive; a reply would be a second stream the crate would have to invent. |
 | `TransactionalPublisher` | No | The service has no transaction. `PutRecords` is a batch whose entries fail individually, so it cannot provide atomic all-or-nothing publishing. |
 | `OwnedTransactions` | No | Same reason: there is no transaction to own. |
@@ -74,9 +74,14 @@ than a detail:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `batch(n)` | 1000 | Records per `GetRecords` call, capped at 10000. |
 | `poll_interval(d)` | 1 second | The pause between reads on an idle shard. The service allows five reads per second per shard; lower values spend that budget faster. |
 | `create_if_missing(shards)` | off | Creates the stream with that many shards when it does not exist. Meant for local development and tests; production streams are managed as infrastructure. |
+
+Both also read as a chain at the mount site, through the `KinesisSubscriberExt` trait the prelude
+carries: `b.include(digest.batch(nonzero!(500)).poll_interval(..))`. They transform the descriptor,
+so they need one to transform - `start_at(..)` replaces it with the framework's position wrapper,
+and they chain before it. A subscriber whose attribute already named a start position names them on
+the descriptor instead, which is the same two methods on the same type.
 
 Invalid descriptors are rejected before any I/O.
 
@@ -88,6 +93,29 @@ ordering across resharding.
 This release polls the shared throughput. Enhanced fan-out is a different resume machine on an
 HTTP/2 push stream with no local emulator support, and is not implemented. KPL-aggregated records
 are refused with an error rather than delivered to a handler as opaque protobuf.
+
+## Pages
+
+A handler taking a slice consumes a page, and its mount site names the page size - the one
+subscription parameter the framework carries down to a broker. On Kinesis it is the `GetRecords`
+limit every shard reader asks with, so a read never fetches more than one page's worth, and no page
+carries more records than it named:
+
+```rust
+--8<-- "crates/ruststream-kinesis/examples/kinesis_pages.rs:pages"
+```
+
+A page may carry fewer records than the size asked for, which is what happens whenever that is all
+the shards had; a page that is still filling goes out 50 ms after its first record rather than
+waiting for the rest. Records reach a page from every shard this instance owns, and each settles on
+its own against its shard's watermark, so a page body that returns one outcome per element
+checkpoints per record.
+
+The size the mount site names is also a cost decision: a small page means small reads, and the
+service allows five per second per shard. `poll_interval(..)` above is where that budget is spent.
+
+A page body reads `KinesisBatchContext` rather than `KinesisContext` - see
+[Positions](#positions).
 
 ## Leases and checkpoints
 
@@ -256,9 +284,11 @@ position it names. Deliveries carry the full delivery surface: a `KinesisPositio
 --8<-- "crates/ruststream-kinesis/tests/harness_kinesis.rs:seek_test"
 ```
 
-The stand-in passes the framework's own `Seekable` suite
-(`conformance::capabilities::seeking`) in process, which is what keeps the emulation honest: a
-handle that accepted every seek and moved nothing would fail it.
+The stand-in passes the framework's own `Seekable` and page suites
+(`conformance::capabilities::seeking` and `batches`) in process, which is what keeps the emulation
+honest: a handle that accepted every seek and moved nothing would fail the first, and pages longer
+than the size a mount site named would fail the second. It pages through the framework's own
+client-side adapter, so a page mount is the same mount here and against the service.
 
 What it still does not have is everything a server owns: it routes one shard
 (`testing::IN_PROCESS_SHARD`), so there are no leases, no checkpoint durability, no retention
@@ -270,5 +300,5 @@ just test-brokers
 ```
 
 That starts LocalStack and runs the wire and lease checks plus the framework's conformance
-lifecycle and `Seekable` suite against it, single-threaded so the runs do not observe each
+lifecycle, `Seekable` and page suites against it, single-threaded so the runs do not observe each
 other's streams.

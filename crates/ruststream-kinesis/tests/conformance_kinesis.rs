@@ -44,6 +44,20 @@ async fn kinesis_test_broker_passes_seeking_suite() {
     .await;
 }
 
+/// Pages are the one subscription parameter the framework carries down, so the size a mount
+/// site names has to be the size a page comes back at. The suite opens its subscription smaller
+/// than the run it publishes, which is what catches a broker that ignores it.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kinesis_test_broker_passes_batch_suite() {
+    capabilities::batches(
+        KinesisTestBroker::new,
+        |name| KinesisStream::new(name),
+        |connected| connected.publisher(),
+    )
+    .await;
+}
+
 // `make_source` / `make_publisher` must stay closures: their bounds are higher-ranked
 // (`Fn(&str) -> _` / `Fn(&B) -> _`), so a bare method path - which binds one concrete lifetime -
 // would not type-check.
@@ -78,6 +92,35 @@ async fn kinesis_broker_passes_seeking_suite() {
         return;
     };
     capabilities::seeking(
+        || {
+            KinesisBroker::new()
+                .endpoint(endpoint.clone())
+                .test_credentials()
+                .region("us-east-1")
+        },
+        |name| {
+            StartAt::new(
+                KinesisStream::new(name)
+                    .create_if_missing(1)
+                    .poll_interval(Duration::from_millis(200)),
+                KinesisPosition::horizon(),
+            )
+        },
+        |connected| connected.publisher(),
+    )
+    .await;
+}
+
+/// The same page contract against the service, where the size is a `GetRecords` limit rather
+/// than a client-side cap: only a server can show that the reader asks for it and that a read
+/// answering with fewer records still yields a page.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kinesis_broker_passes_batch_suite() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    capabilities::batches(
         || {
             KinesisBroker::new()
                 .endpoint(endpoint.clone())

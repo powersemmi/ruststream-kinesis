@@ -7,8 +7,6 @@
 //! handle that accepts every seek.
 #![cfg(feature = "testing")]
 
-use std::time::Duration;
-
 use ruststream::testing::TestApp;
 use ruststream_kinesis::prelude::*;
 use ruststream_kinesis::testing::KinesisTestBroker;
@@ -160,13 +158,13 @@ async fn a_page_repositions_the_subscription_through_the_batch_context() {
     seed(&broker, "pages", [1, 2, MARKER, 3, 4]).await;
 
     let app = RustStream::new(AppInfo::new("pages", "0.1.0")).with_broker(broker, |b| {
-        // Kinesis batches on the wire but settles per record, so a page comes from the
-        // framework's own buffer rather than from a `BatchSubscriber`. The start position goes
-        // on first: it is the subscription that seeks, and the buffer wraps what it yields.
+        // The page size is the one parameter the framework carries down to the broker; against
+        // the service it becomes the `GetRecords` limit, and here the stand-in pages its
+        // retained log by it.
         b.include(
             pages
                 .start_at(KinesisPosition::horizon())
-                .buffered(nonzero!(3), Duration::from_millis(50)),
+                .batch(nonzero!(3)),
         );
     });
     let tb = TestApp::start(app).await.expect("the harness starts");

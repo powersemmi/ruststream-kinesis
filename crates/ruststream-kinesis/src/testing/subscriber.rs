@@ -6,17 +6,23 @@
 //! suffix at the target. Like the real reader, the swap happens inside the subscriber's own
 //! poll, where the mutable borrow of the receiver is available, so no state is buffered between
 //! polls and the stream stays cancel-safe.
+//!
+//! Pages come from the framework's own adapter over that stream, so a page mount honours the
+//! size it names here exactly as it does against the service.
 
 use std::future::{Future, ready};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::task::Poll;
+use std::time::Duration;
 
 use bytes::Bytes;
 use futures::Stream;
 
 use ruststream::testing::Coordinator;
 use ruststream::{
-    AckError, HeaderMap, IncomingMessage, Partitioned, Positioned, Seekable, Subscriber,
+    AckError, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage, Partitioned,
+    Positioned, Seekable, Subscriber,
 };
 
 use crate::error::KinesisError;
@@ -28,11 +34,22 @@ use crate::testing::broker::TestState;
 use crate::testing::router::{Delivery, DeliveryReceiver, DeliverySender, SubscriptionId};
 use crate::testing::seek::{IN_PROCESS_SHARD, LogSeeker, SeekControl, sequence_of};
 
+/// How long a partial page waits for more deliveries before it goes out. Short, because nothing
+/// here leaves the process: it only has to outlast the fanout of a replay.
+const PAGE_FILL_WINDOW: Duration = Duration::from_millis(50);
+
 /// Subscriber returned by [`ConnectedKinesisTestBroker`](crate::testing::ConnectedKinesisTestBroker).
 ///
 /// Dropping it unregisters the subscription, so handlers stop receiving as soon as their task
 /// finishes.
 pub struct KinesisTestSubscriber {
+    address: Arc<str>,
+    deliveries: BufferedSubscriber<LogDeliveries>,
+}
+
+/// One subscription's delivery queue over the retained log: what the page adapter above pages,
+/// and what a single-message mount reads directly.
+struct LogDeliveries {
     state: Arc<TestState>,
     id: SubscriptionId,
     address: Arc<str>,
@@ -55,8 +72,26 @@ impl std::fmt::Debug for KinesisTestSubscriber {
     }
 }
 
+impl std::fmt::Debug for LogDeliveries {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LogDeliveries")
+            .field("address", &self.address)
+            .finish_non_exhaustive()
+    }
+}
+
 impl KinesisTestSubscriber {
     pub(crate) fn new(state: Arc<TestState>, address: &str) -> Self {
+        Self {
+            address: Arc::from(address),
+            deliveries: BufferedSubscriber::new(LogDeliveries::new(state, address))
+                .max_wait(PAGE_FILL_WINDOW),
+        }
+    }
+}
+
+impl LogDeliveries {
+    fn new(state: Arc<TestState>, address: &str) -> Self {
         let registration = state.router.subscribe(address.to_owned());
         let address: Arc<str> = Arc::from(address);
         let seeker = KinesisSeeker::in_process(LogSeeker::new(
@@ -108,7 +143,7 @@ impl KinesisTestSubscriber {
     }
 }
 
-impl Drop for KinesisTestSubscriber {
+impl Drop for LogDeliveries {
     fn drop(&mut self) {
         self.state.router.unsubscribe(self.id);
     }
@@ -116,7 +151,7 @@ impl Drop for KinesisTestSubscriber {
 
 /// Seeking is native to the stand-in: the router keeps an append-only log per stream, so a
 /// subscription can re-read any suffix of it.
-impl Seekable for KinesisTestSubscriber {
+impl Seekable for LogDeliveries {
     type Seeker = KinesisSeeker;
 
     fn seeker(&self) -> KinesisSeeker {
@@ -124,7 +159,7 @@ impl Seekable for KinesisTestSubscriber {
     }
 }
 
-impl Subscriber for KinesisTestSubscriber {
+impl Subscriber for LogDeliveries {
     type Message = KinesisTestMessage;
     type Error = KinesisError;
 
@@ -162,6 +197,40 @@ impl Subscriber for KinesisTestSubscriber {
                 }
             }
         })
+    }
+}
+
+/// Repositioning reaches through the page buffer, so a page mount seeks exactly as a
+/// single-message one does.
+impl Seekable for KinesisTestSubscriber {
+    type Seeker = KinesisSeeker;
+
+    fn seeker(&self) -> KinesisSeeker {
+        Seekable::seeker(&self.deliveries)
+    }
+}
+
+impl Subscriber for KinesisTestSubscriber {
+    type Message = KinesisTestMessage;
+    type Error = KinesisError;
+
+    fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
+        self.deliveries.stream()
+    }
+}
+
+/// The stand-in pages the way a broker without pages of its own does: through the framework's
+/// adapter, which honours the size the mount site named and closes a partial page 50 ms after
+/// its first delivery. Nothing about a mount says which of the two a broker did, which is why a
+/// page handler runs here and against the service unchanged.
+impl BatchSubscriber for KinesisTestSubscriber {
+    type Batch = Vec<KinesisTestMessage>;
+
+    fn batches(
+        &mut self,
+        size: NonZeroUsize,
+    ) -> impl Stream<Item = Result<Self::Batch, KinesisError>> + Send + '_ {
+        self.deliveries.batches(size)
     }
 }
 
