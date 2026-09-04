@@ -1,8 +1,12 @@
 //! Conformance: the routing suite against the in-process transport, and the lifecycle check
 //! against a local stack (gated behind `KINESIS_TEST_ENDPOINT`).
 //!
-//! Start one with `just brokers-up`, then:
-//! `KINESIS_TEST_ENDPOINT=http://127.0.0.1:4566 cargo test --all-features`.
+//! `just test-brokers` runs them against a stack it starts and removes. Driving them by hand
+//! (`just brokers-up`, then `KINESIS_TEST_ENDPOINT=http://127.0.0.1:4566 cargo test
+//! --all-features`) works once per stack: the framework's suites publish under fixed subjects,
+//! and a Kinesis stream retains what an earlier run wrote, so a second run against the same
+//! container replays the first one's records into it. The recipe removes the volume between
+//! runs for that reason.
 
 #![cfg(feature = "testing")]
 
