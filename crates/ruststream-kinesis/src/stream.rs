@@ -13,7 +13,7 @@ use std::time::Duration;
 use std::future::{Future, ready};
 
 use ruststream::SubscriptionSource;
-use ruststream::runtime::{Declared, SubscriberBuilder, SubscriberSettings};
+use ruststream::runtime::{Declared, IntoSource, SubscriberBuilder, SubscriberSettings};
 
 use crate::broker::ConnectedKinesisBroker;
 use crate::error::KinesisError;
@@ -26,15 +26,34 @@ use crate::subscriber::KinesisSubscriber;
 /// [`KinesisPosition`](crate::KinesisPosition).
 ///
 /// Implements [`SubscriptionSource`], so it can sit inline in the `#[subscriber(..)]`
-/// decorator:
+/// decorator, and [`IntoSource`], so the manual path's
+/// [`subscriber`](ruststream::runtime::subscriber) constructor names a stream with it too:
 ///
 /// ```
 /// use std::time::Duration;
 ///
+/// use ruststream::prelude::*;
 /// use ruststream_kinesis::KinesisStream;
+/// # #[derive(serde::Deserialize)]
+/// # struct Order { id: u64 }
+///
+/// struct Audit;
+///
+/// impl Handle<Order> for Audit {
+///     async fn handle(
+///         &self,
+///         order: &Order,
+///         _outs: &(),
+///         _ctx: &mut Context<'_>,
+///     ) -> Result<(), HandlerOutcome> {
+///         println!("order {}", order.id);
+///         Ok(())
+///     }
+/// }
 ///
 /// let source = KinesisStream::new("orders").poll_interval(Duration::from_millis(500));
-/// # let _ = source;
+/// let mountable = subscriber(source, Audit).build();
+/// # let _ = mountable;
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use]
@@ -155,6 +174,17 @@ where
 
     fn create_if_missing(self, shards: i32) -> Self {
         self.map_source(|source| source.create_if_missing(shards))
+    }
+}
+
+/// The manual path's constructor takes a subject string or a source, and this is what makes the
+/// crate's own descriptor the second: a service without the `macros` feature names its stream,
+/// and the settings that price a read, exactly as an attribute one does.
+impl IntoSource for KinesisStream {
+    type Source = Self;
+
+    fn into_source(self) -> Self {
+        self
     }
 }
 

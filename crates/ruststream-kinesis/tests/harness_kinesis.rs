@@ -7,6 +7,8 @@
 //! handle that accepts every seek.
 #![cfg(feature = "testing")]
 
+use std::future::{Future, ready};
+
 use ruststream::testing::TestApp;
 use ruststream_kinesis::prelude::*;
 use ruststream_kinesis::testing::KinesisTestBroker;
@@ -72,6 +74,22 @@ async fn batches(batch: &[Job], ctx: &mut Context<'_, KinesisBatchContext>) -> H
     HandlerOutcome::ack()
 }
 
+/// The manual path's body: the same handler a service without the `macros` feature writes.
+/// Nothing here awaits, so it is spelled as the plain `fn` the trait declares rather than an
+/// `async fn` the compiler would have to build a state machine for.
+struct Ledger;
+
+impl Handle<Job> for Ledger {
+    fn handle(
+        &self,
+        _entry: &Job,
+        _outs: &(),
+        _ctx: &mut Context<'_>,
+    ) -> impl Future<Output = Result<(), HandlerOutcome>> + Send {
+        ready(Ok(()))
+    }
+}
+
 /// Seeds a stream's retained log before the service exists, the way an external producer would.
 async fn seed(broker: &KinesisTestBroker, stream: &str, ids: impl IntoIterator<Item = u64>) {
     let ingress = broker.publisher();
@@ -121,6 +139,35 @@ async fn a_handler_repositions_its_own_subscription_through_the_seek_handle() {
     tb.shutdown().await.expect("the harness shuts down");
 }
 // --8<-- [end:seek_test]
+
+/// The descriptor is the crate's one way to name a stream, so it has to reach the manual path
+/// too: a service without the `macros` feature hands it to the `subscriber(..)` constructor and
+/// gets the same subscription the attribute would have mounted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_descriptor_names_a_stream_on_the_manual_path() {
+    let app = RustStream::new(AppInfo::new("ledger", "0.1.0")).with_broker(
+        KinesisTestBroker::new(),
+        |b| {
+            b.include(subscriber(KinesisStream::new("ledger"), Ledger).build());
+        },
+    );
+    let tb = TestApp::start(app).await.expect("the harness starts");
+
+    let broker = tb.broker::<KinesisTestBroker>();
+    broker
+        .message(&Job { id: 1 })
+        .to("ledger")
+        .publish()
+        .await
+        .expect("the publish succeeds");
+
+    broker
+        .subscriber("ledger")
+        .assert_called_once()
+        .settled(HandlerOutcome::ack());
+
+    tb.shutdown().await.expect("the harness shuts down");
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_position_key_names_the_record_the_delivery_headers_name() {
