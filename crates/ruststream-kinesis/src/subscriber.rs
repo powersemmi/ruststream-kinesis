@@ -37,14 +37,14 @@ const RENEW_EVERY: Duration = Duration::from_secs(3);
 /// How many deliveries may sit between the readers and the consumer.
 const CHANNEL_CAPACITY: usize = 64;
 /// Records one `GetRecords` call asks for while the subscription delivers single messages. A
-/// page subscription replaces it with the size its mount site named.
+/// batch subscription replaces it with the size its mount site named.
 const DEFAULT_READ_LIMIT: i32 = 1000;
 /// The service's own cap on one read.
 const MAX_READ_LIMIT: i32 = 10_000;
-/// How long a partial page waits for more records before it goes out. Chosen once here because
+/// How long a partial batch waits for more records before it goes out. Chosen once here because
 /// the size is the mount site's and the deadline is the broker's; it is short next to the
 /// second the reader waits between reads of an idle shard.
-const PAGE_FILL_WINDOW: Duration = Duration::from_millis(50);
+const BATCH_FILL_WINDOW: Duration = Duration::from_millis(50);
 
 /// A position every shard of the subscription can open at: the stream-wide half of
 /// [`KinesisPosition`]. Kept apart from the shard-scoped forms so that "install this for the
@@ -154,17 +154,17 @@ impl Stamped {
 /// A subscription to one Kinesis stream; yields [`KinesisMessage`]s from every owned shard.
 ///
 /// Deliveries arrive one record at a time, because acknowledgement is a per-record checkpoint
-/// against the shard's watermark, and a page mount groups them: the size the mount site named
+/// against the shard's watermark, and a batch mount groups them: the size the mount site named
 /// becomes the `GetRecords` limit every reader asks with, so a read never fetches more than one
-/// page's worth, and the page itself is closed by that size or, when the shards had less to
+/// batch's worth, and the batch itself is closed by that size or, when the shards had less to
 /// give, 50 ms after its first record.
 ///
 /// Dropping the subscriber stops the coordinator and every reader; unsettled records
 /// redeliver from the last checkpoint when the leases are next taken.
 pub struct KinesisSubscriber {
     stream: String,
-    /// The live `GetRecords` limit, shared with every reader. This is how the mount site's page
-    /// size reaches the wire: [`BatchSubscriber::batches`] stores it before the first page.
+    /// The live `GetRecords` limit, shared with every reader. This is how the mount site's batch
+    /// size reaches the wire: [`BatchSubscriber::batches`] stores it before the first batch.
     limit: Arc<AtomicI32>,
     deliveries: BufferedSubscriber<ShardDeliveries>,
 }
@@ -202,15 +202,15 @@ impl KinesisSubscriber {
             stream,
             limit,
             deliveries: BufferedSubscriber::new(ShardDeliveries { rx, bus })
-                .max_wait(PAGE_FILL_WINDOW),
+                .max_wait(BATCH_FILL_WINDOW),
         }
     }
 }
 
 /// The subscription's raw delivery stream: the one channel every owned shard's reader feeds.
 ///
-/// Kept apart from [`KinesisSubscriber`] so the framework's page adapter can wrap it - the
-/// adapter owns what it pages, and the public subscriber keeps its name and its stream-wide
+/// Kept apart from [`KinesisSubscriber`] so the framework's batch adapter can wrap it - the
+/// adapter owns what it groups, and the public subscriber keeps its name and its stream-wide
 /// surface.
 struct ShardDeliveries {
     rx: mpsc::Receiver<Stamped>,
@@ -223,10 +223,10 @@ impl std::fmt::Debug for ShardDeliveries {
     }
 }
 
-/// The mount site's page size as a `GetRecords` limit.
+/// The mount site's batch size as a `GetRecords` limit.
 ///
-/// The service caps one read at 10000 records, so a larger page is filled from several reads or
-/// closes short when [`PAGE_FILL_WINDOW`] elapses: a page carrying fewer records than the size
+/// The service caps one read at 10000 records, so a larger batch is filled from several reads or
+/// closes short when [`BATCH_FILL_WINDOW`] elapses: a batch carrying fewer records than the size
 /// asked for is what the contract permits, one carrying more is not.
 fn read_limit(size: NonZeroUsize) -> i32 {
     i32::try_from(size.get())
@@ -423,7 +423,7 @@ impl Subscriber for ShardDeliveries {
     }
 }
 
-/// Repositioning reaches through the page buffer to the readers, so a page subscription opens
+/// Repositioning reaches through the batch buffer to the readers, so a batch subscription opens
 /// at a chosen position and repositions from a handler exactly as a single-message one does.
 impl ruststream::Seekable for KinesisSubscriber {
     type Seeker = KinesisSeeker;
@@ -447,16 +447,16 @@ impl BatchSubscriber for KinesisSubscriber {
 
     /// # Cancel safety
     ///
-    /// Cancel-safe between polls: a page being filled lives inside the returned stream and
-    /// survives a cancelled poll. Dropping the stream abandons that page's records unsettled,
+    /// Cancel-safe between polls: a batch being filled lives inside the returned stream and
+    /// survives a cancelled poll. Dropping the stream abandons that batch's records unsettled,
     /// so the shard replays them from its checkpoint when its lease is next taken.
     fn batches(
         &mut self,
         size: NonZeroUsize,
     ) -> impl Stream<Item = Result<Self::Batch, KinesisError>> + Send + '_ {
-        // The page size is the read limit: from the readers' next call on, one read fetches at
-        // most one page's worth. A read already in flight under the previous limit can still
-        // return more, which is why the page itself is capped below rather than here.
+        // The batch size is the read limit: from the readers' next call on, one read fetches at
+        // most one batch's worth. A read already in flight under the previous limit can still
+        // return more, which is why the batch itself is capped below rather than here.
         self.limit.store(read_limit(size), Ordering::Relaxed);
         self.deliveries.batches(size)
     }
@@ -905,7 +905,7 @@ async fn read_shard(
                 // the iterator is still good, so the reader waits and reuses it. Reporting it
                 // would put an error in front of a handler that did nothing wrong, and the
                 // recovery below would rewind the shard to its checkpoint and redeliver
-                // everything since. A page smaller than a read's natural size makes this the
+                // everything since. A batch smaller than a read's natural size makes this the
                 // common answer to a backlog, so it must not cost either.
                 if err
                     .as_service_error()

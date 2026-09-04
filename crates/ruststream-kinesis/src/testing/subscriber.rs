@@ -7,7 +7,7 @@
 //! poll, where the mutable borrow of the receiver is available, so no state is buffered between
 //! polls and the stream stays cancel-safe.
 //!
-//! Pages come from the framework's own adapter over that stream, so a page mount honours the
+//! Batches come from the framework's own adapter over that stream, so a batch mount honours the
 //! size it names here exactly as it does against the service.
 
 use std::future::{Future, ready};
@@ -34,9 +34,9 @@ use crate::testing::broker::TestState;
 use crate::testing::router::{Delivery, DeliveryReceiver, DeliverySender, SubscriptionId};
 use crate::testing::seek::{IN_PROCESS_SHARD, LogSeeker, SeekControl, sequence_of};
 
-/// How long a partial page waits for more deliveries before it goes out. Short, because nothing
+/// How long a partial batch waits for more deliveries before it goes out. Short, because nothing
 /// here leaves the process: it only has to outlast the fanout of a replay.
-const PAGE_FILL_WINDOW: Duration = Duration::from_millis(50);
+const BATCH_FILL_WINDOW: Duration = Duration::from_millis(50);
 
 /// Subscriber returned by [`ConnectedKinesisTestBroker`](crate::testing::ConnectedKinesisTestBroker).
 ///
@@ -47,7 +47,7 @@ pub struct KinesisTestSubscriber {
     deliveries: BufferedSubscriber<LogDeliveries>,
 }
 
-/// One subscription's delivery queue over the retained log: what the page adapter above pages,
+/// One subscription's delivery queue over the retained log: what the batch adapter above groups,
 /// and what a single-message mount reads directly.
 struct LogDeliveries {
     state: Arc<TestState>,
@@ -85,7 +85,7 @@ impl KinesisTestSubscriber {
         Self {
             address: Arc::from(address),
             deliveries: BufferedSubscriber::new(LogDeliveries::new(state, address))
-                .max_wait(PAGE_FILL_WINDOW),
+                .max_wait(BATCH_FILL_WINDOW),
         }
     }
 }
@@ -200,7 +200,7 @@ impl Subscriber for LogDeliveries {
     }
 }
 
-/// Repositioning reaches through the page buffer, so a page mount seeks exactly as a
+/// Repositioning reaches through the batch buffer, so a batch mount seeks exactly as a
 /// single-message one does.
 impl Seekable for KinesisTestSubscriber {
     type Seeker = KinesisSeeker;
@@ -219,10 +219,10 @@ impl Subscriber for KinesisTestSubscriber {
     }
 }
 
-/// The stand-in pages the way a broker without pages of its own does: through the framework's
-/// adapter, which honours the size the mount site named and closes a partial page 50 ms after
+/// The stand-in groups the way a broker without batches of its own does: through the framework's
+/// adapter, which honours the size the mount site named and closes a partial batch 50 ms after
 /// its first delivery. Nothing about a mount says which of the two a broker did, which is why a
-/// page handler runs here and against the service unchanged.
+/// batch handler runs here and against the service unchanged.
 impl BatchSubscriber for KinesisTestSubscriber {
     type Batch = Vec<KinesisTestMessage>;
 
@@ -287,7 +287,7 @@ impl KinesisTestMessage {
         let shard: Arc<str> = Arc::from(IN_PROCESS_SHARD);
         // The same delivery contract the reader gives a record: the envelope is unwrapped, the
         // publish headers ride on top of whatever it carried, and the position is surfaced as
-        // headers so a page body can read it off the elements.
+        // headers so a batch body can read it off the elements.
         let (mut headers, payload) = decode_envelope(&delivery.payload);
         for (name, value) in delivery.headers.iter() {
             headers.insert(name, value.to_vec());

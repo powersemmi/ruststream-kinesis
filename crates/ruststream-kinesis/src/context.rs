@@ -2,7 +2,7 @@
 //!
 //! Kinesis is a repositionable log, so a handler may want two things the payload does not carry:
 //! where this record sits, and the handle that moves the subscription. Both ride the framework's
-//! typed context - [`KinesisContext`] per delivery, [`KinesisBatchContext`] per page - and are
+//! typed context - [`KinesisContext`] per delivery, [`KinesisBatchContext`] per batch - and are
 //! read by the compile-time keys [`Position`] and [`SeekHandle`], so a key this broker does not
 //! carry is a compile error rather than a lookup that finds nothing.
 
@@ -82,13 +82,13 @@ impl BuildContext<crate::testing::KinesisTestMessage> for KinesisContext {
     }
 }
 
-/// This broker's page context: the subscription's reposition handle, shared by every record of
-/// the page.
+/// This broker's batch context: the subscription's reposition handle, shared by every record of
+/// the batch.
 ///
-/// A page spans many records, so there is no single position to report here - a body that reacts
+/// A batch spans many records, so there is no single position to report here - a body that reacts
 /// to one reads it off the elements (the `kinesis-sequence-number` and `kinesis-shard-id`
 /// headers each record carries). Keeping this a type of its own is what makes that hold at
-/// compile time: [`KinesisContext`] does not build per page, so a page body cannot ask for
+/// compile time: [`KinesisContext`] does not build per batch, so a batch body cannot ask for
 /// per-delivery fields.
 ///
 /// # Examples
@@ -105,19 +105,19 @@ impl BuildContext<crate::testing::KinesisTestMessage> for KinesisContext {
 /// impl Handle<[Job], (), (), KinesisBatchContext> for Replayer {
 ///     async fn handle(
 ///         &self,
-///         page: &[Job],
+///         batch: &[Job],
 ///         _outs: &(),
 ///         ctx: &mut Context<'_, KinesisBatchContext>,
 ///     ) -> Result<(), Vec<HandlerOutcome>> {
-///         // A page carrying the rewind marker moves the whole subscription once it settles.
-///         if page.iter().any(|job| job.id == u64::MAX)
+///         // A batch carrying the rewind marker moves the whole subscription once it settles.
+///         if batch.iter().any(|job| job.id == u64::MAX)
 ///             && ctx
 ///                 .context(SeekHandle)
 ///                 .seek(KinesisPosition::horizon())
 ///                 .await
 ///                 .is_err()
 ///         {
-///             return Err(page.iter().map(|_| HandlerOutcome::retry()).collect());
+///             return Err(batch.iter().map(|_| HandlerOutcome::retry()).collect());
 ///         }
 ///         Ok(())
 ///     }
@@ -136,7 +136,7 @@ impl BuildBatchContext<KinesisMessage> for KinesisBatchContext {
     }
 }
 
-/// The in-process counterpart, so a page body that repositions is unit-testable too.
+/// The in-process counterpart, so a batch body that repositions is unit-testable too.
 #[cfg(feature = "testing")]
 impl BuildBatchContext<crate::testing::KinesisTestMessage> for KinesisBatchContext {
     fn build(first: &crate::testing::KinesisTestMessage) -> Self {

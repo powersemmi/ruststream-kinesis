@@ -44,9 +44,9 @@ async fn kinesis_test_broker_passes_seeking_suite() {
     .await;
 }
 
-/// Pages are the one subscription parameter the framework carries down, so the size a mount
-/// site names has to be the size a page comes back at. The suite opens its subscription smaller
-/// than the run it publishes, which is what catches a broker that ignores it.
+/// The batch size is the one subscription parameter the framework carries down, so the size a
+/// mount site names has to be the size a batch comes back at. The suite opens its subscription
+/// smaller than the run it publishes, which is what catches a broker that ignores it.
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn kinesis_test_broker_passes_batch_suite() {
@@ -111,9 +111,9 @@ async fn kinesis_broker_passes_seeking_suite() {
     .await;
 }
 
-/// The same page contract against the service, where the size is a `GetRecords` limit rather
+/// The same batch contract against the service, where the size is a `GetRecords` limit rather
 /// than a client-side cap: only a server can show that the reader asks for it and that a read
-/// answering with fewer records still yields a page.
+/// answering with fewer records still yields a batch.
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn kinesis_broker_passes_batch_suite() {

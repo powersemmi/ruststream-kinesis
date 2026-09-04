@@ -1,7 +1,7 @@
 //! [`KinesisStream`]: the subscription descriptor, and the mount-site settings over it.
 //!
 //! The consumer model decides both cost and latency, so it is explicit on the descriptor.
-//! What it does not carry is how many records a delivered page holds: that is the framework's
+//! What it does not carry is how many records a delivered batch holds: that is the framework's
 //! `batch(n)`, which reaches the reader as the `GetRecords` limit. Where the subscription
 //! starts is not part of it either - that vocabulary is
 //! [`KinesisPosition`](crate::KinesisPosition), spoken through the framework's `start_at(..)`
@@ -103,7 +103,7 @@ impl KinesisStream {
 
 /// The Kinesis subscription settings, chained on a mount site after the framework's own.
 ///
-/// The framework carries one subscription parameter down to a broker - the page size, named
+/// The framework carries one subscription parameter down to a broker - the batch size, named
 /// with `batch(n)` - and leaves every other knob to the broker's own vocabulary. These are this
 /// crate's, and they read as a chain after it:
 ///
@@ -115,8 +115,8 @@ impl KinesisStream {
 /// # struct Job { id: u64 }
 ///
 /// #[subscriber(KinesisStream::new("jobs"))]
-/// async fn work(page: &[Job]) -> Vec<HandlerOutcome> {
-///     page.iter().map(|_| HandlerOutcome::ack()).collect()
+/// async fn work(batch: &[Job]) -> Vec<HandlerOutcome> {
+///     batch.iter().map(|_| HandlerOutcome::ack()).collect()
 /// }
 ///
 /// # fn wire() {

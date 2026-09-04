@@ -2,7 +2,7 @@
 //!
 //! What lives here is what only a server can answer: the wire the crate writes and reads back,
 //! and the shard-lease and checkpoint semantics behind acknowledgement. Handler behaviour -
-//! delivery contexts, repositioning from a handler, page bodies - is a service-level concern and
+//! delivery contexts, repositioning from a handler, batch bodies - is a service-level concern and
 //! is covered on the framework's harness in `harness_kinesis.rs`; the `Seekable` contract itself
 //! is covered by the framework's own suite in `conformance_kinesis.rs`, in process and against
 //! this stack.

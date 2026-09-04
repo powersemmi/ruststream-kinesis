@@ -35,7 +35,7 @@ async fn work(job: &Job, Ctx(seeker): Ctx<SeekHandle>) -> HandlerOutcome {
 // --8<-- [end:seek_handler]
 
 /// The position key and the delivery headers must name the same record. That is the contract a
-/// page body leans on, because a page has no position of its own and reads it off the elements
+/// batch body leans on, because a batch has no position of its own and reads it off the elements
 /// instead; a handler can check it and settle by the answer.
 #[subscriber(KinesisStream::new("audit"))]
 async fn audit(
@@ -56,11 +56,11 @@ async fn audit(
     }
 }
 
-/// A page repositions the whole subscription once it is settled. The handle rides the page
-/// context, which carries no position - a page spans many records.
-#[subscriber(KinesisStream::new("pages"))]
-async fn pages(page: &[Job], ctx: &mut Context<'_, KinesisBatchContext>) -> HandlerOutcome {
-    if page.iter().any(|job| job.id == MARKER)
+/// A batch repositions the whole subscription once it is settled. The handle rides the batch
+/// context, which carries no position - a batch spans many records.
+#[subscriber(KinesisStream::new("batches"))]
+async fn batches(batch: &[Job], ctx: &mut Context<'_, KinesisBatchContext>) -> HandlerOutcome {
+    if batch.iter().any(|job| job.id == MARKER)
         && ctx
             .context(SeekHandle)
             .seek(KinesisPosition::latest())
@@ -153,16 +153,16 @@ async fn the_position_key_names_the_record_the_delivery_headers_name() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_page_repositions_the_subscription_through_the_batch_context() {
+async fn a_batch_repositions_the_subscription_through_the_batch_context() {
     let broker = KinesisTestBroker::new();
-    seed(&broker, "pages", [1, 2, MARKER, 3, 4]).await;
+    seed(&broker, "batches", [1, 2, MARKER, 3, 4]).await;
 
-    let app = RustStream::new(AppInfo::new("pages", "0.1.0")).with_broker(broker, |b| {
-        // The page size is the one parameter the framework carries down to the broker; against
-        // the service it becomes the `GetRecords` limit, and here the stand-in pages its
+    let app = RustStream::new(AppInfo::new("batches", "0.1.0")).with_broker(broker, |b| {
+        // The batch size is the one parameter the framework carries down to the broker; against
+        // the service it becomes the `GetRecords` limit, and here the stand-in groups its
         // retained log by it.
         b.include(
-            pages
+            batches
                 .start_at(KinesisPosition::horizon())
                 .batch(nonzero!(3)),
         );
@@ -172,26 +172,26 @@ async fn a_page_repositions_the_subscription_through_the_batch_context() {
 
     tb.broker::<KinesisTestBroker>()
         .message(&Job { id: 5 })
-        .to("pages")
+        .to("batches")
         .publish()
         .await
         .expect("the publish succeeds");
 
     let handler = tb.broker::<KinesisTestBroker>();
     assert_eq!(
-        handler.subscriber("pages").received::<Job>(),
+        handler.subscriber("batches").received::<Job>(),
         vec![
             Job { id: 1 },
             Job { id: 2 },
             Job { id: MARKER },
             Job { id: 5 },
         ],
-        "the page's seek must drop the records queued behind it",
+        "the batch's seek must drop the records queued behind it",
     );
-    // Two pages: the backlog page that carried the marker, and the one record published after
+    // Two batches: the backlog batch that carried the marker, and the one record published after
     // the subscription followed the tip.
     handler
-        .subscriber("pages")
+        .subscriber("batches")
         .assert_called(2)
         .settled(HandlerOutcome::ack());
 

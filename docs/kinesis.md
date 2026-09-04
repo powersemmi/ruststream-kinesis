@@ -21,7 +21,7 @@ Which of the framework's optional capability traits this crate implements native
 | `Subscribe` | Yes | `ConnectedKinesisBroker` resolves a string-literal stream name, so `#[subscriber("orders")]` works without a descriptor. See [Subscriptions](#subscriptions). |
 | `Seekable` + `Positioned` | Yes | `KinesisSubscriber` mints a `KinesisSeeker`, and `KinesisMessage` reports a `KinesisPosition`. Shard iterators are the service's own repositioning primitive. Handlers reach both through the delivery context. See [Positions](#positions). |
 | `Partitioned` | Yes | `KinesisMessage` exposes the record's partition key, which is the service's unit of shard routing and per-key ordering. See [Publishing](#publishing). |
-| `BatchSubscriber` | Yes | `GetRecords` takes a record limit, and the page size a mount site names becomes it, so a read never fetches more than one page's worth. A page body reads `KinesisBatchContext`. See [Pages](#pages). |
+| `BatchSubscriber` | Yes | `GetRecords` takes a record limit, and the batch size a mount site names becomes it, so a read never fetches more than one batch's worth. A batch body reads `KinesisBatchContext`. See [Batches](#batches). |
 | `RequestReply` | No | Kinesis has no reply address and no correlation primitive; a reply would be a second stream the crate would have to invent. |
 | `TransactionalPublisher` | No | The service has no transaction. `PutRecords` is a batch whose entries fail individually, so it cannot provide atomic all-or-nothing publishing. |
 | `OwnedTransactions` | No | Same reason: there is no transaction to own. |
@@ -94,29 +94,29 @@ This release polls the shared throughput. Enhanced fan-out is a different resume
 HTTP/2 push stream with no local emulator support, and is not implemented. KPL-aggregated records
 are refused with an error rather than delivered to a handler as opaque protobuf.
 
-## Pages
+## Batches
 
-A handler taking a slice consumes a page, and its mount site names the page size - the one
+A handler taking a slice consumes a batch, and its mount site names the batch size - the one
 subscription parameter the framework carries down to a broker. On Kinesis it is the `GetRecords`
-limit every shard reader asks with, so a read never fetches more than one page's worth, and no page
-carries more records than it named:
+limit every shard reader asks with, so a read never fetches more than one batch's worth, and no
+batch carries more records than it named:
 
 ```rust
---8<-- "crates/ruststream-kinesis/examples/kinesis_pages.rs:pages"
+--8<-- "crates/ruststream-kinesis/examples/kinesis_batches.rs:batches"
 ```
 
-A page may carry fewer records than the size asked for, which is what happens whenever that is all
-the shards had; a page that is still filling goes out 50 ms after its first record rather than
-waiting for the rest. Records reach a page from every shard this instance owns, and each settles on
-its own against its shard's watermark, so a page body that returns one outcome per element
+A batch may carry fewer records than the size asked for, which is what happens whenever that is all
+the shards had; a batch that is still filling goes out 50 ms after its first record rather than
+waiting for the rest. Records reach a batch from every shard this instance owns, and each settles on
+its own against its shard's watermark, so a batch body that returns one outcome per element
 checkpoints per record.
 
-The size the mount site names is also a cost decision: a small page means small reads, and the
+The size the mount site names is also a cost decision: a small batch means small reads, and the
 service allows five per second per shard. `poll_interval(..)` above is where that budget is spent,
 and a read the service throttles is not a delivery failure - the reader waits that interval and
 reads again from where it was, so a handler sees a pause rather than an error.
 
-A page body reads `KinesisBatchContext` rather than `KinesisContext` - see
+A batch body reads `KinesisBatchContext` rather than `KinesisContext` - see
 [Positions](#positions).
 
 ## Leases and checkpoints
@@ -187,9 +187,9 @@ handler parameter:
 ```
 
 `Ctx<Position>` binds the record's own pinned position the same way, and a handler that wants both
-names `KinesisContext` as its context type and reads the keys with `ctx.context(..)`. Page handlers
+names `KinesisContext` as its context type and reads the keys with `ctx.context(..)`. Batch handlers
 get `KinesisBatchContext` instead: it carries the same `SeekHandle`, because a seek is
-subscription-scoped, and no position, because a page spans many records - one that reacts to a
+subscription-scoped, and no position, because a batch spans many records - one that reacts to a
 position reads it off the elements' `kinesis-sequence-number` and `kinesis-shard-id` headers.
 
 Repositioning drops the watermark bookkeeping of every shard it moves, so an acknowledgement of a
@@ -286,11 +286,11 @@ position it names. Deliveries carry the full delivery surface: a `KinesisPositio
 --8<-- "crates/ruststream-kinesis/tests/harness_kinesis.rs:seek_test"
 ```
 
-The stand-in passes the framework's own `Seekable` and page suites
+The stand-in passes the framework's own `Seekable` and batch suites
 (`conformance::capabilities::seeking` and `batches`) in process, which is what keeps the emulation
-honest: a handle that accepted every seek and moved nothing would fail the first, and pages longer
-than the size a mount site named would fail the second. It pages through the framework's own
-client-side adapter, so a page mount is the same mount here and against the service.
+honest: a handle that accepted every seek and moved nothing would fail the first, and batches longer
+than the size a mount site named would fail the second. It groups through the framework's own
+client-side adapter, so a batch mount is the same mount here and against the service.
 
 What it still does not have is everything a server owns: it routes one shard
 (`testing::IN_PROCESS_SHARD`), so there are no leases, no checkpoint durability, no retention
@@ -302,5 +302,5 @@ just test-brokers
 ```
 
 That starts LocalStack and runs the wire and lease checks plus the framework's conformance
-lifecycle, `Seekable` and page suites against it, single-threaded so the runs do not observe each
+lifecycle, `Seekable` and batch suites against it, single-threaded so the runs do not observe each
 other's streams.
