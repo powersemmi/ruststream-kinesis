@@ -11,8 +11,8 @@ use std::future::{Future, ready};
 
 use ruststream::testing::TestApp;
 use ruststream_kinesis::prelude::*;
-use ruststream_kinesis::testing::KinesisTestBroker;
-use ruststream_kinesis::{SEQUENCE_HEADER, SHARD_HEADER};
+use ruststream_kinesis::testing::{KinesisTestBroker, KinesisTestPublish};
+use ruststream_kinesis::{PARTITION_KEY_HEADER, SEQUENCE_HEADER, SHARD_HEADER};
 use serde::{Deserialize, Serialize};
 
 /// The id a producer uses to ask a consumer to abandon the rest of the retained backlog.
@@ -72,6 +72,13 @@ async fn batches(batch: &[Job], ctx: &mut Context<'_, KinesisBatchContext>) -> H
         return HandlerOutcome::retry();
     }
     HandlerOutcome::ack()
+}
+
+/// Replies on a second stream. The reply publisher is paired from a policy, so a service never
+/// holds it and the mount site is the only place its partition key can be named.
+#[subscriber(KinesisStream::new("orders"), publish("receipts"))]
+async fn confirm(order: &Job) -> Job {
+    Job { id: order.id }
 }
 
 /// The manual path's body: the same handler a service without the `macros` feature writes.
@@ -139,6 +146,36 @@ async fn a_handler_repositions_its_own_subscription_through_the_seek_handle() {
     tb.shutdown().await.expect("the harness shuts down");
 }
 // --8<-- [end:seek_test]
+
+/// The partition key decides the shard, and a reply that needs per-key ordering needs one. The
+/// mount site names it on the policy, and the record has to come out carrying it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_mount_site_names_the_partition_key_of_a_reply() {
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+        KinesisTestBroker::new(),
+        |b| {
+            b.include(confirm)
+                .out(Reply, KinesisTestPublish::default())
+                .partition_key("tenant-acme");
+        },
+    );
+    let tb = TestApp::start(app).await.expect("the harness starts");
+
+    let broker = tb.broker::<KinesisTestBroker>();
+    broker
+        .message(&Job { id: 1 })
+        .to("orders")
+        .publish()
+        .await
+        .expect("the publish succeeds");
+
+    broker
+        .published::<Job>("receipts")
+        .assert_called_once()
+        .with_header(PARTITION_KEY_HEADER, "tenant-acme");
+
+    tb.shutdown().await.expect("the harness shuts down");
+}
 
 /// The descriptor is the crate's one way to name a stream, so it has to reach the manual path
 /// too: a service without the `macros` feature hands it to the `subscriber(..)` constructor and

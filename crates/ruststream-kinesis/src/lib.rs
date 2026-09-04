@@ -29,7 +29,9 @@
 //!   protobuf.
 //! - Publishing rides the framework's builder, entered with `message(..)` on any publisher.
 //!   The record's partition key is a step in front of it,
-//!   [`with_partition_key`](KinesisPublishExt::with_partition_key).
+//!   [`with_partition_key`](KinesisPublishExt::with_partition_key), or - for the publishers a
+//!   service never holds, a handler's reply and its injected slots - a mount-site setting on
+//!   the policy, [`partition_key`](KinesisPublishSettings::partition_key).
 //! - A service imports [`prelude`]: the framework's own prelude plus this crate's mount-site
 //!   surface, in one glob.
 
@@ -56,6 +58,23 @@ mod track;
 pub mod sealed {
     /// The sealing supertrait of [`KinesisPublishExt`](crate::KinesisPublishExt).
     pub trait Sealed {}
+
+    /// The crate's publish policies behind one bound.
+    ///
+    /// [`KinesisPublishSettings`](crate::KinesisPublishSettings) covers the service's policy and
+    /// the in-process stand-in's with a single blanket impl over the mount chain: two impls
+    /// would overlap, since coherence cannot tell the two policy types apart through an
+    /// associated type.
+    #[diagnostic::on_unimplemented(
+        message = "`{Self}` is not a Kinesis publish policy",
+        note = "a Kinesis publish setting rides the position named right before it: \
+                `.out(Reply, Publish::default()).partition_key(\"tenant-acme\")`"
+    )]
+    pub trait PolicyKey: Sized {
+        /// Names the record's partition key on this policy.
+        #[must_use]
+        fn with_partition_key(self, key: String) -> Self;
+    }
 }
 
 pub use broker::{ConnectedKinesisBroker, KinesisBroker};
@@ -67,6 +86,8 @@ pub use lease::{LeaseError, LeaseState, LeaseStore, MemoryLeaseStore, SHARD_END}
 pub use message::{
     KinesisMessage, KinesisPosition, PARTITION_KEY_HEADER, SEQUENCE_HEADER, SHARD_HEADER,
 };
-pub use publisher::{KinesisPublish, KinesisPublishExt, KinesisPublisher, PartitionKeyed};
+pub use publisher::{
+    KinesisPublish, KinesisPublishExt, KinesisPublishSettings, KinesisPublisher, PartitionKeyed,
+};
 pub use stream::{KinesisStream, KinesisSubscriberExt};
 pub use subscriber::{KinesisSeeker, KinesisSubscriber};

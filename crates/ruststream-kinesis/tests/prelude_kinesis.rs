@@ -11,12 +11,14 @@ fn _a_publisher_bound_still_names_a_trait<T: Publisher>() {}
 /// it, so the glob has to bring the trait along.
 fn _seeker_comes_with_the_glob<T: Seeker>() {}
 
+/// The mount-site publish settings are a trait too, and a routes file that names one has to get
+/// it from the same glob as the policy it chains onto.
+fn _publish_settings_come_with_the_glob<T: KinesisPublishSettings>() {}
+
 #[test]
 fn the_publish_policy_carries_the_uniform_mount_site_name() {
     // The uniform name is the point of the routes-side glob: `b.after_startup(Publish, ..)` reads
     // the same line whichever broker is underneath. Both positions - the type and the value -
-    // have to resolve to the policy, which is what makes the alias load-bearing. (The policy
-    // holds no options, so it is a unit struct and the `Publish::default()` spelling is what
-    // clippy's `default_constructed_unit_structs` rejects.)
-    let _: Publish = Publish;
+    // have to resolve to the policy, which is what makes the alias load-bearing.
+    let _: Publish = Publish::default().partition_key("tenant-acme");
 }

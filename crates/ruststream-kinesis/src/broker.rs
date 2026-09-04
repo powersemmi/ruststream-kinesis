@@ -226,6 +226,11 @@ impl ConnectedKinesisBroker {
         KinesisPublisher::new(Arc::clone(&self.cell))
     }
 
+    /// The same publisher carrying the partition key a mount site named on its policy.
+    pub(crate) fn publisher_keyed(&self, partition_key: Option<Arc<str>>) -> KinesisPublisher {
+        KinesisPublisher::keyed(Arc::clone(&self.cell), partition_key)
+    }
+
     /// Opens the subscription described by `descriptor`.
     ///
     /// # Errors

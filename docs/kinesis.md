@@ -203,8 +203,10 @@ framework docs for the capability itself.
 ## Publishing
 
 `KinesisPublish` is the broker's publish policy and its default one, so a
-`#[subscriber(.., publish("dest"))]` handler mounted without an explicit publisher replies through
-it. It pairs into `KinesisPublisher`, whose destination is the stream name or ARN.
+`#[subscriber(.., publish("dest"))]` handler mounted without an explicit one replies through it.
+`.out(Reply, Publish::default())` at the mount site names it explicitly, and the same call binds
+the publisher of an injected slot when the marker is the slot's instead of `Reply`. It pairs into
+`KinesisPublisher`, whose destination is the stream name or ARN.
 
 A service writes two kinds of file, and they import different things. A handler body takes
 `use ruststream::prelude::*` and bounds an injected publisher with a capability trait, so it never
@@ -227,12 +229,23 @@ which publishes like any other publisher:
 --8<-- "crates/ruststream-kinesis/examples/kinesis_seek.rs:publish"
 ```
 
-Without a key a process-unique one spreads records across shards.
+A reply and an injected slot publish through a publisher the service never holds - the runtime
+pairs it from the policy - so their key is named on that policy instead, at the mount site, through
+the `KinesisPublishSettings` trait the prelude carries:
 
-The wire is the `partition-key` header, and setting it by hand still works. The same header is set
-on every delivered record and feeds the framework's `Partitioned` capability, matching the in-memory
-broker's convention. A publish that names `partition-key` itself overrides the step for that one
-message; publishes that name other headers keep the step's key alongside them.
+```rust
+--8<-- "crates/ruststream-kinesis/examples/kinesis_replies.rs:replies"
+```
+
+One key means one shard, and with it that shard's throughput: name it when the records have to stay
+mutually ordered, and leave it off otherwise. Without a key anywhere, a process-unique one spreads
+the records across the shards.
+
+The three spellings are one ladder. A record that names `partition-key` itself wins; otherwise the
+key the mount site named on the policy applies; otherwise the record spreads. The wire is that
+header, and setting it by hand still works: it is set on every delivered record too, which is what
+feeds the framework's `Partitioned` capability, matching the in-memory broker's convention. A
+publish that names other headers keeps whatever key was already decided alongside them.
 
 Deliveries additionally expose `kinesis-sequence-number` and `kinesis-shard-id`
 (`SEQUENCE_HEADER` and `SHARD_HEADER`).

@@ -2,7 +2,7 @@
 //!
 //! The framework's own prelude, the broker, its subscription descriptor and the settings that
 //! chain onto a mount site, its positions and seeker, the delivery context with the keys that
-//! read it, and its publish policy.
+//! read it, and its publish policy with the settings that chain onto that.
 //!
 //! A service writes two kinds of file, and they import different things. A handler body names
 //! only what it needs of the framework (`use ruststream::prelude::*`) and bounds an injected
@@ -43,6 +43,6 @@ pub use crate::context::{KinesisBatchContext, KinesisContext, Position, SeekHand
 #[cfg(feature = "dynamodb-lease")]
 pub use crate::dynamo::DynamoLeaseStore;
 pub use crate::message::KinesisPosition;
-pub use crate::publisher::{KinesisPublish as Publish, KinesisPublishExt};
+pub use crate::publisher::{KinesisPublish as Publish, KinesisPublishExt, KinesisPublishSettings};
 pub use crate::stream::{KinesisStream, KinesisSubscriberExt};
 pub use crate::subscriber::KinesisSeeker;
