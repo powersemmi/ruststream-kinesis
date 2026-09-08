@@ -1,19 +1,15 @@
 //! Repositioning a running subscription, and publishing with an explicit partition key.
 //!
 //! The `start_at` clause opens every shard at the trim horizon, so the retained backlog
-//! replays first. The `Seek` parameter moves the subscription to the tip once the backlog is
-//! no longer wanted, and the seeding publish rides the scope's `after_startup` hook, where
-//! the publish policy is paired with the connected broker.
+//! replays first. The `SeekHandle` context key moves the subscription to the tip once the backlog
+//! is no longer wanted, and the seeding publish rides the scope's `after_startup` hook, naming its
+//! partition key with `with_partition_key(..)`.
 //!
 //! Run a local stack first (`just brokers-up`), then:
 //! `cargo run --example kinesis_seek -- run`
 
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream, Seek};
-use ruststream::{Headers, OutgoingMessage, Publisher, Seeker, subscriber};
-use ruststream_kinesis::{
-    KinesisBroker, KinesisError, KinesisPosition, KinesisPublish, KinesisSeeker, KinesisStream,
-    PARTITION_KEY_HEADER,
-};
+use ruststream::{Outgoing, Serialized};
+use ruststream_kinesis::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -21,21 +17,27 @@ struct Job {
     id: u64,
 }
 
+/// The seeding record is already encoded, so it declares itself serialized: it reaches the
+/// stream byte for byte, and the generated document still names it.
+#[derive(Outgoing, Serialized)]
+struct SeedJob(Vec<u8>);
+
 // --8<-- [start:seek]
 /// Replays the retained backlog; on the marker record it abandons the rest of it and
-/// follows the tip instead.
+/// follows the tip instead. The seeker is a field of the delivery context, read by the
+/// `SeekHandle` key.
 #[subscriber(KinesisStream::new("jobs"), start_at(KinesisPosition::horizon()))]
-async fn replay(job: &Job, Seek(seeker): Seek<KinesisSeeker>) -> HandlerResult {
+async fn replay(job: &Job, Ctx(seeker): Ctx<SeekHandle>) -> HandlerOutcome {
     if job.id == 999 {
         // `latest` is stream-wide: every shard of the subscription moves, including shards
         // discovered later.
         if seeker.seek(KinesisPosition::latest()).await.is_err() {
-            return HandlerResult::retry();
+            return HandlerOutcome::retry();
         }
-        return HandlerResult::Ack;
+        return HandlerOutcome::ack();
     }
     println!("replayed job {}", job.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 // --8<-- [end:seek]
 
@@ -48,20 +50,15 @@ fn app() -> impl App {
             .test_credentials()
             .region("us-east-1"),
         |b| {
-            b.after_startup(
-                KinesisPublish,
-                async move |publisher| -> Result<(), KinesisError> {
-                    let mut headers = Headers::new();
-                    // The partition key decides the shard, and with it per-key ordering.
-                    headers.insert(PARTITION_KEY_HEADER, "tenant-acme");
-                    publisher
-                        .publish(
-                            OutgoingMessage::new("jobs", b"{\"id\":1}".as_slice())
-                                .with_headers(headers),
-                        )
-                        .await
-                },
-            );
+            b.after_startup(Publish::default(), async move |publisher| {
+                // The partition key decides the shard, and with it per-key ordering.
+                publisher
+                    .with_partition_key("tenant-acme")
+                    .message(&SeedJob(br#"{"id":1}"#.to_vec()))
+                    .to("jobs")
+                    .publish()
+                    .await
+            });
             b.include(replay);
         },
     )

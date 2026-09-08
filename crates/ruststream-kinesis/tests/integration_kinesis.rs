@@ -1,19 +1,30 @@
 //! End-to-end checks against a local stack, gated behind `KINESIS_TEST_ENDPOINT`.
 //!
+//! What lives here is what only a server can answer: the wire the crate writes and reads back,
+//! and the shard-lease and checkpoint semantics behind acknowledgement. Handler behaviour -
+//! delivery contexts, repositioning from a handler, batch bodies - is a service-level concern and
+//! is covered on the framework's harness in `harness_kinesis.rs`; the `Seekable` contract itself
+//! is covered by the framework's own suite in `conformance_kinesis.rs`, in process and against
+//! this stack.
+//!
 //! Start one with `just brokers-up`, then:
 //! `KINESIS_TEST_ENDPOINT=http://127.0.0.1:4566 cargo test --all-features -- --test-threads=1`.
 
 use std::pin::pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt;
+use futures::future::BoxFuture;
+use tokio::sync::Notify;
+
 use ruststream::{
-    Broker, ConnectedBroker, Headers, IncomingMessage, OutgoingMessage, Publisher, Seekable,
-    Seeker, StartAt, Subscriber, SubscriptionSource,
+    Broker, ConnectedBroker, HeaderMap, IncomingMessage, OutgoingMessage, Publisher, StartAt,
+    Subscriber, SubscriptionSource,
 };
 use ruststream_kinesis::{
-    ConnectedKinesisBroker, KinesisBroker, KinesisPosition, KinesisStream, PARTITION_KEY_HEADER,
-    SEQUENCE_HEADER,
+    ConnectedKinesisBroker, KinesisBroker, KinesisPosition, KinesisStream, LeaseError, LeaseState,
+    LeaseStore, MemoryLeaseStore, PARTITION_KEY_HEADER, SEQUENCE_HEADER,
 };
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(30);
@@ -28,11 +39,87 @@ fn test_endpoint() -> Option<String> {
     }
 }
 
-async fn connect(endpoint: &str) -> ConnectedKinesisBroker {
+/// A lease store that announces a release.
+///
+/// Handing a shard back is the moment a dropped subscription's reader has stopped, and it is the
+/// only such moment a test can observe: the reader is a detached task, so waiting for it means
+/// waiting on the store it coordinates through. Leasing is a pluggable trait precisely so a
+/// deployment can supply its own, and a test is a deployment.
+#[derive(Debug, Default)]
+struct ReleaseWatch {
+    inner: MemoryLeaseStore,
+    released: Notify,
+}
+
+impl ReleaseWatch {
+    /// Resolves once a reader has handed a shard back. `notify_one` stores a permit, so a
+    /// release that happened before this call is not missed.
+    async fn released(&self) {
+        self.released.notified().await;
+    }
+}
+
+impl LeaseStore for ReleaseWatch {
+    fn acquire<'a>(
+        &'a self,
+        shard: &'a str,
+        owner: &'a str,
+        ttl: Duration,
+    ) -> BoxFuture<'a, Result<bool, LeaseError>> {
+        self.inner.acquire(shard, owner, ttl)
+    }
+
+    fn renew<'a>(
+        &'a self,
+        shard: &'a str,
+        owner: &'a str,
+        ttl: Duration,
+    ) -> BoxFuture<'a, Result<bool, LeaseError>> {
+        self.inner.renew(shard, owner, ttl)
+    }
+
+    fn checkpoint<'a>(
+        &'a self,
+        shard: &'a str,
+        owner: &'a str,
+        sequence: &'a str,
+    ) -> BoxFuture<'a, Result<bool, LeaseError>> {
+        self.inner.checkpoint(shard, owner, sequence)
+    }
+
+    fn read<'a>(&'a self, shard: &'a str) -> BoxFuture<'a, Result<LeaseState, LeaseError>> {
+        self.inner.read(shard)
+    }
+
+    fn release<'a>(
+        &'a self,
+        shard: &'a str,
+        owner: &'a str,
+    ) -> BoxFuture<'a, Result<(), LeaseError>> {
+        Box::pin(async move {
+            let outcome = self.inner.release(shard, owner).await;
+            self.released.notify_one();
+            outcome
+        })
+    }
+}
+
+fn broker(endpoint: &str) -> KinesisBroker {
     KinesisBroker::new()
         .endpoint(endpoint)
         .test_credentials()
         .region("us-east-1")
+}
+
+async fn connect(endpoint: &str) -> ConnectedKinesisBroker {
+    broker(endpoint).connect().await.expect("broker connects")
+}
+
+/// Connects with a lease store the test can wait on, for the checks that hand a shard from one
+/// subscription to the next.
+async fn connect_watching(endpoint: &str, leases: &Arc<ReleaseWatch>) -> ConnectedKinesisBroker {
+    broker(endpoint)
+        .lease_store(Arc::clone(leases) as Arc<dyn LeaseStore>)
         .connect()
         .await
         .expect("broker connects")
@@ -70,7 +157,7 @@ async fn roundtrip_preserves_payload_headers_and_partition_key() {
         .await
         .expect("subscription opens");
 
-    let mut headers = Headers::new();
+    let mut headers = HeaderMap::new();
     headers.insert("content-type", "application/json");
     headers.insert("x-tenant", "acme");
     headers.insert(PARTITION_KEY_HEADER, "user-42");
@@ -105,7 +192,8 @@ async fn checkpoints_resume_where_acknowledgement_stopped() {
     let Some(endpoint) = test_endpoint() else {
         return;
     };
-    let connected = connect(&endpoint).await;
+    let leases = Arc::new(ReleaseWatch::default());
+    let connected = connect_watching(&endpoint, &leases).await;
 
     let stream_name = unique("resume");
     let publisher = connected.publisher();
@@ -132,8 +220,11 @@ async fn checkpoints_resume_where_acknowledgement_stopped() {
             message.ack().await.expect("ack succeeds");
         }
     }
-    // Give the dropped subscription's tasks a moment to settle their teardown.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // The dropped subscription's reader hands the shard back on its way out; that release is the
+    // signal, not a guessed teardown delay.
+    tokio::time::timeout(RECV_TIMEOUT, leases.released())
+        .await
+        .expect("the first reader releases its shard");
 
     // Second pass over the same broker (same lease store), on the plain descriptor: with no
     // position forced, the shard resumes from its checkpoint and the acknowledged records
@@ -163,7 +254,8 @@ async fn an_unacknowledged_record_replays_on_the_next_lease() {
     let Some(endpoint) = test_endpoint() else {
         return;
     };
-    let connected = connect(&endpoint).await;
+    let leases = Arc::new(ReleaseWatch::default());
+    let connected = connect_watching(&endpoint, &leases).await;
 
     let stream_name = unique("replay");
     let publisher = connected.publisher();
@@ -205,8 +297,9 @@ async fn an_unacknowledged_record_replays_on_the_next_lease() {
             }
         }
     }
-    // Give the dropped subscription's tasks a moment to settle their teardown.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::timeout(RECV_TIMEOUT, leases.released())
+        .await
+        .expect("the first reader releases its shard");
 
     // The plain descriptor resumes from the checkpoint, which never moved past the
     // unacknowledged record: it and everything after it are delivered again.
@@ -222,52 +315,6 @@ async fn an_unacknowledged_record_replays_on_the_next_lease() {
         .expect("replay is ok");
     assert_eq!(replayed.payload(), b"sticky");
     replayed.ack().await.expect("ack succeeds");
-
-    connected.shutdown().await.expect("shutdown succeeds");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_horizon_seek_delivers_the_retained_backlog() {
-    let Some(endpoint) = test_endpoint() else {
-        return;
-    };
-    let connected = connect(&endpoint).await;
-
-    let stream_name = unique("backlog");
-    let publisher = connected.publisher();
-
-    // The subscription starts at the tip (no position forced), and these records are
-    // published into the retained log behind it.
-    let mut subscriber = source(&stream_name)
-        .subscribe(&connected)
-        .await
-        .expect("subscription opens");
-    let seeker = subscriber.seeker();
-    for payload in [b"one".as_slice(), b"two".as_slice()] {
-        publisher
-            .publish(OutgoingMessage::new(&stream_name, payload))
-            .await
-            .expect("publish succeeds");
-    }
-
-    // The reposition reaches the shard either way: broadcast to its reader if that reader is
-    // already live, and applied when it opens if it is not. Whatever the tip subscription had
-    // already delivered was stamped before the seek, so it is discarded rather than seen.
-    seeker
-        .seek(KinesisPosition::horizon())
-        .await
-        .expect("seek to the horizon succeeds");
-
-    let mut stream = pin!(subscriber.stream());
-    for expected in [b"one".as_slice(), b"two".as_slice()] {
-        let replayed = tokio::time::timeout(RECV_TIMEOUT, stream.next())
-            .await
-            .expect("backlog arrives")
-            .expect("stream is open")
-            .expect("backlog is ok");
-        assert_eq!(replayed.payload(), expected);
-        replayed.ack().await.expect("ack succeeds");
-    }
 
     connected.shutdown().await.expect("shutdown succeeds");
 }

@@ -10,8 +10,8 @@ Handlers, routers, codecs, and middleware come from the framework; this crate su
 transport, and nothing broker-specific leaks back into the framework.
 
 ```toml
-ruststream = { version = "0.6", features = ["macros", "json"] }
-ruststream-kinesis = "0.6"
+ruststream = { version = "0.7", features = ["macros", "json"] }
+ruststream-kinesis = "0.7"
 serde = { version = "1", features = ["derive"] }
 ```
 

@@ -29,10 +29,11 @@
 - **Checkpoint as acknowledgement.** `ack` marks a record handled; the per-shard watermark advances - and persists - once every earlier record is handled too, because a checkpoint implies everything before it. An unacknowledged record wedges the watermark, so the shard replays from it when the lease is next taken (at-least-once delivery). `nack(requeue = false)` skips (checkpoints past) a poison record.
 - **Shard lifecycle owned by the crate.** A coordinator discovers shards (splits and merges included), runs one reader per owned shard, and starts children only after their parents are fully consumed, which preserves per-key ordering across resharding.
 - **Pluggable leasing.** The built-in in-process lease store is correct for a single service instance; `DynamoLeaseStore` (feature `dynamodb-lease`) lets multiple instances share the shards with conditional-write fencing - a failed renewal stops the reader immediately.
-- **Explicit polling settings.** `KinesisStream::new("orders").batch(1000).poll_interval(...)` - polling stays within the service's per-shard budget by default.
-- **One start vocabulary.** Where a subscription reads from is always a `KinesisPosition`; the descriptor carries no separate start options. By default a shard resumes from its stored checkpoint and opens at the tip when it has none. `start_at(KinesisPosition::horizon())` on the subscriber opens it somewhere explicit, and the same positions reposition a running subscription through `Seek(seeker): Seek<KinesisSeeker>`. `horizon()`, `latest()` and `timestamp(ms)` are stream-wide, so they reach shards discovered later too; a position captured from a delivered record is shard-scoped and pinned, and seeking to it redelivers exactly that record. Repositioning drops the affected shards' watermark bookkeeping, so a checkpoint from before the seek cannot drag the cursor back.
-- **Partition keys as the partition key.** The `partition-key` header rides the record's own partition key in both directions (feeding `Partitioned`); the sequence number and shard id are surfaced as headers. User headers beyond that travel in a small conditional envelope - Kinesis records carry only a data blob and a partition key - and plain payloads stay unenveloped.
-- **In-process test broker** (feature `testing`). `KinesisTestBroker` reproduces core routing with no server, implements `ruststream::testing::TestableBroker`, and passes the framework's conformance suite in process.
+- **Batches the service builds.** A batch handler names its size at the mount site, and that size is the `GetRecords` limit every shard reader asks with: `b.include(digest.batch(nonzero!(500)).poll_interval(...))`. A read never fetches more than one batch's worth, and no batch carries more records than it named. The framework's word comes first and this crate's settings chain after it.
+- **Explicit polling settings.** `KinesisStream::new("orders").poll_interval(...)` - polling stays within the service's per-shard budget by default.
+- **One start vocabulary.** Where a subscription reads from is always a `KinesisPosition`; the descriptor carries no separate start options. By default a shard resumes from its stored checkpoint and opens at the tip when it has none. `start_at(KinesisPosition::horizon())` on the subscriber opens it somewhere explicit, and the same positions reposition a running subscription through the delivery context: `Ctx(seeker): Ctx<SeekHandle>` hands a handler the subscription's seeker, `Ctx<Position>` the record's own position. `horizon()`, `latest()` and `timestamp(ms)` are stream-wide, so they reach shards discovered later too; a position captured from a delivered record is shard-scoped and pinned, and seeking to it redelivers exactly that record. Repositioning drops the affected shards' watermark bookkeeping, so a checkpoint from before the seek cannot drag the cursor back.
+- **Partition keys as the partition key.** `publisher.with_partition_key("tenant-acme").message(&order).publish()` names the record's partition key in front of the framework's publish builder, and `b.include(confirm).out(Reply, Publish::default()).partition_key("receipts-v1")` names it at the mount site, for the publishers a service never holds: a handler's reply and its injected slots. A record that names the key itself wins over both. The `partition-key` header remains the wire, and rides the record's own partition key in both directions (feeding `Partitioned`). The sequence number and shard id are surfaced as headers. User headers beyond that travel in a small conditional envelope - Kinesis records carry only a data blob and a partition key - and plain payloads stay unenveloped.
+- **In-process test broker** (feature `testing`). `KinesisTestBroker` routes over a retained log with no server, so `start_at(..)` and a handler's seek handle really re-read it and a service that repositions is unit-testable on the `TestApp` harness. It implements `ruststream::testing::TestableBroker` and passes the framework's routing, `Seekable` and batch conformance suites in process.
 
 Out of scope for this release: enhanced fan-out (a different resume machine on an HTTP/2 push stream, with no local emulator support) and KPL-aggregated records (rejected with an error rather than delivered as opaque protobuf).
 
@@ -40,17 +41,18 @@ Out of scope for this release: enhanced fan-out (a different resume machine on a
 
 ```toml
 [dependencies]
-ruststream = { version = "0.6", features = ["macros", "json"] }
-ruststream-kinesis = "0.6"
+ruststream = { version = "0.7", features = ["macros", "json"] }
+ruststream-kinesis = "0.7"
 serde = { version = "1", features = ["derive"] }
 ```
 
 ## Write a service
 
+One glob: `ruststream_kinesis::prelude` carries the framework's own prelude alongside this crate's
+broker, descriptors, positions, and publish policy.
+
 ```rust
-use ruststream::runtime::{App, AppInfo, HandlerResult, RustStream};
-use ruststream::subscriber;
-use ruststream_kinesis::{KinesisBroker, KinesisPosition, KinesisStream};
+use ruststream_kinesis::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -61,9 +63,9 @@ struct Order {
 // Drop the start_at clause to resume from the checkpoint instead (and start at the tip
 // when there is none).
 #[subscriber(KinesisStream::new("orders"), start_at(KinesisPosition::horizon()))]
-async fn handle(order: &Order) -> HandlerResult {
+async fn handle(order: &Order) -> HandlerOutcome {
     println!("got order {}", order.id);
-    HandlerResult::Ack
+    HandlerOutcome::ack()
 }
 
 #[ruststream::app]
@@ -77,7 +79,7 @@ Multiple instances share the shards through DynamoDB:
 
 ```rust
 use std::sync::Arc;
-use ruststream_kinesis::{DynamoLeaseStore, KinesisBroker};
+use ruststream_kinesis::prelude::*;
 
 # async fn wire(config: aws_config::SdkConfig) {
 let broker = KinesisBroker::from_config(config.clone())
@@ -88,20 +90,25 @@ let broker = KinesisBroker::from_config(config.clone())
 
 ## Test it
 
-The `testing` feature runs handlers against an in-process Kinesis stand-in - no server, same routing, same ladder. Inject a record as an external producer would with `TestableBroker::inject`, then assert on what a handler published with the free `expect_published`:
+The `testing` feature runs your real handlers against an in-process Kinesis stand-in on the framework's `TestApp` harness - no server, no docker. It keeps a retained log per stream, so `start_at(..)` and a handler's `SeekHandle` really re-read it, and deliveries carry the same context as a record from the service: a service that seeks mounts unchanged.
 
 ```rust
-use ruststream::{Broker, OutgoingMessage};
-use ruststream::testing::{TestableBroker, expect_published};
+use ruststream::testing::TestApp;
+use ruststream_kinesis::prelude::*;
 use ruststream_kinesis::testing::KinesisTestBroker;
 
-let broker = KinesisTestBroker::new().connect().await?;
-broker.inject(OutgoingMessage::new("orders", br#"{"id":1}"#));
-let confirmations =
-    expect_published(&broker, "confirmations", 1, std::time::Duration::from_secs(1)).await;
+let app = RustStream::new(AppInfo::new("jobs", "0.1.0"))
+    .with_broker(KinesisTestBroker::new(), |b| b.include(work));
+let tb = TestApp::start(app).await?;
+
+tb.broker::<KinesisTestBroker>().message(&Job { id: 1 }).to("jobs").publish().await?;
+tb.broker::<KinesisTestBroker>()
+    .subscriber("jobs")
+    .assert_called_once()
+    .settled(HandlerOutcome::ack());
 ```
 
-Kinesis behaviour (shard leases, checkpoint resume, replay of unacknowledged records) is covered by the env-gated live suite instead: `just test-brokers` starts LocalStack and runs the integration tests plus the framework conformance lifecycle against it.
+The stand-in passes the framework's own `Seekable` and batch conformance suites in process, so the emulation cannot decay into a handle that accepts every seek or a batch longer than the size a mount site named. What a server owns - shard leases, checkpoint durability, replay of unacknowledged records, resharding - is covered by the env-gated live suite instead: `just test-brokers` starts LocalStack and runs the wire and lease checks plus the framework's conformance lifecycle, `Seekable` and batch suites against it.
 
 ## Layout
 

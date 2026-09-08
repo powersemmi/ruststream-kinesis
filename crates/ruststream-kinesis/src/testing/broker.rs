@@ -1,33 +1,48 @@
 //! [`KinesisTestBroker`]: the in-process transport and its connected form.
 
+use std::future::{Future, ready};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
 use ruststream::testing::{Coordinator, TestableBroker};
 use ruststream::{
-    Broker, ConnectedBroker, DefaultPublish, OutgoingMessage, PairError, PublishPolicy, Publisher,
-    RawMessage, Subscribe,
+    Broker, ConnectedBroker, DefaultPublish, HeaderMap, OutgoingMessage, PairError, PublishPolicy,
+    Publisher, RawMessage, Subscribe,
 };
 
 use crate::error::KinesisError;
+use crate::message::PARTITION_KEY_HEADER;
 use crate::testing::router::AddressRouter;
 use crate::testing::subscriber::KinesisTestSubscriber;
 
-/// Shared state of one in-process broker: the router plus the harness coordinator.
+/// Shared state of one in-process broker: the retained log and its subscriptions, plus the
+/// harness coordinator.
 #[derive(Debug, Default)]
 pub(crate) struct TestState {
     pub(crate) router: AddressRouter,
     coordinator: OnceLock<Coordinator>,
+    /// Set by `shutdown`. A seek handle a handler holds is an aliasing handle, and the real
+    /// broker's aliasing handles report `NotConnected` after shutdown rather than succeeding
+    /// against a dead connection; the stand-in reports the same.
+    closed: AtomicBool,
 }
 
 impl TestState {
-    fn coordinator(&self) -> Option<&Coordinator> {
+    pub(crate) fn coordinator(&self) -> Option<&Coordinator> {
         self.coordinator.get()
     }
 
-    pub(crate) fn publish(&self, name: &str, payload: Bytes, headers: ruststream::Headers) {
+    pub(crate) fn publish(&self, name: &str, payload: Bytes, headers: HeaderMap) {
         self.router
             .publish(name, payload, headers, self.coordinator());
+    }
+
+    pub(crate) fn ensure_open(&self) -> Result<(), KinesisError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(KinesisError::NotConnected);
+        }
+        Ok(())
     }
 }
 
@@ -58,6 +73,7 @@ impl KinesisTestBroker {
     pub fn publisher(&self) -> KinesisTestPublisher {
         KinesisTestPublisher {
             state: Arc::clone(&self.state),
+            partition_key: None,
         }
     }
 }
@@ -66,8 +82,8 @@ impl Broker for KinesisTestBroker {
     type Error = KinesisError;
     type Connected = ConnectedKinesisTestBroker;
 
-    async fn connect(self) -> Result<Self::Connected, Self::Error> {
-        Ok(ConnectedKinesisTestBroker { state: self.state })
+    fn connect(self) -> impl Future<Output = Result<Self::Connected, Self::Error>> {
+        ready(Ok(ConnectedKinesisTestBroker { state: self.state }))
     }
 }
 
@@ -85,7 +101,23 @@ impl ConnectedKinesisTestBroker {
     pub fn publisher(&self) -> KinesisTestPublisher {
         KinesisTestPublisher {
             state: Arc::clone(&self.state),
+            partition_key: None,
         }
+    }
+
+    /// The same publisher carrying the partition key a mount site named on its policy.
+    fn publisher_keyed(&self, partition_key: Option<Arc<str>>) -> KinesisTestPublisher {
+        KinesisTestPublisher {
+            state: Arc::clone(&self.state),
+            partition_key,
+        }
+    }
+
+    /// Opens a subscription on `name`. The subscription starts at the tip of the retained log,
+    /// which is where a Kinesis shard without a checkpoint starts; `start_at(..)` and the seek
+    /// handle move it from there.
+    pub(crate) fn open(&self, name: &str) -> KinesisTestSubscriber {
+        KinesisTestSubscriber::new(Arc::clone(&self.state), name)
     }
 }
 
@@ -93,24 +125,18 @@ impl ConnectedBroker for ConnectedKinesisTestBroker {
     type Error = KinesisError;
     type Closed = ();
 
-    async fn shutdown(self) -> Result<(), Self::Error> {
+    fn shutdown(self) -> impl Future<Output = Result<(), Self::Error>> {
+        self.state.closed.store(true, Ordering::Release);
         self.state.router.clear();
-        Ok(())
+        ready(Ok(()))
     }
 }
 
 impl Subscribe for ConnectedKinesisTestBroker {
     type Subscriber = KinesisTestSubscriber;
 
-    async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
-        let (id, requeue, rx) = self.state.router.subscribe(name.to_owned());
-        Ok(KinesisTestSubscriber::new(
-            Arc::clone(&self.state),
-            id,
-            rx,
-            requeue,
-            self.state.coordinator().cloned(),
-        ))
+    fn subscribe(&self, name: &str) -> impl Future<Output = Result<Self::Subscriber, Self::Error>> {
+        ready(Ok(self.open(name)))
     }
 }
 
@@ -138,41 +164,85 @@ ruststream::register_testable_broker!(ConnectedKinesisTestBroker);
 #[derive(Debug, Clone)]
 pub struct KinesisTestPublisher {
     state: Arc<TestState>,
+    /// The partition key the mount site named on the policy, exactly as on the real publisher.
+    partition_key: Option<Arc<str>>,
 }
 
 impl Publisher for KinesisTestPublisher {
     type Error = KinesisError;
 
-    async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
-        self.state.publish(
-            msg.name(),
-            Bytes::copy_from_slice(msg.payload()),
-            msg.headers().clone(),
-        );
-        Ok(())
+    fn publish(&self, msg: OutgoingMessage<'_>) -> impl Future<Output = Result<(), Self::Error>> {
+        let mut headers = msg.headers().clone();
+        // The service carries the key in the record's own field and this transport carries it in
+        // the header its deliveries read, so a record that names none takes the publisher's key
+        // here - the same ladder, at the same point of the publish.
+        if let Some(key) = &self.partition_key
+            && !headers.contains(PARTITION_KEY_HEADER)
+        {
+            headers.insert(PARTITION_KEY_HEADER, key.to_string());
+        }
+        self.state
+            .publish(msg.name(), Bytes::copy_from_slice(msg.payload()), headers);
+        ready(Ok(()))
     }
 }
 
-/// The publish policy for [`KinesisTestPublisher`], mirroring
-/// [`KinesisPublish`](crate::KinesisPublish) on the real broker.
+impl crate::sealed::Sealed for KinesisTestPublisher {}
+impl crate::KinesisPublishExt for KinesisTestPublisher {}
+
+/// The publish policy for [`KinesisTestPublisher`].
+///
+/// It mirrors [`KinesisPublish`](crate::KinesisPublish) on the real broker down to the settings
+/// a mount site chains onto it, so a service tests the mount it ships.
 ///
 /// # Examples
 ///
 /// ```
 /// use ruststream_kinesis::testing::KinesisTestPublish;
 ///
-/// let policy = KinesisTestPublish::default();
+/// let policy = KinesisTestPublish::default().partition_key("tenant-acme");
 /// # let _ = policy;
 /// ```
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[must_use]
-pub struct KinesisTestPublish;
+pub struct KinesisTestPublish {
+    partition_key: Option<String>,
+}
+
+impl KinesisTestPublish {
+    /// The partition key every record published through this policy carries. The stand-in's
+    /// [`KinesisPublish::partition_key`](crate::KinesisPublish::partition_key).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream_kinesis::testing::KinesisTestPublish;
+    ///
+    /// let policy = KinesisTestPublish::default().partition_key("tenant-acme");
+    /// # let _ = policy;
+    /// ```
+    pub fn partition_key(mut self, key: impl Into<String>) -> Self {
+        self.partition_key = Some(key.into());
+        self
+    }
+}
+
+impl crate::sealed::PolicyKey for KinesisTestPublish {
+    fn with_partition_key(self, key: String) -> Self {
+        self.partition_key(key)
+    }
+}
 
 impl PublishPolicy<ConnectedKinesisTestBroker> for KinesisTestPublish {
     type Live = KinesisTestPublisher;
 
-    async fn pair(self, connected: &ConnectedKinesisTestBroker) -> Result<Self::Live, PairError> {
-        Ok(connected.publisher())
+    fn pair(
+        self,
+        connected: &ConnectedKinesisTestBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(connected.publisher_keyed(
+            self.partition_key.as_deref().map(Arc::from),
+        )))
     }
 }
 

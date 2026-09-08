@@ -7,8 +7,8 @@ splits and merges, shard leasing with fencing, and per-shard checkpointing. For 
 [RustStream documentation](https://powersemmi.github.io/ruststream/).
 
 ```toml
-ruststream = { version = "0.6", features = ["macros", "json"] }
-ruststream-kinesis = "0.6"
+ruststream = { version = "0.7", features = ["macros", "json"] }
+ruststream-kinesis = "0.7"
 serde = { version = "1", features = ["derive"] }
 ```
 
@@ -19,9 +19,9 @@ Which of the framework's optional capability traits this crate implements native
 | Capability | Native | Notes |
 | --- | --- | --- |
 | `Subscribe` | Yes | `ConnectedKinesisBroker` resolves a string-literal stream name, so `#[subscriber("orders")]` works without a descriptor. See [Subscriptions](#subscriptions). |
-| `Seekable` + `Positioned` | Yes | `KinesisSubscriber` mints a `KinesisSeeker`, and `KinesisMessage` reports a `KinesisPosition`. Shard iterators are the service's own repositioning primitive. See [Positions](#positions). |
+| `Seekable` + `Positioned` | Yes | `KinesisSubscriber` mints a `KinesisSeeker`, and `KinesisMessage` reports a `KinesisPosition`. Shard iterators are the service's own repositioning primitive. Handlers reach both through the delivery context. See [Positions](#positions). |
 | `Partitioned` | Yes | `KinesisMessage` exposes the record's partition key, which is the service's unit of shard routing and per-key ordering. See [Publishing](#publishing). |
-| `BatchSubscriber` | No | `GetRecords` returns batches, but the reader flattens them into one delivery stream so each record settles against the shard watermark on its own; the framework's batching layer applies unchanged. |
+| `BatchSubscriber` | Yes | `GetRecords` takes a record limit, and the batch size a mount site names becomes it, so a read never fetches more than one batch's worth. A batch body reads `KinesisBatchContext`. See [Batches](#batches). |
 | `RequestReply` | No | Kinesis has no reply address and no correlation primitive; a reply would be a second stream the crate would have to invent. |
 | `TransactionalPublisher` | No | The service has no transaction. `PutRecords` is a batch whose entries fail individually, so it cannot provide atomic all-or-nothing publishing. |
 | `OwnedTransactions` | No | Same reason: there is no transaction to own. |
@@ -29,6 +29,11 @@ Which of the framework's optional capability traits this crate implements native
 
 Acknowledgement is not a capability trait, and on this broker it is a per-shard checkpoint rather
 than a per-message settlement. See [Leases and checkpoints](#leases-and-checkpoints).
+
+`ruststream_kinesis::prelude` re-exports the traits a handler calls directly: `Seeker` to reposition
+and `Positioned` to read a delivered record's position. It also carries the delivery context and its
+keys - `KinesisContext`, `KinesisBatchContext`, `Position`, `SeekHandle` - which is how a handler
+gets hold of either. Read a record's partition key through `IncomingMessage::partition_key`.
 
 ## The lifecycle
 
@@ -51,7 +56,10 @@ longer consumes.
 ## Subscriptions
 
 `KinesisStream::new(name)` is the subscription descriptor. It takes a stream name or ARN and sits
-inline in the `#[subscriber(..)]` decorator:
+inline in the `#[subscriber(..)]` decorator; the manual path's `subscriber(source, handler)`
+constructor takes the same value, so a service built without the `macros` feature names its stream
+the same way. The imports come from `ruststream_kinesis::prelude`, which carries the framework's own
+prelude alongside this crate's own surface:
 
 ```rust
 --8<-- "crates/ruststream-kinesis/examples/kinesis_service.rs:handler"
@@ -68,9 +76,14 @@ than a detail:
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `batch(n)` | 1000 | Records per `GetRecords` call, capped at 10000. |
 | `poll_interval(d)` | 1 second | The pause between reads on an idle shard. The service allows five reads per second per shard; lower values spend that budget faster. |
 | `create_if_missing(shards)` | off | Creates the stream with that many shards when it does not exist. Meant for local development and tests; production streams are managed as infrastructure. |
+
+Both also read as a chain at the mount site, through the `KinesisSubscriberExt` trait the prelude
+carries: `b.include(digest.batch(nonzero!(500)).poll_interval(..))`. They transform the descriptor,
+so they need one to transform - `start_at(..)` replaces it with the framework's position wrapper,
+and they chain before it. A subscriber whose attribute already named a start position names them on
+the descriptor instead, which is the same two methods on the same type.
 
 Invalid descriptors are rejected before any I/O.
 
@@ -83,13 +96,38 @@ This release polls the shared throughput. Enhanced fan-out is a different resume
 HTTP/2 push stream with no local emulator support, and is not implemented. KPL-aggregated records
 are refused with an error rather than delivered to a handler as opaque protobuf.
 
+## Batches
+
+A handler taking a slice consumes a batch, and its mount site names the batch size - the one
+subscription parameter the framework carries down to a broker. On Kinesis it is the `GetRecords`
+limit every shard reader asks with, so a read never fetches more than one batch's worth, and no
+batch carries more records than it named:
+
+```rust
+--8<-- "crates/ruststream-kinesis/examples/kinesis_batches.rs:batches"
+```
+
+A batch may carry fewer records than the size asked for, which is what happens whenever that is all
+the shards had; a batch that is still filling goes out 50 ms after its first record rather than
+waiting for the rest. Records reach a batch from every shard this instance owns, and each settles on
+its own against its shard's watermark, so a batch body that returns one outcome per element
+checkpoints per record.
+
+The size the mount site names is also a cost decision: a small batch means small reads, and the
+service allows five per second per shard. `poll_interval(..)` above is where that budget is spent,
+and a read the service throttles is not a delivery failure - the reader waits that interval and
+reads again from where it was, so a handler sees a pause rather than an error.
+
+A batch body reads `KinesisBatchContext` rather than `KinesisContext` - see
+[Positions](#positions).
+
 ## Leases and checkpoints
 
 Acknowledgement is a checkpoint, not a per-message settlement. `ack` marks a record handled; the
 shard's watermark advances - and is persisted to the lease store - once every earlier record on
 that shard is handled too, because a checkpoint implies everything before it.
 
-- `HandlerResult::Ack` marks the record handled.
+- `HandlerOutcome::ack()` marks the record handled.
 - `nack(requeue = true)` leaves it unhandled. The watermark stops there, so the shard replays from
   that record when its lease is next taken. A sharded log repositions; it cannot requeue one
   message.
@@ -142,11 +180,19 @@ seeking to it redelivers that very record, on that shard only, the way a partiti
 partition.
 
 `start_at(..)` on the decorator opens the subscription somewhere explicit and beats a stored
-checkpoint. A running subscription repositions through the injected `Seek` parameter:
+checkpoint. A running subscription repositions through the delivery context, which this broker fills
+with the record's position and the subscription's seeker. `Ctx<SeekHandle>` binds the seeker as a
+handler parameter:
 
 ```rust
 --8<-- "crates/ruststream-kinesis/examples/kinesis_seek.rs:seek"
 ```
+
+`Ctx<Position>` binds the record's own pinned position the same way, and a handler that wants both
+names `KinesisContext` as its context type and reads the keys with `ctx.context(..)`. Batch handlers
+get `KinesisBatchContext` instead: it carries the same `SeekHandle`, because a seek is
+subscription-scoped, and no position, because a batch spans many records - one that reacts to a
+position reads it off the elements' `kinesis-sequence-number` and `kinesis-shard-id` headers.
 
 Repositioning drops the watermark bookkeeping of every shard it moves, so an acknowledgement of a
 record delivered before the seek cannot drag the cursor back over the position just taken. Records
@@ -157,18 +203,49 @@ framework docs for the capability itself.
 ## Publishing
 
 `KinesisPublish` is the broker's publish policy and its default one, so a
-`#[subscriber(.., publish("dest"))]` handler mounted without an explicit publisher replies through
-it. It pairs into `KinesisPublisher`, whose destination is the stream name or ARN.
+`#[subscriber(.., publish("dest"))]` handler mounted without an explicit one replies through it.
+`.out(Reply, Publish::default())` at the mount site names it explicitly, and the same call binds
+the publisher of an injected slot when the marker is the slot's instead of `Reply`. It pairs into
+`KinesisPublisher`, whose destination is the stream name or ARN.
 
-The `partition-key` header becomes the record's own partition key - the unit of shard routing and
-therefore of per-key ordering. Without one, a process-unique key spreads records across shards. The
-same header is set on every delivered record, and it feeds the framework's `Partitioned`
-capability, so the convention matches the in-memory broker and a service can switch brokers without
-changing its headers.
+A service writes two kinds of file, and they import different things. A handler body takes
+`use ruststream::prelude::*` and bounds an injected publisher with a capability trait, so it never
+learns which broker it runs on. The file that mounts those handlers takes
+`use ruststream_kinesis::prelude::*`, where this broker's policies carry the uniform mount-site
+name - `Publish` - so a mount site reads the same whichever broker is underneath; `KinesisPublish`
+stays at the crate root for a file that mounts two of them.
+
+Publishing itself is the framework's: `message(..)` with a declared type, then `to(..)`,
+`with_headers(..)`, `with_codec(..)`, and `publish()`. Bytes the service already holds encoded go
+out as a `#[derive(Outgoing, Serialized)]` newtype, which skips the codec and still names the
+message in the generated document. See the
+[publishing guide](https://powersemmi.github.io/ruststream/latest/guides/publishing/).
+
+The record's partition key goes one step in front of that builder.
+`KinesisPublishExt::with_partition_key` names it and returns a `PartitionKeyed<KinesisPublisher>`,
+which publishes like any other publisher:
 
 ```rust
 --8<-- "crates/ruststream-kinesis/examples/kinesis_seek.rs:publish"
 ```
+
+A reply and an injected slot publish through a publisher the service never holds - the runtime
+pairs it from the policy - so their key is named on that policy instead, at the mount site, through
+the `KinesisPublishSettings` trait the prelude carries:
+
+```rust
+--8<-- "crates/ruststream-kinesis/examples/kinesis_replies.rs:replies"
+```
+
+One key means one shard, and with it that shard's throughput: name it when the records have to stay
+mutually ordered, and leave it off otherwise. Without a key anywhere, a process-unique one spreads
+the records across the shards.
+
+The three spellings are one ladder. A record that names `partition-key` itself wins; otherwise the
+key the mount site named on the policy applies; otherwise the record spreads. The wire is that
+header, and setting it by hand still works: it is set on every delivered record too, which is what
+feeds the framework's `Partitioned` capability, matching the in-memory broker's convention. A
+publish that names other headers keeps whatever key was already decided alongside them.
 
 Deliveries additionally expose `kinesis-sequence-number` and `kinesis-shard-id`
 (`SEQUENCE_HEADER` and `SHARD_HEADER`).
@@ -204,20 +281,41 @@ per call by default, so the compose file sets `KINESIS_LATENCY=0`.
 
 ## Testing
 
-The `testing` feature ships `KinesisTestBroker`: an in-process transport that reproduces the
-crate's core routing with no server and no network. It follows the same ladder as the real broker,
-and its connected form implements `ruststream::testing::TestableBroker`, so it drives the `TestApp`
-harness: inject traffic with `broker.inject(OutgoingMessage::new(..))` and assert on published
-output with the free `ruststream::testing::expect_published`. See
+The `testing` feature ships `KinesisTestBroker`: an in-process transport with no server and no
+network. It follows the same ladder as the real broker, and its connected form implements
+`ruststream::testing::TestableBroker`, so it drives the `TestApp` harness. See
 [Unit-testing a service with TestApp](https://powersemmi.github.io/ruststream/latest/guides/testing/#unit-testing-a-service-with-testapp).
 
-It routes by exact address match and simulates none of the product behaviour. Shard leases,
-checkpoint resume, replay of unacknowledged records, and resharding are covered by the live suite
-instead, gated behind `KINESIS_TEST_ENDPOINT`:
+Kinesis is a retained log, and the stand-in keeps one per stream, because that is the property a
+handler can observe without a server. A subscription opens at the tip - where a shard without a
+checkpoint opens - and `start_at(..)` or a handler's `SeekHandle` really re-reads the log from the
+position it names. Deliveries carry the full delivery surface: a `KinesisPosition`, the
+`kinesis-sequence-number` and `kinesis-shard-id` headers, the partition key, and the
+`KinesisContext` / `KinesisBatchContext` the keys read. So a service mounts unchanged:
+
+```rust
+--8<-- "crates/ruststream-kinesis/tests/harness_kinesis.rs:seek_handler"
+```
+
+```rust
+--8<-- "crates/ruststream-kinesis/tests/harness_kinesis.rs:seek_test"
+```
+
+The stand-in passes the framework's own `Seekable` and batch suites
+(`conformance::capabilities::seeking` and `batches`) in process, which is what keeps the emulation
+honest: a handle that accepted every seek and moved nothing would fail the first, and batches longer
+than the size a mount site named would fail the second. It groups through the framework's own
+client-side adapter, so a batch mount is the same mount here and against the service.
+
+What it still does not have is everything a server owns: it routes one shard
+(`testing::IN_PROCESS_SHARD`), so there are no leases, no checkpoint durability, no retention
+limits, no resharding, and no redelivery timing. Those are covered by the live suite instead,
+gated behind `KINESIS_TEST_ENDPOINT`:
 
 ```text
 just test-brokers
 ```
 
-That starts LocalStack and runs the integration tests plus the framework's conformance lifecycle
-against it, single-threaded so the runs do not observe each other's streams.
+That starts LocalStack and runs the wire and lease checks plus the framework's conformance
+lifecycle, `Seekable` and batch suites against it, single-threaded so the runs do not observe each
+other's streams.
