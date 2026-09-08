@@ -54,7 +54,7 @@ ruststream-kinesis = { version = "0.7", features = ["testing"] }
 
 ## Write a service
 
-One glob: `ruststream_kinesis::prelude` re-exports the framework's own prelude alongside this crate's broker, its stream descriptor, its positions and context keys, and its publish policy under the uniform name `Publish`, so a mount site reads the same on every broker. The prefixed original (`KinesisPublish`) stays at the crate root, for a file that mounts two brokers and has to say which `Publish` it means. A handler that takes an injected publisher needs none of this: it bounds the slot with a framework capability and imports `ruststream::prelude::*` only.
+One glob, and it belongs to the file that mounts: `ruststream_kinesis::prelude` re-exports the framework's own prelude alongside this crate's broker, its stream descriptor, its positions and context keys, and its publish policy under the uniform name `Publish`, so a mount site reads the same on every broker. The prefixed original (`KinesisPublish`) stays at the crate root, for a file that mounts two brokers and has to say which `Publish` it means. A handler body imports `ruststream::prelude::*` instead, bounds an injected publisher with a framework capability, and never learns which broker it runs on.
 
 ```rust
 use ruststream_kinesis::prelude::*;
