@@ -310,11 +310,18 @@ the default policy of the connected stand-in, so a reply with no publisher of it
 it. There is no test-only descriptor and no test-only policy: a routes file names the same two
 types in a unit test that it names in production.
 
-The stand-in passes the framework's own `Seekable` and batch suites
-(`conformance::capabilities::seeking` and `batches`) in process, which is what keeps the emulation
-honest: a handle that accepted every seek and moved nothing would fail the first, and batches longer
-than the size a mount site named would fail the second. It groups through the framework's own
+Every contract suite the framework ships for this broker's capabilities runs against the stand-in,
+not only against the service: routing (`conformance::harness::run_suite`), the lifecycle ladder
+(`harness::lifecycle`, down to a publisher created before `shutdown` erroring afterwards rather
+than writing into a closed transport), and the `Seekable` and batch capabilities
+(`conformance::capabilities::seeking` and `batches`). That is what keeps the emulation honest: a
+handle that accepted every seek and moved nothing would fail the seeking suite, and batches longer
+than the size a mount site named would fail the batch one. It groups through the framework's own
 client-side adapter, so a batch mount is the same mount here and against the service.
+
+The same suites run against LocalStack under `KINESIS_TEST_ENDPOINT`, and that is the half that
+proves the contract is the product's: a stand-in can only be measured against a definition it did
+not get to write.
 
 What it still does not have is everything a server owns: it routes one shard
 (`testing::IN_PROCESS_SHARD`), so there are no leases, no checkpoint durability, no retention

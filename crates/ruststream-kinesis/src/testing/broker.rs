@@ -164,6 +164,11 @@ impl TestableBroker for ConnectedKinesisTestBroker {
 ruststream::register_testable_broker!(ConnectedKinesisTestBroker);
 
 /// Publisher for the in-process broker.
+///
+/// A publisher outlives the connection it was paired from - it is a handle, and handles get
+/// cloned and handed on - so, like the real one, it reports
+/// [`KinesisError::NotConnected`](crate::KinesisError::NotConnected) once the transport has shut
+/// down rather than writing into a dead connection.
 #[derive(Debug, Clone)]
 pub struct KinesisTestPublisher {
     state: Arc<TestState>,
@@ -171,10 +176,11 @@ pub struct KinesisTestPublisher {
     partition_key: Option<Arc<str>>,
 }
 
-impl Publisher for KinesisTestPublisher {
-    type Error = KinesisError;
-
-    fn publish(&self, msg: OutgoingMessage<'_>) -> impl Future<Output = Result<(), Self::Error>> {
+impl KinesisTestPublisher {
+    /// Routes one record, or reports the closed transport. Synchronous because nothing here
+    /// leaves the process; [`Publisher::publish`] is the async seam.
+    fn route(&self, msg: &OutgoingMessage<'_>) -> Result<(), KinesisError> {
+        self.state.ensure_open()?;
         let mut headers = msg.headers().clone();
         // The service carries the key in the record's own field and this transport carries it in
         // the header its deliveries read, so a record that names none takes the publisher's key
@@ -186,7 +192,15 @@ impl Publisher for KinesisTestPublisher {
         }
         self.state
             .publish(msg.name(), Bytes::copy_from_slice(msg.payload()), headers);
-        ready(Ok(()))
+        Ok(())
+    }
+}
+
+impl Publisher for KinesisTestPublisher {
+    type Error = KinesisError;
+
+    fn publish(&self, msg: OutgoingMessage<'_>) -> impl Future<Output = Result<(), Self::Error>> {
+        ready(self.route(&msg))
     }
 }
 
