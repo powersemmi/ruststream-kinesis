@@ -8,10 +8,11 @@
 #![cfg(feature = "testing")]
 
 use std::future::{Future, ready};
+use std::time::Duration;
 
-use ruststream::testing::TestApp;
+use ruststream::testing::{TestApp, TestError};
 use ruststream_kinesis::prelude::*;
-use ruststream_kinesis::testing::{KinesisTestBroker, KinesisTestPublish};
+use ruststream_kinesis::testing::KinesisTestBroker;
 use ruststream_kinesis::{PARTITION_KEY_HEADER, SEQUENCE_HEADER, SHARD_HEADER};
 use serde::{Deserialize, Serialize};
 
@@ -79,6 +80,42 @@ async fn batches(batch: &[Job], ctx: &mut Context<'_, KinesisBatchContext>) -> H
 #[subscriber(KinesisStream::new("orders"), publish("receipts"))]
 async fn confirm(order: &Job) -> Job {
     Job { id: order.id }
+}
+
+/// The descriptor a service ships carries the settings that price a real read, and it mounts
+/// here carrying them.
+#[subscriber(
+    KinesisStream::new("priced")
+        .poll_interval(Duration::from_millis(250))
+        .create_if_missing(2)
+)]
+async fn priced(_job: &Job) -> HandlerOutcome {
+    HandlerOutcome::ack()
+}
+
+/// The same two settings, named at the mount site through the crate's settings chain instead.
+#[subscriber(KinesisStream::new("chained"))]
+async fn chained(_job: &Job) -> HandlerOutcome {
+    HandlerOutcome::ack()
+}
+
+/// Named no start position, so it opens where a shard without a checkpoint opens: at the tip.
+#[subscriber(KinesisStream::new("tip"))]
+async fn from_the_tip(_job: &Job) -> HandlerOutcome {
+    HandlerOutcome::ack()
+}
+
+/// Opened at a wall-clock instant instead of an end of the log.
+#[subscriber(KinesisStream::new("since"))]
+async fn since(_job: &Job) -> HandlerOutcome {
+    HandlerOutcome::ack()
+}
+
+/// A descriptor that names no stream. Nothing can subscribe to it, on the stand-in or against
+/// the service.
+#[subscriber(KinesisStream::new(""))]
+async fn unnamed(_job: &Job) -> HandlerOutcome {
+    HandlerOutcome::ack()
 }
 
 /// The manual path's body: the same handler a service without the `macros` feature writes.
@@ -149,13 +186,16 @@ async fn a_handler_repositions_its_own_subscription_through_the_seek_handle() {
 
 /// The partition key decides the shard, and a reply that needs per-key ordering needs one. The
 /// mount site names it on the policy, and the record has to come out carrying it.
+///
+/// The policy is the crate's own - the type a production routes file names - so this mount is
+/// the mount the service ships, character for character.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_mount_site_names_the_partition_key_of_a_reply() {
     let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         KinesisTestBroker::new(),
         |b| {
             b.include(confirm)
-                .out(Reply, KinesisTestPublish::default())
+                .out(Reply, Publish::default())
                 .partition_key("tenant-acme");
         },
     );
@@ -173,6 +213,35 @@ async fn a_mount_site_names_the_partition_key_of_a_reply() {
         .published::<Job>("receipts")
         .assert_called_once()
         .with_header(PARTITION_KEY_HEADER, "tenant-acme");
+
+    tb.shutdown().await.expect("the harness shuts down");
+}
+
+/// A mount that names no publisher replies through the broker's default policy, and the
+/// stand-in's default is the crate's own: the reply still comes out on the stream the handler
+/// named, carrying the spread key a policy without one gives every record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reply_without_a_named_publisher_goes_through_the_default_policy() {
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+        KinesisTestBroker::new(),
+        |b| {
+            b.include(confirm);
+        },
+    );
+    let tb = TestApp::start(app).await.expect("the harness starts");
+
+    let broker = tb.broker::<KinesisTestBroker>();
+    broker
+        .message(&Job { id: 7 })
+        .to("orders")
+        .publish()
+        .await
+        .expect("the publish succeeds");
+
+    broker
+        .published::<Job>("receipts")
+        .assert_called_once()
+        .with(&Job { id: 7 });
 
     tb.shutdown().await.expect("the harness shuts down");
 }
@@ -204,6 +273,120 @@ async fn the_descriptor_names_a_stream_on_the_manual_path() {
         .settled(HandlerOutcome::ack());
 
     tb.shutdown().await.expect("the harness shuts down");
+}
+
+/// The settings on the descriptor are the service's, and a unit test must not have to strip
+/// them out to mount it: the stand-in has no read to price and no stream to create, so it
+/// ignores them and delivers all the same. Both spellings mount - the attribute carrying the
+/// settings on the descriptor, and the chain naming them at the mount site.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_descriptor_carrying_its_own_settings_mounts_on_the_stand_in() {
+    let app = RustStream::new(AppInfo::new("settings", "0.1.0")).with_broker(
+        KinesisTestBroker::new(),
+        |b| {
+            b.include(priced);
+            // The framework's own step comes first and this crate's chain after it, which is the
+            // order a mount site writes them in.
+            b.include(
+                chained
+                    .workers(nonzero!(2))
+                    .poll_interval(Duration::from_millis(250))
+                    .create_if_missing(2),
+            );
+        },
+    );
+    let tb = TestApp::start(app).await.expect("the harness starts");
+
+    let broker = tb.broker::<KinesisTestBroker>();
+    for stream in ["priced", "chained"] {
+        broker
+            .message(&Job { id: 1 })
+            .to(stream)
+            .publish()
+            .await
+            .expect("the publish succeeds");
+        broker
+            .subscriber(stream)
+            .assert_called_once()
+            .with(&Job { id: 1 })
+            .settled(HandlerOutcome::ack());
+    }
+
+    tb.shutdown().await.expect("the harness shuts down");
+}
+
+/// A mount that names no position opens at the tip, which is where a shard without a checkpoint
+/// opens: the backlog a producer left behind stays unread, and only what arrives afterwards
+/// reaches the handler. Checkpoint resume itself is a server property and is covered live; what
+/// a handler can observe here is the start the descriptor defaults to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_mount_without_a_start_position_opens_at_the_tip() {
+    let broker = KinesisTestBroker::new();
+    seed(&broker, "tip", [1, 2]).await;
+
+    let app = RustStream::new(AppInfo::new("tip", "0.1.0")).with_broker(broker, |b| {
+        b.include(from_the_tip);
+    });
+    let tb = TestApp::start(app).await.expect("the harness starts");
+    tb.settle().await.expect("there is nothing to replay");
+
+    tb.broker::<KinesisTestBroker>()
+        .message(&Job { id: 3 })
+        .to("tip")
+        .publish()
+        .await
+        .expect("the publish succeeds");
+
+    assert_eq!(
+        tb.broker::<KinesisTestBroker>()
+            .subscriber("tip")
+            .received::<Job>(),
+        vec![Job { id: 3 }],
+        "a subscription that named no position must not replay the retained backlog",
+    );
+
+    tb.shutdown().await.expect("the harness shuts down");
+}
+
+/// The third stream-wide position: a timestamp opens the subscription at the first record from
+/// that instant, and the epoch is before every record the log retains.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_timestamp_position_opens_the_subscription_over_the_retained_log() {
+    let broker = KinesisTestBroker::new();
+    seed(&broker, "since", [1, 2]).await;
+
+    let app = RustStream::new(AppInfo::new("since", "0.1.0")).with_broker(broker, |b| {
+        b.include(since.start_at(KinesisPosition::timestamp(0)));
+    });
+    let tb = TestApp::start(app).await.expect("the harness starts");
+    tb.settle().await.expect("the replay settles");
+
+    assert_eq!(
+        tb.broker::<KinesisTestBroker>()
+            .subscriber("since")
+            .received::<Job>(),
+        vec![Job { id: 1 }, Job { id: 2 }],
+        "the epoch precedes every retained record, so the whole log replays",
+    );
+
+    tb.shutdown().await.expect("the harness shuts down");
+}
+
+/// A descriptor the service would reject is rejected here too, at the same point: the mount
+/// fails when the subscription opens, rather than mounting something that can never deliver.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_invalid_descriptor_fails_the_mount_on_the_stand_in() {
+    let app = RustStream::new(AppInfo::new("unnamed", "0.1.0")).with_broker(
+        KinesisTestBroker::new(),
+        |b| {
+            b.include(unnamed);
+        },
+    );
+
+    let Err(err) = TestApp::start(app).await else {
+        panic!("a descriptor that names no stream must not mount");
+    };
+    assert!(matches!(err, TestError::Subscribe(_)), "got {err}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

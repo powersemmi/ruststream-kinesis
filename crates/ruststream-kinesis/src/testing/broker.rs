@@ -7,12 +7,13 @@ use std::sync::{Arc, OnceLock};
 use bytes::Bytes;
 use ruststream::testing::{Coordinator, TestableBroker};
 use ruststream::{
-    Broker, ConnectedBroker, DefaultPublish, HeaderMap, OutgoingMessage, PairError, PublishPolicy,
-    Publisher, RawMessage, Subscribe,
+    Broker, ConnectedBroker, DefaultPublish, HeaderMap, OutgoingMessage, Publisher, RawMessage,
+    Subscribe,
 };
 
 use crate::error::KinesisError;
 use crate::message::PARTITION_KEY_HEADER;
+use crate::publisher::KinesisPublish;
 use crate::testing::router::AddressRouter;
 use crate::testing::subscriber::KinesisTestSubscriber;
 
@@ -105,8 +106,10 @@ impl ConnectedKinesisTestBroker {
         }
     }
 
-    /// The same publisher carrying the partition key a mount site named on its policy.
-    fn publisher_keyed(&self, partition_key: Option<Arc<str>>) -> KinesisTestPublisher {
+    /// The same publisher carrying the partition key a mount site named on its policy. This is
+    /// what [`KinesisPublish`](crate::KinesisPublish) pairs into here, so the policy a service
+    /// ships is the policy its unit tests mount.
+    pub(crate) fn publisher_keyed(&self, partition_key: Option<Arc<str>>) -> KinesisTestPublisher {
         KinesisTestPublisher {
             state: Arc::clone(&self.state),
             partition_key,
@@ -190,62 +193,8 @@ impl Publisher for KinesisTestPublisher {
 impl crate::sealed::Sealed for KinesisTestPublisher {}
 impl crate::KinesisPublishExt for KinesisTestPublisher {}
 
-/// The publish policy for [`KinesisTestPublisher`].
-///
-/// It mirrors [`KinesisPublish`](crate::KinesisPublish) on the real broker down to the settings
-/// a mount site chains onto it, so a service tests the mount it ships.
-///
-/// # Examples
-///
-/// ```
-/// use ruststream_kinesis::testing::KinesisTestPublish;
-///
-/// let policy = KinesisTestPublish::default().partition_key("tenant-acme");
-/// # let _ = policy;
-/// ```
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[must_use]
-pub struct KinesisTestPublish {
-    partition_key: Option<String>,
-}
-
-impl KinesisTestPublish {
-    /// The partition key every record published through this policy carries. The stand-in's
-    /// [`KinesisPublish::partition_key`](crate::KinesisPublish::partition_key).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ruststream_kinesis::testing::KinesisTestPublish;
-    ///
-    /// let policy = KinesisTestPublish::default().partition_key("tenant-acme");
-    /// # let _ = policy;
-    /// ```
-    pub fn partition_key(mut self, key: impl Into<String>) -> Self {
-        self.partition_key = Some(key.into());
-        self
-    }
-}
-
-impl crate::sealed::PolicyKey for KinesisTestPublish {
-    fn with_partition_key(self, key: String) -> Self {
-        self.partition_key(key)
-    }
-}
-
-impl PublishPolicy<ConnectedKinesisTestBroker> for KinesisTestPublish {
-    type Live = KinesisTestPublisher;
-
-    fn pair(
-        self,
-        connected: &ConnectedKinesisTestBroker,
-    ) -> impl Future<Output = Result<Self::Live, PairError>> {
-        ready(Ok(connected.publisher_keyed(
-            self.partition_key.as_deref().map(Arc::from),
-        )))
-    }
-}
-
+/// The stand-in replies through the crate's own policy, so a mount that names no publisher gets
+/// [`KinesisPublish`] here exactly as it does against the service.
 impl DefaultPublish for ConnectedKinesisTestBroker {
-    type Policy = KinesisTestPublish;
+    type Policy = KinesisPublish;
 }

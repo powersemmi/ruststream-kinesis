@@ -301,6 +301,15 @@ position it names. Deliveries carry the full delivery surface: a `KinesisPositio
 --8<-- "crates/ruststream-kinesis/tests/harness_kinesis.rs:seek_test"
 ```
 
+The mount is the service's own on both sides. `KinesisStream` opens the subscription here too,
+carrying the settings it carries in production - `poll_interval` prices a read this transport never
+makes and `create_if_missing` has no stream to create, so they are accepted and ignored, and a
+descriptor the service would reject (an empty stream name) fails the mount here as well. `Publish`
+pairs into the stand-in's publisher with the partition key the mount site named on it, and it is
+the default policy of the connected stand-in, so a reply with no publisher of its own goes through
+it. There is no test-only descriptor and no test-only policy: a routes file names the same two
+types in a unit test that it names in production.
+
 The stand-in passes the framework's own `Seekable` and batch suites
 (`conformance::capabilities::seeking` and `batches`) in process, which is what keeps the emulation
 honest: a handle that accepted every seek and moved nothing would fail the first, and batches longer
