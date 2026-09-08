@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures::task::AtomicWaker;
+use ruststream::testing::Coordinator;
 
 use crate::error::KinesisError;
 use crate::message::KinesisPosition;
@@ -68,15 +69,40 @@ impl SeekControl {
             .take()
     }
 
-    /// Records a reposition and wakes the subscription.
-    fn install(&self, plan: Plan) {
+    /// Records a reposition and wakes the subscription, carrying the pending slot's harness
+    /// accounting with it.
+    ///
+    /// The replay this plan promises is counted in flight here, because the seek is the moment a
+    /// test can observe: a quiescence wait between the count and the swap would otherwise find an
+    /// empty in-flight total and call the reaction finished while a whole replay was pending.
+    ///
+    /// A plan this one displaces is a plan the subscription never applied - taking it is what
+    /// clears the slot - so its own count is released again. Left in place, those deliveries
+    /// would stay in flight with nothing able to settle them, and the harness would wait forever
+    /// for a quiescence that cannot arrive. Counting the new plan before releasing the displaced
+    /// one keeps the total off zero in between, so the replacement is never mistaken for the end
+    /// of the reaction.
+    fn install(&self, plan: Plan, coordinator: Option<&Coordinator>) {
+        if let Some(coordinator) = coordinator {
+            for _ in 0..plan.count {
+                coordinator.enqueued();
+            }
+        }
         // Watermark first (Release, paired with the Acquire load in the delivery filter), then
         // the pending plan: a poll that takes the plan must see its watermark.
         self.watermark.store(plan.target, Ordering::Release);
-        *self
+        let displaced = self
             .pending
             .lock()
-            .expect("kinesis test seek mutex poisoned") = Some(plan);
+            .expect("kinesis test seek mutex poisoned")
+            .replace(plan);
+        // Derived from the swap rather than from a separate read: the swap is what decides which
+        // of two concurrent seeks displaced the other, so exactly one of them releases a count.
+        if let Some(coordinator) = coordinator {
+            for _ in 0..displaced.map_or(0, |displaced| displaced.count) {
+                coordinator.consumed();
+            }
+        }
         self.waker.wake();
     }
 }
@@ -130,16 +156,9 @@ impl LogSeeker {
     pub(crate) fn seek(&self, to: &KinesisPosition) -> Result<(), KinesisError> {
         self.state.ensure_open()?;
         let plan = self.state.router.plan(&self.address, to)?;
-        // The replay is counted in flight before this call returns, not when the subscription
-        // applies it: the seek is the moment a test can observe, and a quiescence wait that ran
-        // between the two would otherwise find an empty in-flight count and call the reaction
-        // finished while a whole replay was still pending.
-        if let Some(coordinator) = self.state.coordinator() {
-            for _ in 0..plan.count {
-                coordinator.enqueued();
-            }
-        }
-        self.control.install(plan);
+        // The harness accounting for the replay travels with the plan into the pending slot, so
+        // a seek cannot count one without the slot that owns it also releasing it later.
+        self.control.install(plan, self.state.coordinator());
         Ok(())
     }
 }
