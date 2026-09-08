@@ -113,33 +113,23 @@ impl LogDeliveries {
     }
 
     /// Applies a reposition requested through this subscription's seek handle, if one is
-    /// pending: everything queued before the seek is drained, and the retained suffix from the
+    /// pending: everything queued before the seek is dropped, and the retained suffix from the
     /// target on is enqueued in its place.
+    ///
+    /// The swap itself belongs to the router, because that is where fanout is serialised: a
+    /// record published beside a reposition has to land wholly on one side of it, and only the
+    /// owner of the log can promise that.
     fn apply_pending_seek(&mut self) {
         let Some(plan) = self.control.take_pending() else {
             return;
         };
-        let replay = self.state.router.replay_from(&self.address, plan.target);
-
-        // The seek already counted the records the log held when it resolved. Anything
-        // published into the replay window since was counted by its own fanout, drained just
-        // below, and is re-enqueued here - so only the growth needs counting, and the in-flight
-        // total never touches zero mid-swap.
-        if let Some(coordinator) = &self.coordinator {
-            for _ in plan.count..replay.len() {
-                coordinator.enqueued();
-            }
-        }
-        while self.rx.try_recv().is_ok() {
-            // Every drained delivery was counted in flight when it was enqueued.
-            if let Some(coordinator) = &self.coordinator {
-                coordinator.consumed();
-            }
-        }
-        for delivery in replay {
-            // The send cannot fail: this subscription holds both ends of its own channel.
-            let _ = self.requeue.send(delivery);
-        }
+        self.state.router.reposition(
+            &self.address,
+            plan,
+            &mut self.rx,
+            &self.requeue,
+            self.coordinator.as_ref(),
+        );
     }
 }
 
