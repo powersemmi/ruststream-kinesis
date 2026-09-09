@@ -202,11 +202,11 @@ framework docs for the capability itself.
 
 ## Publishing
 
-`KinesisPublish` is the broker's publish policy and its default one, so a
-`#[subscriber(.., publish("dest"))]` handler mounted without an explicit one replies through it.
-`.out(Reply, Publish::default())` at the mount site names it explicitly, and the same call binds
-the publisher of an injected slot when the marker is the slot's instead of `Reply`. It pairs into
-`KinesisPublisher`, whose destination is the stream name or ARN.
+`KinesisPublish` is the broker's publish policy and its default one, so a replying handler mounted
+without an explicit policy replies through it. `.out(Reply, Publish::default())` at the mount site
+names it explicitly, and the same call binds the publisher of an injected slot when the marker is
+the slot's instead of `Reply`. It pairs into `KinesisPublisher`, whose destination is the stream
+name or ARN.
 
 A service writes two kinds of file, and they import different things. A handler body takes
 `use ruststream::prelude::*` and bounds an injected publisher with a capability trait, so it never
