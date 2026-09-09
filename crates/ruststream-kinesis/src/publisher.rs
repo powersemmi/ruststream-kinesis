@@ -127,7 +127,7 @@ impl KinesisPublish {
     /// The partition key every record published through this policy carries.
     ///
     /// The named alternative to setting [`PARTITION_KEY_HEADER`] on each message, for the
-    /// publishers a service never holds: the reply of a `publish(..)` handler and the slots it
+    /// publishers a service never holds: the reply of a publishing handler and the slots it
     /// injects are paired from a policy, so this is where their key is decided. Without one the
     /// records spread across the stream's shards under a process-unique key.
     ///
@@ -176,7 +176,7 @@ impl PublishPolicy<ConnectedKinesisBroker> for KinesisPublish {
 /// framework names the position and the policy, and what this transport does with a record
 /// beyond that is the broker's own vocabulary. A publisher a handler holds names the same thing
 /// with [`KinesisPublishExt::with_partition_key`]; this is for the ones it never holds - the
-/// reply of a `publish(..)` handler, and the slots it injects.
+/// reply of a publishing handler, and the slots it injects.
 ///
 /// # Examples
 ///
@@ -184,10 +184,13 @@ impl PublishPolicy<ConnectedKinesisBroker> for KinesisPublish {
 /// use ruststream_kinesis::prelude::*;
 /// # #[derive(serde::Deserialize)]
 /// # struct Order { id: u64 }
-/// # #[derive(Outgoing, serde::Serialize)]
-/// # struct Receipt { id: u64 }
 ///
-/// #[subscriber(KinesisStream::new("orders"), publish("receipts"))]
+/// // The reply type names the stream it goes to; the mount site names how it is published.
+/// #[derive(Outgoing, serde::Serialize)]
+/// #[outgoing(name = "receipts")]
+/// struct Receipt { id: u64 }
+///
+/// #[subscriber(KinesisStream::new("orders"), publish)]
 /// async fn confirm(order: &Order) -> Receipt {
 ///     Receipt { id: order.id }
 /// }

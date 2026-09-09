@@ -24,6 +24,13 @@ struct Job {
     id: u64,
 }
 
+/// A receipt only ever goes to the receipts stream, so the type is where that stream is named.
+#[derive(Debug, Clone, PartialEq, Eq, Outgoing, Serialize, Deserialize)]
+#[outgoing(name = "receipts")]
+struct Receipt {
+    order: u64,
+}
+
 // --8<-- [start:seek_handler]
 /// Skips the rest of the backlog when the producer marks it: the seeker is a field of this
 /// delivery's context, bound by the `SeekHandle` key.
@@ -74,11 +81,18 @@ async fn batches(batch: &[Job], ctx: &mut Context<'_, KinesisBatchContext>) -> H
     HandlerOutcome::ack()
 }
 
-/// Replies on a second stream. The reply publisher is paired from a policy, so a service never
-/// holds it and the mount site is the only place its partition key can be named.
+/// Replies with the file's nameless model, so the stream is the attribute's to name. The reply
+/// publisher is paired from a policy, so a service never holds it and the mount site is the only
+/// place its partition key can be named.
 #[subscriber(KinesisStream::new("orders"), publish("receipts"))]
 async fn confirm(order: &Job) -> Job {
     Job { id: order.id }
+}
+
+/// Replies with a type that names its own stream, so the attribute carries the bare clause.
+#[subscriber(KinesisStream::new("orders"), publish)]
+async fn issue(order: &Job) -> Receipt {
+    Receipt { order: order.id }
 }
 
 /// The manual path's body: the same handler a service without the `macros` feature writes.
@@ -173,6 +187,68 @@ async fn a_mount_site_names_the_partition_key_of_a_reply() {
         .published::<Job>("receipts")
         .assert_called_once()
         .with_header(PARTITION_KEY_HEADER, "tenant-acme");
+
+    tb.shutdown().await.expect("the harness shuts down");
+}
+
+/// A reply type that names its own stream lands on that stream, and the mount still decides how it
+/// gets there: the policy the chain named is what the runtime pairs the reply publisher from, so
+/// the record carries the partition key that policy was given.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reply_type_lands_on_the_stream_it_declares() {
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+        KinesisTestBroker::new(),
+        |b| {
+            b.include(issue)
+                .out(Reply, KinesisTestPublish::default())
+                .partition_key("tenant-acme");
+        },
+    );
+    let tb = TestApp::start(app).await.expect("the harness starts");
+
+    let broker = tb.broker::<KinesisTestBroker>();
+    broker
+        .message(&Job { id: 1 })
+        .to("orders")
+        .publish()
+        .await
+        .expect("the publish succeeds");
+
+    broker.subscriber("orders").assert_called_once();
+    broker
+        .published::<Receipt>("receipts")
+        .assert_called_once()
+        .with(&Receipt { order: 1 })
+        .with_header(PARTITION_KEY_HEADER, "tenant-acme");
+
+    tb.shutdown().await.expect("the harness shuts down");
+}
+
+/// A reply type that names no stream takes the one the mount site names, which is the only place
+/// the stream is written on this path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reply_type_without_a_stream_takes_the_mount_site_name() {
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+        KinesisTestBroker::new(),
+        |b| {
+            b.include(confirm).out(Reply, KinesisTestPublish::default());
+        },
+    );
+    let tb = TestApp::start(app).await.expect("the harness starts");
+
+    let broker = tb.broker::<KinesisTestBroker>();
+    broker
+        .message(&Job { id: 7 })
+        .to("orders")
+        .publish()
+        .await
+        .expect("the publish succeeds");
+
+    broker.subscriber("orders").assert_called_once();
+    broker
+        .published::<Job>("receipts")
+        .assert_called_once()
+        .with(&Job { id: 7 });
 
     tb.shutdown().await.expect("the harness shuts down");
 }
