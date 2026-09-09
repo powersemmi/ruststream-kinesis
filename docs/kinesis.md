@@ -82,13 +82,13 @@ detail:
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `poll_interval(d)` | 1 second | The pause between reads on an idle shard. The service allows five reads a second per shard, and a shorter pause spends that budget faster. |
-| `create_if_missing(shards)` | off | Creates the stream with that many shards when it is missing. Meant for local development and tests; a production stream is managed as infrastructure. |
+| `create_if_missing(shards)` | off | Creates the stream with that many shards when it is missing, then waits up to a minute for it to become usable. Meant for local development and tests; a production stream is managed as infrastructure. |
 
 Both are available at the mount site too, through the `KinesisSubscriberExt` trait the prelude
-carries: `b.include(digest.batch(nonzero!(500)).poll_interval(..))`. They transform the descriptor,
-so they need one to transform: `start_at(..)` replaces it with the framework's position wrapper,
-and they chain before it. A subscriber whose attribute already names a start position sets them on
-the descriptor instead, which is the same two methods on the same type.
+carries; the [Batches](#batches) example mounts a subscriber that way. They transform the
+descriptor, so they need one to transform: `start_at(..)` replaces it with the framework's position
+wrapper, and they chain before it. A subscriber whose attribute already names a start position sets
+them on the descriptor instead, which is the same two methods on the same type.
 
 An invalid descriptor is rejected before any I/O.
 
@@ -177,7 +177,8 @@ shard resumes from its stored checkpoint, and a shard without one opens at the t
 A stream-wide position reaches shards discovered later too, the children of a split among them, so
 a seek keeps its meaning when the stream reshards. The shard-scoped form is the pinned position the
 framework captures from a delivered record (`Positioned::position`): seeking to it redelivers that
-record, and moves no other shard.
+record, and moves no other shard. It needs a live reader for that shard in this instance, and
+returns an error for a shard this instance does not own or has already finished.
 
 `start_at(..)` on the decorator opens the subscription at a position you name, ahead of any stored
 checkpoint. A running subscription repositions from a handler: this broker fills the delivery
@@ -301,18 +302,17 @@ the keys read. So a service mounts unchanged:
 --8<-- "crates/ruststream-kinesis/tests/harness_kinesis.rs:seek_test"
 ```
 
-The framework's own seeking and batch suites run against the transport in process. Batches are
-grouped by the framework's client-side adapter, so a batch mount is the same mount here and against
-the service.
+The transport answers the way the service does, and the crate's own tests hold it to that. Batches
+are grouped by the framework's client-side adapter, so a batch mount is the same mount here and
+against the service.
 
 What it does not have is what a server owns: it routes one shard (`testing::IN_PROCESS_SHARD`), so
 there are no leases, no checkpoint durability, no retention limits, no resharding, and no
-redelivery timing. The live suite covers those, gated behind `KINESIS_TEST_ENDPOINT`:
+redelivery timing. The live tests cover those, gated behind `KINESIS_TEST_ENDPOINT`:
 
 ```text
 just test-brokers
 ```
 
-That starts LocalStack and runs the wire and lease checks against it, together with the framework's
-lifecycle, `Seekable` and batch suites, single-threaded so the runs do not observe each other's
-streams.
+That starts LocalStack and runs the crate's own checks against it, single-threaded so the runs do
+not observe each other's streams.
