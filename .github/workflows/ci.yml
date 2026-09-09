@@ -219,6 +219,8 @@ jobs:
       - name: Run integration + conformance against LocalStack
         env:
           KINESIS_TEST_ENDPOINT: http://127.0.0.1:4566
+          # This job started a stack, so a suite that skips past it is a defect, not a pass.
+          RUSTSTREAM_REQUIRE_LIVE: "1"
         run: >-
           cargo test --locked -p ruststream-kinesis --all-features
           --test integration_kinesis

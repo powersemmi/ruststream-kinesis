@@ -17,14 +17,13 @@ use ruststream::conformance::{capabilities, harness};
 use ruststream_kinesis::testing::KinesisTestBroker;
 use ruststream_kinesis::{KinesisBroker, KinesisPosition, KinesisStream};
 
+mod live;
+
+/// The stack's endpoint, or `None` to skip the live checks below. Under `RUSTSTREAM_REQUIRE_LIVE`
+/// a missing endpoint is a failure instead, so a job that started a stack cannot report `ok`
+/// without having reached it.
 fn test_endpoint() -> Option<String> {
-    match std::env::var("KINESIS_TEST_ENDPOINT") {
-        Ok(endpoint) if !endpoint.is_empty() => Some(endpoint),
-        _ => {
-            eprintln!("KINESIS_TEST_ENDPOINT is not set; skipping the live conformance check");
-            None
-        }
-    }
+    live::url("KINESIS_TEST_ENDPOINT")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

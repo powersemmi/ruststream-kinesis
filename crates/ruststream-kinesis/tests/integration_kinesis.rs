@@ -27,16 +27,15 @@ use ruststream_kinesis::{
     LeaseStore, MemoryLeaseStore, PARTITION_KEY_HEADER, SEQUENCE_HEADER,
 };
 
+mod live;
+
 const RECV_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The stack's endpoint, or `None` to skip the live checks below. Under `RUSTSTREAM_REQUIRE_LIVE`
+/// a missing endpoint is a failure instead, so a job that started a stack cannot report `ok`
+/// without having reached it.
 fn test_endpoint() -> Option<String> {
-    match std::env::var("KINESIS_TEST_ENDPOINT") {
-        Ok(endpoint) if !endpoint.is_empty() => Some(endpoint),
-        _ => {
-            eprintln!("KINESIS_TEST_ENDPOINT is not set; skipping the live integration test");
-            None
-        }
-    }
+    live::url("KINESIS_TEST_ENDPOINT")
 }
 
 /// A lease store that announces a release.
