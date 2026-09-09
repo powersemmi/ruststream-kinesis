@@ -284,7 +284,9 @@ emulator otherwise adds 500 ms to every call.
 ## Testing
 
 The `testing` feature ships `KinesisTestBroker`: an in-process transport with no server and no
-network. It has the same states as the real broker and drives the `TestApp` harness. See
+network. It has the same states as the real broker and drives the `TestApp` harness. Neither name
+is in the prelude, so a test imports `ruststream_kinesis::testing::KinesisTestBroker` and
+`ruststream::testing::TestApp` alongside it. See
 [Unit-testing a service with TestApp](https://powersemmi.github.io/ruststream/latest/guides/testing/#unit-testing-a-service-with-testapp).
 
 The transport keeps a retained log per stream, because that is the property a handler can observe
