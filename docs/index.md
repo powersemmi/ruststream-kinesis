@@ -1,13 +1,13 @@
 # ruststream-kinesis
 
-**`ruststream-kinesis`** is the Amazon Kinesis Data Streams broker for the
-[RustStream](https://powersemmi.github.io/ruststream/) messaging framework, built on the official
-[`aws-sdk-kinesis`](https://docs.rs/aws-sdk-kinesis). On top of the SDK it supplies the
-coordination the vendor's consumer library provides on other platforms and the Rust SDK does not:
-shard discovery across splits and merges, shard leasing with fencing, and per-shard checkpointing.
+**`ruststream-kinesis`** runs a [RustStream](https://powersemmi.github.io/ruststream/) service on
+Amazon Kinesis Data Streams. A stream is a sharded log, like Kafka.
 
-Handlers, routers, codecs, and middleware come from the framework; this crate supplies the
-transport, and nothing broker-specific leaks back into the framework.
+The transport is implemented over the official [`aws-sdk-kinesis`](https://docs.rs/aws-sdk-kinesis)
+client. On top of it, a subscription discovers the stream's shards across splits and merges, leases
+each shard with fencing, and checkpoints each shard's progress.
+
+The `testing` feature ships an in-process broker.
 
 ```toml
 ruststream = { version = "0.7", features = ["macros", "json"] }
@@ -31,7 +31,5 @@ serde = { version = "1", features = ["derive"] }
 
 ## How this site relates to the RustStream docs
 
-This site documents the Kinesis broker only. Framework concepts that apply to every broker (writing
-subscribers, publishing, routing, codecs, middleware, observability, the CLI) live in the
-[RustStream documentation](https://powersemmi.github.io/ruststream/). The pages here cover what is
-specific to Kinesis and link back to the framework docs where the two meet.
+This site documents the Kinesis broker only. Everything that works the same on every broker is in
+the [RustStream documentation](https://powersemmi.github.io/ruststream/).
