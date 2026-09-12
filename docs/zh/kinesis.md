@@ -250,9 +250,10 @@ Kinesis 没有重新投递定时器，因此返回 `HandlerOutcome::retry_after(
 3. 挂载点在策略上点名的键。
 4. 一个进程唯一的键，它把记录摊开：Kinesis 记录没有键就发不出去。
 
-这个键就是通过消息头传递的：发布者把解析出的键写进记录自己的分区键字段，投递的记录又在这个消息头
-里把它报回来，`IncomingMessage::partition_key` 和框架的按键分发都在那里找它。投递里还有
-`kinesis-sequence-number` 和 `kinesis-shard-id`（`SEQUENCE_HEADER` 和 `SHARD_HEADER`）。
+键走的是记录自己的分区键字段，消息头是它在两端的可移植名字：发布者把解析出的键写进那个字段，并不
+把这个消息头放进信封；投递又在这个消息头里把键报回来，`IncomingMessage::partition_key` 和框架的按
+键分发都在那里找它。投递里还有 `kinesis-sequence-number` 和 `kinesis-shard-id`
+（`SEQUENCE_HEADER` 和 `SHARD_HEADER`）。
 
 这个步骤是一项逐消息设置，而逐消息设置是处理器函数体唯一会说出 Broker 名字的东西。点名这个键的函
 数体，导入这个 crate 的 prelude，并把自己的槽位约束在选项类型上：

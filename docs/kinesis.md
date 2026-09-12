@@ -281,8 +281,9 @@ Four places can name the key, and they resolve in one order:
 3. The key the mount site named on the policy.
 4. A process-unique key, which spreads the records: a Kinesis record cannot go out without one.
 
-The header is how the key travels: the publisher writes the resolved key into the record's own
-partition key field, and a delivered record reports it back in that header, where
+The key travels in the record's own partition key field, and the header is its portable name at
+both ends: the publisher writes the resolved key into that field and leaves the header out of the
+envelope, and a delivery reports the key back under that header, where
 `IncomingMessage::partition_key` and the framework's per-key dispatch find it. Deliveries also
 carry `kinesis-sequence-number` and `kinesis-shard-id` (`SEQUENCE_HEADER` and `SHARD_HEADER`).
 
