@@ -29,7 +29,7 @@ The framework's optional capability traits, and what this crate does with each:
 | `RequestReply` | No | Kinesis has no reply address and no correlation primitive; a reply would be a second stream the crate would have to invent. |
 | `TransactionalPublisher` | No | The service has no transaction: the entries of a `PutRecords` call succeed and fail one by one. |
 | `OwnedTransactions` | No | Same reason: there is no transaction to own. |
-| `DescribeServer` | Yes | The generated AsyncAPI document names the configured endpoint, or `kinesis.amazonaws.com`, under the `kinesis` protocol. |
+| `DescribeServer` | Yes | The generated AsyncAPI document names the host and port clients dial, under the `kinesis` protocol. See [The generated document](#the-generated-document). |
 
 Acknowledgement is not a capability trait, so the table leaves it out; see
 [Leases and checkpoints](#leases-and-checkpoints) for what `ack` does here.
@@ -149,6 +149,31 @@ children may start.
 The default store is `MemoryLeaseStore`: in process, correct for a single service instance, and
 empty again after a restart.
 
+### Retrying after a delay
+
+Kinesis holds no redelivery timer, so a handler that returns
+`HandlerOutcome::retry_after(delay)` is served by the framework: it publishes the record again once
+the delay is over, with the retry count in a header. Wire the publisher it uses on the broker
+scope:
+
+```rust
+--8<-- "crates/ruststream-kinesis/examples/kinesis_retry.rs:retry"
+```
+
+The handler asks for the pause, and reads how many times it has already asked:
+
+```rust
+--8<-- "crates/ruststream-kinesis/examples/kinesis_retry.rs:handler"
+```
+
+The copy goes to the stream the subscription reads, which the descriptor reports. Without
+`retry_via` the delay degrades to an immediate replay of the shard from that record.
+
+The copy arrives at the tip of the stream, not in the place the record held, and its partition key
+picks the shard it lands on. A deferred record therefore loses its order against the records it was
+published among. Where that order matters, hold the shard with `nack(requeue = true)` instead: the
+watermark stops at the record, and the shard replays from it.
+
 ### Sharing shards between instances
 
 The `dynamodb-lease` feature adds `DynamoLeaseStore`, and several instances of a service then share
@@ -251,6 +276,23 @@ alongside them.
 The header is how the crate spells the key: the publisher sets the record's own partition key from
 it, and a delivered record carries it back in the same header. Deliveries also carry
 `kinesis-sequence-number` and `kinesis-shard-id` (`SEQUENCE_HEADER` and `SHARD_HEADER`).
+
+Some brokers add per-message steps to the publish builder - a priority, a quality of service, an
+expiry. This one adds none: a Kinesis record has a partition key and a payload, and the key is
+named above. So a handler body on this broker imports the framework prelude alone, and bounds an
+injected slot with a plain capability (`Out<impl Publisher, Receipts>`) rather than naming an
+options type.
+
+## The generated document
+
+`DescribeServer` puts the broker in the `servers` section of the generated AsyncAPI document, under
+the `kinesis` protocol. What it reports is a coordinate: the host and port a client dials.
+
+- With `endpoint(..)`, the host and port of that URL. The scheme and any user name and password are
+  dropped - the document is generated to be published, and credentials must not travel with it.
+- Otherwise `kinesis.<region>.amazonaws.com` when `region(..)` named one.
+- Otherwise `kinesis.amazonaws.com`, because a broker resolving its region from the environment has
+  not resolved it yet when the document is built.
 
 ## The header envelope
 
