@@ -7,16 +7,26 @@
 //! handle that accepts every seek.
 #![cfg(feature = "testing")]
 
+use std::convert::Infallible;
 use std::future::{Future, ready};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use ruststream::testing::TestApp;
 use ruststream_kinesis::prelude::*;
 use ruststream_kinesis::testing::{KinesisTestBroker, KinesisTestPublish};
 use ruststream_kinesis::{PARTITION_KEY_HEADER, SEQUENCE_HEADER, SHARD_HEADER};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Barrier;
+use tokio::time::timeout;
 
 /// The id a producer uses to ask a consumer to abandon the rest of the retained backlog.
 const MARKER: u64 = 999;
+
+/// How long a settle may take before the test calls it a hang rather than slow progress. Long
+/// enough that a loaded machine never reaches it, short enough to fail inside a CI job.
+const QUIESCENCE_BUDGET: Duration = Duration::from_secs(10);
 
 /// The destination is left to the call, so one model seeds every stream in this file.
 #[derive(Debug, Clone, PartialEq, Eq, Outgoing, Serialize, Deserialize)]
@@ -109,6 +119,48 @@ impl Handle<Job> for Ledger {
     ) -> impl Future<Output = Result<(), HandlerOutcome>> + Send {
         ready(Ok(()))
     }
+}
+
+/// What the two rewinding deliveries share: a budget, so only the first pair rewinds and the
+/// replay it asks for does not rewind again, and a rendezvous that holds both of them in flight
+/// until both have sought.
+#[derive(Debug, Clone)]
+struct Rewind {
+    budget: Arc<AtomicUsize>,
+    both_sought: Arc<Barrier>,
+}
+
+/// The application state of the worker-pool mount below.
+#[derive(Debug, Clone, FromRef)]
+struct Lanes {
+    rewind: Rewind,
+}
+
+/// Rewinds to the horizon on each of its first two deliveries and waits there for the other one.
+///
+/// A pool polls its subscription again only when a worker frees a slot, so holding both
+/// deliveries here until both have sought is what stacks the second reposition on top of a first
+/// one the subscription never applied.
+#[subscriber(KinesisStream::new("lanes"))]
+async fn lanes(
+    _job: &Job,
+    Ctx(seeker): Ctx<SeekHandle>,
+    State(rewind): State<Rewind>,
+) -> HandlerOutcome {
+    let rewinds = rewind
+        .budget
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+            left.checked_sub(1)
+        })
+        .is_ok();
+    if !rewinds {
+        return HandlerOutcome::ack();
+    }
+    if seeker.seek(KinesisPosition::horizon()).await.is_err() {
+        return HandlerOutcome::retry();
+    }
+    rewind.both_sought.wait().await;
+    HandlerOutcome::ack()
 }
 
 /// Seeds a stream's retained log before the service exists, the way an external producer would.
@@ -353,6 +405,49 @@ async fn a_batch_repositions_the_subscription_through_the_batch_context() {
     handler
         .subscriber("batches")
         .assert_called(2)
+        .settled(HandlerOutcome::ack());
+
+    tb.shutdown().await.expect("the harness shuts down");
+}
+
+/// A pool runs several of one subscription's deliveries at once, so two handlers can seek before
+/// the subscription polls again and the second reposition replaces a first one it never applied.
+/// The replaced reposition must not leave its replay counted in flight: nothing would ever settle
+/// those deliveries, and the harness would wait for a quiescence that cannot arrive.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reposition_replaced_before_it_is_applied_leaves_nothing_in_flight() {
+    let broker = KinesisTestBroker::new();
+    seed(&broker, "lanes", [1, 2, 3, 4, 5, 6]).await;
+
+    let app = RustStream::new(AppInfo::new("lanes", "0.1.0"))
+        .on_startup(async move |()| {
+            Ok::<_, Infallible>(Lanes {
+                rewind: Rewind {
+                    budget: Arc::new(AtomicUsize::new(2)),
+                    both_sought: Arc::new(Barrier::new(2)),
+                },
+            })
+        })
+        .with_broker(broker, |b| {
+            b.include(
+                lanes
+                    .start_at(KinesisPosition::horizon())
+                    .workers(nonzero!(2)),
+            );
+        });
+    let tb = TestApp::start(app).await.expect("the harness starts");
+
+    // Bounded on purpose: a discarded reposition leaves its replay counted in flight forever, and
+    // an unbounded wait would report that as a CI job that timed out with nothing to read.
+    timeout(QUIESCENCE_BUDGET, tb.settle())
+        .await
+        .expect("the reaction reaches quiescence")
+        .expect("the replay settles");
+
+    // The rewinding pair, then the whole retained log once the surviving reposition is applied.
+    tb.broker::<KinesisTestBroker>()
+        .subscriber("lanes")
+        .assert_called(8)
         .settled(HandlerOutcome::ack());
 
     tb.shutdown().await.expect("the harness shuts down");
