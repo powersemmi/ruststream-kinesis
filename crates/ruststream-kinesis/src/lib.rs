@@ -28,10 +28,10 @@
 //!   KPL-aggregated records are rejected with an error rather than delivered as opaque
 //!   protobuf.
 //! - Publishing rides the framework's builder, entered with `message(..)` on any publisher.
-//!   The record's partition key is a step in front of it,
-//!   [`with_partition_key`](KinesisPublishExt::with_partition_key), or - for the publishers a
-//!   service never holds, a handler's reply and its injected slots - a mount-site setting on
-//!   the policy, [`partition_key`](KinesisPublishSettings::partition_key).
+//!   The record's partition key is a per-message setting on that builder,
+//!   [`partition_key`](KinesisPublishSteps::partition_key). A reply has no call site of its own,
+//!   so its key is named at the mount site instead, on the policy
+//!   ([`partition_key`](KinesisPublishSettings::partition_key)).
 //! - A service imports [`prelude`]: the framework's own prelude plus this crate's mount-site
 //!   surface, in one glob.
 
@@ -52,13 +52,10 @@ mod subscriber;
 pub mod testing;
 mod track;
 
-/// Restricts the crate's publish steps to the crate's own publishers: the arguments they carry
-/// mean something only to a transport that reads them back.
+/// Restricts the crate's mount-site publish settings to the crate's own policies: the arguments
+/// they carry mean something only to a transport that reads them back.
 #[doc(hidden)]
 pub mod sealed {
-    /// The sealing supertrait of [`KinesisPublishExt`](crate::KinesisPublishExt).
-    pub trait Sealed {}
-
     /// The crate's publish policies behind one bound.
     ///
     /// [`KinesisPublishSettings`](crate::KinesisPublishSettings) covers the service's policy and
@@ -87,7 +84,8 @@ pub use message::{
     KinesisMessage, KinesisPosition, PARTITION_KEY_HEADER, SEQUENCE_HEADER, SHARD_HEADER,
 };
 pub use publisher::{
-    KinesisPublish, KinesisPublishExt, KinesisPublishSettings, KinesisPublisher, PartitionKeyed,
+    KinesisPublish, KinesisPublishOptions, KinesisPublishSettings, KinesisPublishSteps,
+    KinesisPublisher,
 };
 pub use stream::{KinesisStream, KinesisSubscriberExt};
 pub use subscriber::{KinesisSeeker, KinesisSubscriber};

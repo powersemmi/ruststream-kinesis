@@ -34,7 +34,9 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-ruststream = { workspace = true, features = ["conformance", "testing", "macros", "json"] }
+# `cbor` earns its place in one check: a per-message step must not cost the mount site's codec,
+# and proving that needs a second codec to mount.
+ruststream = { workspace = true, features = ["conformance", "testing", "macros", "json", "cbor"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 

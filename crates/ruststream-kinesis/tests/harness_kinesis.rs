@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use ruststream::codec::CborCodec;
 use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::testing::{TestApp, TestError};
 use ruststream_kinesis::prelude::*;
@@ -160,6 +161,90 @@ async fn deferring(_job: &Job, ctx: &mut Context<'_, KinesisContext>) -> Handler
         HandlerOutcome::retry_after(RETRY_DELAY)
     } else {
         HandlerOutcome::ack()
+    }
+}
+
+/// The key the publishing handlers below name, and the key their consumer expects to be
+/// delivered under.
+const TENANT: &str = "tenant-acme";
+
+/// The slot the keyed publishes leave through. The marker is what the harness attributes a
+/// publish to, so the per-message settings a call carried stay readable from a test.
+#[derive(OutSlot)]
+#[publishes(Job)]
+struct Journal;
+
+/// Names the partition key of the one record it sends. The key belongs to that record rather
+/// than to the publisher, so it is a step on the publish; the bound on the options type is what
+/// puts the step within reach, and it says in the signature that this body is written for
+/// Kinesis.
+#[subscriber(KinesisStream::new("keyed.in"))]
+async fn keyed(
+    job: &Job,
+    Out(journal): Out<impl Publisher<Options = KinesisPublishOptions>, Journal>,
+) -> HandlerOutcome {
+    if journal
+        .message(job)
+        .to("keyed.out")
+        .partition_key(TENANT)
+        .publish()
+        .await
+        .is_err()
+    {
+        return HandlerOutcome::retry();
+    }
+    HandlerOutcome::ack()
+}
+
+/// The portable spelling: the key written as the header every broker of this framework reads,
+/// with no step on the call.
+#[subscriber(KinesisStream::new("hand.in"))]
+async fn by_hand(
+    job: &Job,
+    Out(journal): Out<impl Publisher<Options = KinesisPublishOptions>, Journal>,
+) -> HandlerOutcome {
+    let mut headers = HeaderMap::new();
+    headers.insert(PARTITION_KEY_HEADER, TENANT);
+    if journal
+        .message(job)
+        .to("keyed.out")
+        .with_headers(headers)
+        .publish()
+        .await
+        .is_err()
+    {
+        return HandlerOutcome::retry();
+    }
+    HandlerOutcome::ack()
+}
+
+/// Names no key at all, so the record takes whatever the rest of the ladder decides.
+#[subscriber(KinesisStream::new("plain.in"))]
+async fn plain(
+    job: &Job,
+    Out(journal): Out<impl Publisher<Options = KinesisPublishOptions>, Journal>,
+) -> HandlerOutcome {
+    if journal
+        .message(job)
+        .to("plain.out")
+        .publish()
+        .await
+        .is_err()
+    {
+        return HandlerOutcome::retry();
+    }
+    HandlerOutcome::ack()
+}
+
+/// Settles by the key it was delivered under, so an acknowledgement here is the consumer
+/// reporting the key the producer named. This is what a partition key is for: the framework's
+/// own dispatch reads it the same way to keep a key's records in one lane.
+#[subscriber(KinesisStream::new("keyed.out"))]
+async fn keyed_reader(_job: &Job, ctx: &mut Context<'_, KinesisContext>) -> HandlerOutcome {
+    if ctx.headers().get_str(PARTITION_KEY_HEADER) == Some(TENANT) {
+        HandlerOutcome::ack()
+    } else {
+        HandlerOutcome::drop()
     }
 }
 
@@ -703,6 +788,147 @@ async fn a_deferred_retry_comes_back_through_the_address_the_descriptor_reports(
         vec![Job { id: 1 }, Job { id: 1 }],
         "the deferred copy must reach the subscription that deferred it",
     );
+
+    tb.shutdown().await.expect("the harness shuts down");
+}
+
+/// The step is the call's own setting, and it has to survive the whole way: recorded against the
+/// slot the publish left through, and arriving as the key the consumer is delivered under.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_step_on_the_publish_names_the_records_partition_key() {
+    let app = RustStream::new(AppInfo::new("keyed", "0.1.0")).with_broker(
+        KinesisTestBroker::new(),
+        |b| {
+            b.include(keyed).out(Journal, Publish::default()).build();
+            b.include(keyed_reader);
+        },
+    );
+    let tb = TestApp::start(app).await.expect("the harness starts");
+
+    tb.broker::<KinesisTestBroker>()
+        .message(&Job { id: 1 })
+        .to("keyed.in")
+        .publish()
+        .await
+        .expect("the publish succeeds");
+
+    tb.out::<Journal>()
+        .assert_called_once()
+        .with_options(&KinesisPublishOptions {
+            partition_key: Some(TENANT.to_owned()),
+        });
+    tb.broker::<KinesisTestBroker>()
+        .subscriber("keyed.out")
+        .assert_called_once()
+        .settled(HandlerOutcome::ack());
+
+    tb.shutdown().await.expect("the harness shuts down");
+}
+
+/// A call that names nothing carries nothing: the policy's own settings apply, and the record
+/// still leaves under a key, because Kinesis has no record without one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_publish_with_no_step_keeps_the_policy_defaults_and_still_gets_a_key() {
+    let app = RustStream::new(AppInfo::new("plain", "0.1.0")).with_broker(
+        KinesisTestBroker::new(),
+        |b| {
+            b.include(plain).out(Journal, Publish::default()).build();
+        },
+    );
+    let tb = TestApp::start(app).await.expect("the harness starts");
+
+    tb.broker::<KinesisTestBroker>()
+        .message(&Job { id: 1 })
+        .to("plain.in")
+        .publish()
+        .await
+        .expect("the publish succeeds");
+
+    tb.out::<Journal>()
+        .assert_called_once()
+        .assert_options_default();
+
+    let published = tb
+        .broker::<KinesisTestBroker>()
+        .published::<Job>("plain.out");
+    let key = published.messages()[0]
+        .headers()
+        .get_str(PARTITION_KEY_HEADER)
+        .expect("a record leaves under a partition key even when nobody named one");
+    assert!(
+        key.starts_with("rs-"),
+        "expected the spreading fallback key, got {key:?}",
+    );
+
+    tb.shutdown().await.expect("the harness shuts down");
+}
+
+/// The header spelling stays a supported way to name the key, so a handler written against no
+/// particular broker keeps working here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_key_written_as_a_header_still_reaches_the_consumer() {
+    let app = RustStream::new(AppInfo::new("by-hand", "0.1.0")).with_broker(
+        KinesisTestBroker::new(),
+        |b| {
+            b.include(by_hand).out(Journal, Publish::default()).build();
+            b.include(keyed_reader);
+        },
+    );
+    let tb = TestApp::start(app).await.expect("the harness starts");
+
+    tb.broker::<KinesisTestBroker>()
+        .message(&Job { id: 1 })
+        .to("hand.in")
+        .publish()
+        .await
+        .expect("the publish succeeds");
+
+    tb.out::<Journal>()
+        .assert_called_once()
+        .assert_options_default();
+    tb.broker::<KinesisTestBroker>()
+        .subscriber("keyed.out")
+        .assert_called_once()
+        .settled(HandlerOutcome::ack());
+
+    tb.shutdown().await.expect("the harness shuts down");
+}
+
+/// The defect the step design closes. The key is a position on the publish rather than a
+/// publisher wrapped around the slot, so the record still encodes with the codec the mount site
+/// named and still counts as the slot's publish.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_keyed_publish_keeps_the_codec_the_mount_site_named() {
+    let app = RustStream::new(AppInfo::new("keyed-cbor", "0.1.0")).with_broker(
+        KinesisTestBroker::new(),
+        |b| {
+            b.include(keyed)
+                .out(Journal, Publish::default())
+                .codec(CborCodec)
+                .build();
+        },
+    );
+    let tb = TestApp::start(app).await.expect("the harness starts");
+
+    tb.broker::<KinesisTestBroker>()
+        .message(&Job { id: 1 })
+        .to("keyed.in")
+        .publish()
+        .await
+        .expect("the publish succeeds");
+
+    tb.out::<Journal>()
+        .assert_called_once()
+        .with_options(&KinesisPublishOptions {
+            partition_key: Some(TENANT.to_owned()),
+        })
+        .decoded_as::<Job>()
+        .with_codec(&CborCodec, &Job { id: 1 });
+    tb.broker::<KinesisTestBroker>()
+        .published::<Job>("keyed.out")
+        .assert_called_once()
+        .with_codec(&CborCodec, &Job { id: 1 })
+        .with_header(PARTITION_KEY_HEADER, TENANT);
 
     tb.shutdown().await.expect("the harness shuts down");
 }

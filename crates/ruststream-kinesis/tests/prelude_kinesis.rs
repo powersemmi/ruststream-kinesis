@@ -15,6 +15,13 @@ fn _seeker_comes_with_the_glob<T: Seeker>() {}
 /// it from the same glob as the policy it chains onto.
 fn _publish_settings_come_with_the_glob<T: KinesisPublishSettings>() {}
 
+/// The per-message steps are the one part of this glob a handler body imports, so the trait has
+/// to arrive through it.
+fn _publish_steps_come_with_the_glob<T: KinesisPublishSteps>() {}
+
+/// And so does the options type, because that same body writes it into its own bound.
+fn _a_body_bounds_its_slot_on_the_options_type<T: Publisher<Options = KinesisPublishOptions>>() {}
+
 #[test]
 fn the_publish_policy_carries_the_uniform_mount_site_name() {
     // The uniform name is the point of the routes-side glob: `b.after_startup(Publish, ..)` reads

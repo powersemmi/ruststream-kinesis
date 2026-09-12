@@ -13,7 +13,7 @@ use ruststream::{
 
 use crate::error::KinesisError;
 use crate::message::PARTITION_KEY_HEADER;
-use crate::publisher::KinesisPublish;
+use crate::publisher::{KinesisPublish, KinesisPublishOptions, resolve_partition_key};
 use crate::testing::router::AddressRouter;
 use crate::testing::subscriber::KinesisTestSubscriber;
 
@@ -185,17 +185,18 @@ pub struct KinesisTestPublisher {
 impl KinesisTestPublisher {
     /// Routes one record, or reports the closed transport. Synchronous because nothing here
     /// leaves the process; [`Publisher::publish`] is the async seam.
-    fn route(&self, msg: &OutgoingMessage<'_>) -> Result<(), KinesisError> {
+    fn route(
+        &self,
+        msg: &OutgoingMessage<'_>,
+        options: Option<&KinesisPublishOptions>,
+    ) -> Result<(), KinesisError> {
         self.state.ensure_open()?;
+        // The service resolves the key through the same function and hands it to the record's own
+        // field; a record has no such field here, so the key lands in the header its deliveries
+        // read back. Same ladder, same point of the publish, one wire apart.
+        let key = resolve_partition_key(options, msg.headers(), self.partition_key.as_deref());
         let mut headers = msg.headers().clone();
-        // The service carries the key in the record's own field and this transport carries it in
-        // the header its deliveries read, so a record that names none takes the publisher's key
-        // here - the same ladder, at the same point of the publish.
-        if let Some(key) = &self.partition_key
-            && !headers.contains(PARTITION_KEY_HEADER)
-        {
-            headers.insert(PARTITION_KEY_HEADER, key.to_string());
-        }
+        headers.insert(PARTITION_KEY_HEADER, key);
         self.state
             .publish(msg.name(), Bytes::copy_from_slice(msg.payload()), headers);
         Ok(())
@@ -206,19 +207,16 @@ impl Publisher for KinesisTestPublisher {
     type Error = KinesisError;
     /// The real publisher's options type, so a mount that compiles against the service compiles
     /// against the stand-in.
-    type Options = ();
+    type Options = KinesisPublishOptions;
 
     fn publish(
         &self,
         msg: OutgoingMessage<'_>,
-        _options: Option<&Self::Options>,
+        options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
-        ready(self.route(&msg))
+        ready(self.route(&msg, options))
     }
 }
-
-impl crate::sealed::Sealed for KinesisTestPublisher {}
-impl crate::KinesisPublishExt for KinesisTestPublisher {}
 
 /// The stand-in replies through the crate's own policy, so a mount that names no publisher gets
 /// [`KinesisPublish`] here exactly as it does against the service.

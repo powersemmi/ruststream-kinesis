@@ -18,13 +18,14 @@ use futures::StreamExt;
 use futures::future::BoxFuture;
 use tokio::sync::Notify;
 
+use ruststream::runtime::PublishExt;
 use ruststream::{
-    Broker, ConnectedBroker, HeaderMap, IncomingMessage, OutgoingMessage, Publisher, StartAt,
-    Subscriber, SubscriptionSource,
+    Broker, ConnectedBroker, HeaderMap, IncomingMessage, Outgoing, OutgoingMessage, Publisher,
+    Serialized, StartAt, Subscriber, SubscriptionSource,
 };
 use ruststream_kinesis::{
-    ConnectedKinesisBroker, KinesisBroker, KinesisPosition, KinesisStream, LeaseError, LeaseState,
-    LeaseStore, MemoryLeaseStore, PARTITION_KEY_HEADER, SEQUENCE_HEADER,
+    ConnectedKinesisBroker, KinesisBroker, KinesisPosition, KinesisPublishSteps, KinesisStream,
+    LeaseError, LeaseState, LeaseStore, MemoryLeaseStore, PARTITION_KEY_HEADER, SEQUENCE_HEADER,
 };
 
 mod live;
@@ -184,6 +185,50 @@ async fn roundtrip_preserves_payload_headers_and_partition_key() {
     assert_eq!(message.headers().get_str("x-tenant"), Some("acme"));
     assert_eq!(message.partition_key(), Some(b"user-42".as_slice()));
     assert!(message.headers().get_str(SEQUENCE_HEADER).is_some());
+    message.ack().await.expect("ack succeeds");
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// Bytes the test already holds encoded: a serialized type reaches the stream as it is, so this
+/// check stays about the partition key rather than about a codec.
+#[derive(Outgoing, Serialized)]
+struct Seed(Vec<u8>);
+
+/// The partition key a call names has to land in the record's own field, which is the only place
+/// Kinesis keeps one - the header a delivery reports is rebuilt from it, so only a server can
+/// answer whether the step reached the record or merely the header map.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_step_puts_the_partition_key_on_the_record() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    let connected = connect(&endpoint).await;
+
+    let stream_name = unique("keyed");
+    let mut subscriber = from_horizon(&stream_name)
+        .subscribe(&connected)
+        .await
+        .expect("subscription opens");
+
+    connected
+        .publisher()
+        .message(&Seed(b"{\"id\":1}".to_vec()))
+        .to(stream_name.as_str())
+        .partition_key("tenant-acme")
+        .publish()
+        .await
+        .expect("publish succeeds");
+
+    let mut stream = pin!(subscriber.stream());
+    let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+        .await
+        .expect("delivery arrives")
+        .expect("stream is open")
+        .expect("delivery is ok");
+
+    assert_eq!(message.partition_key(), Some(b"tenant-acme".as_slice()));
+    assert_eq!(message.payload(), b"{\"id\":1}");
     message.ack().await.expect("ack succeeds");
 
     connected.shutdown().await.expect("shutdown succeeds");
