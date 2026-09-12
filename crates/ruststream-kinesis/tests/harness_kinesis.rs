@@ -164,12 +164,12 @@ async fn deferring(_job: &Job, ctx: &mut Context<'_, KinesisContext>) -> Handler
     }
 }
 
-/// The key the publishing handlers below name, and the key their consumer expects to be
-/// delivered under.
+// --8<-- [start:keyed_handler]
+/// The key these records share, and the key their consumer expects to be delivered under.
 const TENANT: &str = "tenant-acme";
 
-/// The slot the keyed publishes leave through. The marker is what the harness attributes a
-/// publish to, so the per-message settings a call carried stay readable from a test.
+/// The slot the keyed publishes leave through. The marker names the publish, so a test can ask
+/// what settings the call carried.
 #[derive(OutSlot)]
 #[publishes(Job)]
 struct Journal;
@@ -195,6 +195,7 @@ async fn keyed(
     }
     HandlerOutcome::ack()
 }
+// --8<-- [end:keyed_handler]
 
 /// The portable spelling: the key written as the header every broker of this framework reads,
 /// with no step on the call.

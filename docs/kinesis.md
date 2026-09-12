@@ -291,25 +291,7 @@ broker's name for. A body that names the key imports this crate's prelude and bo
 the options type:
 
 ```rust
-use ruststream_kinesis::prelude::*;
-
-#[subscriber(KinesisStream::new("orders"))]
-async fn journal(
-    order: &Order,
-    Out(journal): Out<impl Publisher<Options = KinesisPublishOptions>, Journal>,
-) -> HandlerOutcome {
-    if journal
-        .message(order)
-        .to("journal")
-        .partition_key("tenant-acme")
-        .publish()
-        .await
-        .is_err()
-    {
-        return HandlerOutcome::retry();
-    }
-    HandlerOutcome::ack()
-}
+--8<-- "crates/ruststream-kinesis/tests/harness_kinesis.rs:keyed_handler"
 ```
 
 That signature says the body is written for Kinesis. A body that names no key keeps the framework's
