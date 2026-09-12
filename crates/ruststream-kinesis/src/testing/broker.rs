@@ -8,7 +8,7 @@ use bytes::Bytes;
 use ruststream::testing::{Coordinator, TestableBroker};
 use ruststream::{
     Broker, ConnectedBroker, DefaultPublish, HeaderMap, OutgoingMessage, Publisher, RawMessage,
-    Subscribe,
+    RedeliveryAddress, Subscribe,
 };
 
 use crate::error::KinesisError;
@@ -141,6 +141,12 @@ impl Subscribe for ConnectedKinesisTestBroker {
     fn subscribe(&self, name: &str) -> impl Future<Output = Result<Self::Subscriber, Self::Error>> {
         ready(Ok(self.open(name)))
     }
+
+    /// The same answer the service gives: a name is a log here, and a publish to it reaches the
+    /// subscription reading it.
+    fn redelivery_address(&self, name: &str) -> Option<RedeliveryAddress> {
+        Some(RedeliveryAddress::new(name.to_owned()))
+    }
 }
 
 impl TestableBroker for ConnectedKinesisTestBroker {
@@ -198,8 +204,15 @@ impl KinesisTestPublisher {
 
 impl Publisher for KinesisTestPublisher {
     type Error = KinesisError;
+    /// The real publisher's options type, so a mount that compiles against the service compiles
+    /// against the stand-in.
+    type Options = ();
 
-    fn publish(&self, msg: OutgoingMessage<'_>) -> impl Future<Output = Result<(), Self::Error>> {
+    fn publish(
+        &self,
+        msg: OutgoingMessage<'_>,
+        _options: Option<&Self::Options>,
+    ) -> impl Future<Output = Result<(), Self::Error>> {
         ready(self.route(&msg))
     }
 }

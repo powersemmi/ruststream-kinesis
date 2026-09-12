@@ -13,6 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream::testing::{TestApp, TestError};
 use ruststream_kinesis::prelude::*;
 use ruststream_kinesis::testing::KinesisTestBroker;
@@ -27,6 +28,10 @@ const MARKER: u64 = 999;
 /// How long a settle may take before the test calls it a hang rather than slow progress. Long
 /// enough that a loaded machine never reaches it, short enough to fail inside a CI job.
 const QUIESCENCE_BUDGET: Duration = Duration::from_secs(10);
+
+/// The delay the deferring handler below asks for. Long enough that no elapsed wall-clock time
+/// could account for the copy coming back; the test runs on paused time anyway.
+const RETRY_DELAY: Duration = Duration::from_secs(30);
 
 /// The destination is left to the call, so one model seeds every stream in this file.
 #[derive(Debug, Clone, PartialEq, Eq, Outgoing, Serialize, Deserialize)]
@@ -139,6 +144,23 @@ async fn since(_job: &Job) -> HandlerOutcome {
 #[subscriber(KinesisStream::new(""))]
 async fn unnamed(_job: &Job) -> HandlerOutcome {
     HandlerOutcome::ack()
+}
+
+/// Defers its first delivery and acks the copy that comes back, which is what makes the deferred
+/// retry observable: Kinesis has no server-held redelivery timer, so the framework publishes the
+/// copy itself.
+#[subscriber(KinesisStream::new("deferred"))]
+async fn deferring(_job: &Job, ctx: &mut Context<'_, KinesisContext>) -> HandlerOutcome {
+    let attempt = ctx
+        .headers()
+        .get_str(RETRY_COUNT_HEADER)
+        .and_then(|count| count.parse::<u64>().ok())
+        .unwrap_or(0);
+    if attempt == 0 {
+        HandlerOutcome::retry_after(RETRY_DELAY)
+    } else {
+        HandlerOutcome::ack()
+    }
 }
 
 /// The manual path's body: the same handler a service without the `macros` feature writes.
@@ -631,6 +653,56 @@ async fn a_reposition_replaced_before_it_is_applied_leaves_nothing_in_flight() {
         .subscriber("lanes")
         .assert_called(8)
         .settled(HandlerOutcome::ack());
+
+    tb.shutdown().await.expect("the harness shuts down");
+}
+
+/// Kinesis holds no redelivery timer of its own, so a handler that asks for a delay is served by
+/// the framework's fallback: it publishes the record again once the delay is over. The descriptor
+/// answers where that copy goes, and a stream is both the subscription and the publish
+/// destination, so it goes back to the stream the handler reads.
+///
+/// A descriptor that cannot answer makes the mount refuse to start, which is the point of
+/// answering at all: a service that wires a deferred retry learns at startup whether it has one.
+#[tokio::test(start_paused = true)]
+async fn a_deferred_retry_comes_back_through_the_address_the_descriptor_reports() {
+    let broker = KinesisTestBroker::new();
+    let retry_publisher = broker.publisher();
+    let app = RustStream::new(AppInfo::new("deferred", "0.1.0")).with_broker(broker, |b| {
+        b.retry_via(retry_publisher);
+        b.include(deferring);
+    });
+    let tb = TestApp::start(app).await.expect("the harness starts");
+
+    tb.broker::<KinesisTestBroker>()
+        .message(&Job { id: 1 })
+        .to("deferred")
+        .publish()
+        .await
+        .expect("the publish succeeds");
+    tb.broker::<KinesisTestBroker>()
+        .subscriber("deferred")
+        .assert_called_once()
+        .settled(HandlerOutcome::retry_after(RETRY_DELAY));
+
+    // The delay is real: nothing comes back before it is over.
+    tb.advance(RETRY_DELAY.saturating_sub(Duration::from_millis(1)))
+        .await
+        .expect("the reaction settles");
+    tb.broker::<KinesisTestBroker>()
+        .subscriber("deferred")
+        .assert_called_once();
+
+    tb.advance(Duration::from_millis(1))
+        .await
+        .expect("the reaction settles");
+    assert_eq!(
+        tb.broker::<KinesisTestBroker>()
+            .subscriber("deferred")
+            .received::<Job>(),
+        vec![Job { id: 1 }, Job { id: 1 }],
+        "the deferred copy must reach the subscription that deferred it",
+    );
 
     tb.shutdown().await.expect("the harness shuts down");
 }

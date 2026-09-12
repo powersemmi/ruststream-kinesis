@@ -7,13 +7,11 @@
 //! [`KinesisPosition`](crate::KinesisPosition), spoken through the framework's `start_at(..)`
 //! clause and the `Seekable` capability.
 
+use std::future::{Future, ready};
 use std::time::Duration;
 
-#[cfg(feature = "testing")]
-use std::future::{Future, ready};
-
-use ruststream::SubscriptionSource;
 use ruststream::runtime::{Declared, IntoSource, SubscriberBuilder, SubscriberSettings};
+use ruststream::{RedeliveryAddress, SubscriptionSource};
 
 use crate::broker::ConnectedKinesisBroker;
 use crate::error::KinesisError;
@@ -201,6 +199,20 @@ impl SubscriptionSource<ConnectedKinesisBroker> for KinesisStream {
     ) -> Result<KinesisSubscriber, KinesisError> {
         connected.subscribe_stream(self).await
     }
+
+    /// A stream is what a subscription reads and what a publish writes to, so a `retry_via`
+    /// scope publishes the deferred copy back to the stream this descriptor names.
+    ///
+    /// The copy arrives at the tip rather than in the place the original held, and its partition
+    /// key picks the shard it lands on, so a deferred record loses its position in the stream's
+    /// order.
+    fn redelivery_address(
+        &self,
+        _connected: &ConnectedKinesisBroker,
+    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, KinesisError>> + Send {
+        // The stream name is the answer, so nothing is asked of the broker and nothing is awaited.
+        ready(Ok(Some(RedeliveryAddress::new(self.stream().to_owned()))))
+    }
 }
 
 /// The same descriptor opens a subscription on the in-process stand-in, so a service keeps its
@@ -223,6 +235,15 @@ impl SubscriptionSource<crate::testing::ConnectedKinesisTestBroker> for KinesisS
         connected: &crate::testing::ConnectedKinesisTestBroker,
     ) -> impl Future<Output = Result<Self::Subscriber, KinesisError>> + Send {
         ready(self.validate().map(|()| connected.open(self.stream())))
+    }
+
+    /// The same answer the descriptor gives against the service, so a `retry_via` scope that
+    /// starts in production starts in a unit test too.
+    fn redelivery_address(
+        &self,
+        _connected: &crate::testing::ConnectedKinesisTestBroker,
+    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, KinesisError>> + Send {
+        ready(Ok(Some(RedeliveryAddress::new(self.stream().to_owned()))))
     }
 }
 

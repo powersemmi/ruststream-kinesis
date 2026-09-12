@@ -162,7 +162,10 @@ async fn roundtrip_preserves_payload_headers_and_partition_key() {
     headers.insert(PARTITION_KEY_HEADER, "user-42");
     let publisher = connected.publisher();
     publisher
-        .publish(OutgoingMessage::new(&stream_name, b"{\"id\":1}".as_slice()).with_headers(headers))
+        .publish(
+            OutgoingMessage::new(&stream_name, b"{\"id\":1}".as_slice()).with_headers(headers),
+            None,
+        )
         .await
         .expect("publish succeeds");
 
@@ -205,7 +208,7 @@ async fn checkpoints_resume_where_acknowledgement_stopped() {
             .expect("subscription opens");
         for payload in [b"one".as_slice(), b"two".as_slice()] {
             publisher
-                .publish(OutgoingMessage::new(&stream_name, payload))
+                .publish(OutgoingMessage::new(&stream_name, payload), None)
                 .await
                 .expect("publish succeeds");
         }
@@ -229,7 +232,10 @@ async fn checkpoints_resume_where_acknowledgement_stopped() {
     // position forced, the shard resumes from its checkpoint and the acknowledged records
     // stay consumed.
     publisher
-        .publish(OutgoingMessage::new(&stream_name, b"three".as_slice()))
+        .publish(
+            OutgoingMessage::new(&stream_name, b"three".as_slice()),
+            None,
+        )
         .await
         .expect("publish succeeds");
     let mut subscriber = source(&stream_name)
@@ -272,7 +278,7 @@ async fn an_unacknowledged_record_replays_on_the_next_lease() {
             b"after".as_slice(),
         ] {
             publisher
-                .publish(OutgoingMessage::new(&stream_name, payload))
+                .publish(OutgoingMessage::new(&stream_name, payload), None)
                 .await
                 .expect("publish succeeds");
         }

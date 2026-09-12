@@ -18,7 +18,7 @@ ruststream-kinesis = { path = "crates/ruststream-kinesis" }
 # The lower bound names the pre-release on purpose: cargo excludes pre-releases from a range
 # that does not mention one, so `>=0.7.0` would refuse the 0.7.0-rc candidates. This admits them
 # and the final 0.7.0 alike.
-ruststream = { version = ">=0.7.0-rc.2, <0.8.0", default-features = false }
+ruststream = { version = ">=0.7.0-rc.3, <0.8.0", default-features = false }
 
 aws-config = "1.10"
 # default-features off drops the legacy hyper-0.14/rustls-0.21 feature (RustSec advisories in

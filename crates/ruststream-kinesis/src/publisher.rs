@@ -86,8 +86,18 @@ fn spread_key() -> String {
 
 impl Publisher for KinesisPublisher {
     type Error = KinesisError;
+    /// Kinesis takes no per-message setting this crate exposes, so a publish carries none.
+    ///
+    /// The partition key is the one field a call site varies, and it stays a header: the
+    /// cross-broker [`Partitioned`](ruststream::Partitioned) capability reads it from there on
+    /// the way in, so the same wire carries it on the way out.
+    type Options = ();
 
-    async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
+    async fn publish(
+        &self,
+        msg: OutgoingMessage<'_>,
+        _options: Option<&Self::Options>,
+    ) -> Result<(), Self::Error> {
         let core = self.core()?;
         let partition_key = self.partition_key(&msg);
         let data = encode_envelope(msg.headers(), msg.payload());
@@ -348,9 +358,14 @@ pub struct PartitionKeyed<P> {
 
 impl<P: Publisher> Publisher for PartitionKeyed<P> {
     type Error = P::Error;
+    type Options = P::Options;
 
-    async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
-        self.inner.publish(msg).await
+    async fn publish(
+        &self,
+        msg: OutgoingMessage<'_>,
+        options: Option<&Self::Options>,
+    ) -> Result<(), Self::Error> {
+        self.inner.publish(msg, options).await
     }
 
     fn base_headers(&self) -> Option<&HeaderMap> {
@@ -457,7 +472,10 @@ mod tests {
         headers.insert(PARTITION_KEY_HEADER, "by-hand");
         broker
             .publisher()
-            .publish(OutgoingMessage::new("jobs", b"payload").with_headers(headers))
+            .publish(
+                OutgoingMessage::new("jobs", b"payload").with_headers(headers),
+                None,
+            )
             .await
             .expect("the publish succeeds");
 
