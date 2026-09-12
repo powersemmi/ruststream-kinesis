@@ -131,10 +131,10 @@ advances, and is written to the lease store, only when no earlier record on that
 unhandled.
 
 - `HandlerOutcome::ack()` marks the record handled.
-- `nack(requeue = true)` leaves it unhandled. The watermark stops there, so the shard replays from
-  that record when its lease is next taken. A sharded log repositions; it cannot requeue one
+- `HandlerOutcome::retry()` leaves it unhandled. The watermark stops there, so the shard replays
+  from that record when its lease is next taken. A sharded log repositions; it cannot requeue one
   record.
-- `nack(requeue = false)` checkpoints past the record, which is how a poison one is retired.
+- `HandlerOutcome::drop()` checkpoints past the record, which is how a poison one is retired.
 
 Delivery is at-least-once: an unacknowledged record holds the watermark where it is, and everything
 from it onward is delivered again after a restart or a lease handover.
@@ -171,8 +171,8 @@ The copy goes to the stream the subscription reads, which the descriptor reports
 
 The copy arrives at the tip of the stream, not in the place the record held, and its partition key
 picks the shard it lands on. A deferred record therefore loses its order against the records it was
-published among. Where that order matters, hold the shard with `nack(requeue = true)` instead: the
-watermark stops at the record, and the shard replays from it.
+published among. Where that order matters, hold the shard with `HandlerOutcome::retry()` instead:
+the watermark stops at the record, and the shard replays from it.
 
 ### Sharing shards between instances
 
@@ -280,8 +280,8 @@ it, and a delivered record carries it back in the same header. Deliveries also c
 Some brokers add per-message steps to the publish builder - a priority, a quality of service, an
 expiry. This one adds none: a Kinesis record has a partition key and a payload, and the key is
 named above. So a handler body on this broker imports the framework prelude alone, and bounds an
-injected slot with a plain capability (`Out<impl Publisher, Receipts>`) rather than naming an
-options type.
+injected slot with a plain capability (`Out<impl Publisher, _>`) rather than naming an options
+type.
 
 ## The generated document
 
