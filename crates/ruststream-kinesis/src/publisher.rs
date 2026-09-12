@@ -170,6 +170,22 @@ impl PublishPolicy<ConnectedKinesisBroker> for KinesisPublish {
     }
 }
 
+/// The same policy pairs with the in-process stand-in, so a routes file mounts unchanged in a
+/// unit test: `.out(Reply, Publish::default())` names one type whichever broker it runs against,
+/// and the key it carries reaches the record here too - the stand-in carries the partition key in
+/// the header its deliveries read.
+#[cfg(feature = "testing")]
+impl PublishPolicy<crate::testing::ConnectedKinesisTestBroker> for KinesisPublish {
+    type Live = crate::testing::KinesisTestPublisher;
+
+    fn pair(
+        self,
+        connected: &crate::testing::ConnectedKinesisTestBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(connected.publisher_keyed(self.key())))
+    }
+}
+
 /// The Kinesis publish settings, chained on a mount site after `.out(marker, policy)`.
 ///
 /// The publish-side mirror of [`KinesisSubscriberExt`](crate::KinesisSubscriberExt): the
@@ -453,11 +469,12 @@ mod tests {
     }
 
     /// The mount site's key is the bottom of the ladder, not an override: it applies to every
-    /// record that names none, and steps aside for one that does.
+    /// record that names none, and steps aside for one that does. The policy is the production
+    /// one, paired against the stand-in - the same type a routes file names.
     #[tokio::test]
     async fn the_mount_sites_key_applies_until_a_publish_names_its_own() {
         let broker = connected().await;
-        let publisher = crate::testing::KinesisTestPublish::default()
+        let publisher = KinesisPublish::default()
             .partition_key("named-on-the-mount")
             .pair(&broker)
             .await

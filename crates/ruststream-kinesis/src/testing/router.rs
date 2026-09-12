@@ -338,3 +338,60 @@ impl std::fmt::Debug for AddressRouter {
             .finish_non_exhaustive()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::seek::sequence_of;
+
+    /// One retained record published at `at_millis`; what it carries plays no part in resolving
+    /// a position.
+    fn entry(at_millis: u64) -> LogEntry {
+        LogEntry {
+            payload: Bytes::from_static(b"record"),
+            headers: HeaderMap::new(),
+            at_millis,
+        }
+    }
+
+    fn target_of(log: &[LogEntry], to: &KinesisPosition) -> Result<usize, KinesisError> {
+        AddressRouter::plan_over(log, "jobs", to).map(|plan| plan.target)
+    }
+
+    /// A timestamp is stream-wide and opens at the first record from that instant on: an instant
+    /// before the log opens the whole of it, one between two records opens at the later one, and
+    /// one past the last record opens at the tip.
+    #[test]
+    fn a_timestamp_opens_at_the_first_record_from_that_instant() {
+        let log = [entry(10), entry(20), entry(30)];
+        let at = |millis| {
+            target_of(&log, &KinesisPosition::timestamp(millis)).expect("a timestamp resolves")
+        };
+        assert_eq!(at(0), 0);
+        assert_eq!(at(20), 1);
+        assert_eq!(at(25), 2);
+        assert_eq!(at(40), 3);
+    }
+
+    /// The stand-in routes one shard, so a captured position from another one is refused rather
+    /// than applied to the one it has: a test that seeks to a foreign shard would otherwise pass
+    /// here and fail against the service, where that shard has a reader of its own.
+    #[test]
+    fn a_position_this_transport_never_issued_is_refused() {
+        let log = [entry(10)];
+        let elsewhere = KinesisPosition::sequence("shardId-000000000007", sequence_of(0));
+        assert!(target_of(&log, &elsewhere).is_err());
+
+        let unissued = KinesisPosition::sequence(IN_PROCESS_SHARD, "not-a-sequence-number");
+        assert!(target_of(&log, &unissued).is_err());
+    }
+
+    /// A sequence past the tip clamps to it, the way the service clamps one: the subscription
+    /// resumes with the next publish instead of failing.
+    #[test]
+    fn a_sequence_past_the_tip_clamps_to_it() {
+        let log = [entry(10)];
+        let ahead = KinesisPosition::sequence(IN_PROCESS_SHARD, sequence_of(9));
+        assert_eq!(target_of(&log, &ahead).expect("a sequence resolves"), 1);
+    }
+}

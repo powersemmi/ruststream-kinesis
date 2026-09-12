@@ -1,5 +1,10 @@
-//! Conformance: the routing suite against the in-process transport, and the lifecycle check
-//! against a local stack (gated behind `KINESIS_TEST_ENDPOINT`).
+//! Conformance: the framework's contract suites, each run twice - against the in-process
+//! transport, and against a local stack (gated behind `KINESIS_TEST_ENDPOINT`).
+//!
+//! Both legs matter. The in-process leg is what holds the stand-in to the same contract the
+//! service answers to, so an emulation cannot quietly drift into something more convenient than
+//! the product; the live leg is what proves the contract itself is the product's, and not one the
+//! stand-in was written to satisfy.
 //!
 //! `just test-brokers` runs them against a stack it starts and removes. Driving them by hand
 //! (`just brokers-up`, then `KINESIS_TEST_ENDPOINT=http://127.0.0.1:4566 cargo test
@@ -29,6 +34,24 @@ fn test_endpoint() -> Option<String> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn kinesis_test_broker_passes_conformance_suite() {
     harness::run_suite(KinesisTestBroker::new).await;
+}
+
+/// The lifecycle ladder against the stand-in: synchronous construction, the consuming `connect`,
+/// a subscription opened through the crate's own descriptor, a publish it receives and acks, the
+/// consuming `shutdown`, and - the part only a runtime check can hold - a publisher created
+/// before the shutdown erroring afterwards instead of succeeding against a closed transport.
+///
+/// The stand-in follows the same ladder as the service, so it owes the same answers; the live leg
+/// below runs this very suite against the product.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kinesis_test_broker_passes_lifecycle() {
+    harness::lifecycle(
+        KinesisTestBroker::new,
+        |name| KinesisStream::new(name),
+        |connected| connected.publisher(),
+    )
+    .await;
 }
 
 /// The stand-in claims `Seekable` and `Positioned` over its retained log, so it owes the same
