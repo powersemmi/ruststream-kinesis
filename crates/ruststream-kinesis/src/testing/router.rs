@@ -38,6 +38,17 @@ struct LogEntry {
     at_millis: u64,
 }
 
+impl LogEntry {
+    /// The delivery this record makes at `sequence`, its index in the retained log.
+    fn delivery(&self, sequence: usize) -> Delivery {
+        Delivery {
+            payload: self.payload.clone(),
+            headers: self.headers.clone(),
+            sequence,
+        }
+    }
+}
+
 /// Single delivery handed to a matching subscriber, stamped with its index in the retained log.
 #[derive(Debug, Clone)]
 pub(crate) struct Delivery {
@@ -133,6 +144,11 @@ impl AddressRouter {
 
     /// Appends to the name's retained log and fans the record out to every live subscription on
     /// it. Under a harness run every live enqueue is counted with [`Coordinator::enqueued`].
+    ///
+    /// The append and the fanout happen under one lock, so the log and a subscription's queue
+    /// never disagree about a record: a [`reposition`](Self::reposition) running beside this one
+    /// sees the record in both or in neither, and so cannot drop one that neither its replay nor
+    /// its queue then carries.
     pub(crate) fn publish(
         &self,
         address: &str,
@@ -140,38 +156,82 @@ impl AddressRouter {
         headers: HeaderMap,
         coordinator: Option<&Coordinator>,
     ) {
-        let mut to_notify: Vec<DeliverySender> = Vec::new();
-        let sequence;
-        {
-            let mut state = self
-                .state
-                .lock()
-                .expect("kinesis test router mutex poisoned");
-            let log = state.log.entry(address.to_owned()).or_default();
-            sequence = log.len();
-            log.push(LogEntry {
-                payload: payload.clone(),
-                headers: headers.clone(),
-                at_millis: now_millis(),
-            });
-            for sub in state.subscriptions.values() {
-                if sub.address == address {
-                    to_notify.push(sub.sender.clone());
-                }
-            }
-        }
-
-        let delivery = Delivery {
+        let entry = LogEntry {
             payload,
             headers,
-            sequence,
+            at_millis: now_millis(),
         };
-        for tx in to_notify {
-            if tx.send(delivery.clone()).is_ok()
+        let mut state = self
+            .state
+            .lock()
+            .expect("kinesis test router mutex poisoned");
+        let log = state.log.entry(address.to_owned()).or_default();
+        let delivery = entry.delivery(log.len());
+        log.push(entry);
+
+        for sub in state.subscriptions.values() {
+            if sub.address == address
+                && sub.sender.send(delivery.clone()).is_ok()
                 && let Some(coordinator) = coordinator
             {
                 coordinator.enqueued();
             }
+        }
+    }
+
+    /// Repositions one subscription over the name's retained log: what it had queued is dropped,
+    /// and the retained suffix from `plan.target` on is enqueued in its place.
+    ///
+    /// The swap holds the lock [`publish`](Self::publish) takes, which is what makes it safe: a
+    /// record published beside it is either already in the suffix this enqueues, or arrives after
+    /// the queue has been swapped. Split across two lock acquisitions, a publish landing between
+    /// the snapshot and the drain would be carried by neither - dropped as though it were a
+    /// pre-seek copy, with the harness's in-flight count still balanced, so a test would observe
+    /// quiescence and a missing delivery.
+    ///
+    /// Under a harness run the swap is counted: the seek already counted the records the log held
+    /// when it resolved ([`Plan::count`]), so only the growth since is added here, and every
+    /// drained delivery is balanced with [`Coordinator::consumed`].
+    // The guard is held across the whole swap on purpose - that is the invariant documented
+    // above - so the lint's advice to narrow its scope is what the fix had to undo.
+    #[allow(clippy::significant_drop_tightening)]
+    pub(crate) fn reposition(
+        &self,
+        address: &str,
+        plan: Plan,
+        queue: &mut DeliveryReceiver,
+        requeue: &DeliverySender,
+        coordinator: Option<&Coordinator>,
+    ) {
+        let state = self
+            .state
+            .lock()
+            .expect("kinesis test router mutex poisoned");
+        let replay: Vec<Delivery> = state.log.get(address).map_or_else(Vec::new, |log| {
+            log.iter()
+                .enumerate()
+                .skip(plan.target)
+                .map(|(sequence, entry)| entry.delivery(sequence))
+                .collect()
+        });
+
+        // Counted before the drain, so the in-flight total never touches zero while a replay is
+        // still pending: a harness waiting for quiescence would otherwise call the reaction
+        // finished mid-swap.
+        if let Some(coordinator) = coordinator {
+            for _ in plan.count..replay.len() {
+                coordinator.enqueued();
+            }
+        }
+        while queue.try_recv().is_ok() {
+            // Every drained delivery was counted in flight when it was enqueued.
+            if let Some(coordinator) = coordinator {
+                coordinator.consumed();
+            }
+        }
+        for delivery in replay {
+            // The send cannot fail: the subscription holds both ends of its own channel.
+            let _ = requeue.send(delivery);
         }
     }
 
@@ -235,25 +295,6 @@ impl AddressRouter {
         Ok(Plan {
             target,
             count: log.len() - target,
-        })
-    }
-
-    /// The retained suffix from `target` on, as deliveries ready to enqueue.
-    pub(crate) fn replay_from(&self, address: &str, target: usize) -> Vec<Delivery> {
-        let state = self
-            .state
-            .lock()
-            .expect("kinesis test router mutex poisoned");
-        state.log.get(address).map_or_else(Vec::new, |log| {
-            log.iter()
-                .enumerate()
-                .skip(target)
-                .map(|(sequence, entry)| Delivery {
-                    payload: entry.payload.clone(),
-                    headers: entry.headers.clone(),
-                    sequence,
-                })
-                .collect()
         })
     }
 
