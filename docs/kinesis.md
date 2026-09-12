@@ -247,16 +247,22 @@ already holds encoded is declared as a `#[derive(Outgoing, Serialized)]` newtype
 it, and the generated document still names the message. See the
 [publishing guide](https://powersemmi.github.io/ruststream/latest/guides/publishing/).
 
-`KinesisPublishExt::with_partition_key` sets the record's partition key. It is called on the
-publisher, before `message(..)`, and returns a `PartitionKeyed<KinesisPublisher>` that the builder
-continues from unchanged:
+### The partition key
+
+The partition key picks the shard a record lands on, and with it the order that record keeps
+against its neighbours. It belongs to one record rather than to a publisher, so it is a step on the
+publish, `partition_key(..)`, standing among the framework's own steps:
 
 ```rust
 --8<-- "crates/ruststream-kinesis/examples/kinesis_seek.rs:publish"
 ```
 
-A reply and an injected slot publish through a publisher the service never holds, since the runtime
-constructs it from the policy. Their key is named on that policy, at the mount site, through the
+The step is a position on the builder and not a publisher wrapped around another, so the record
+still leaves through the entry the mount site named: the codec that entry chose still encodes it,
+the transforms on it still run, and a test still attributes the publish to that entry's slot.
+
+A reply has no call site to put a step on: a replying handler returns a value, and the runtime
+publishes it. Its key is named on the policy instead, at the mount site, through the
 `KinesisPublishSettings` trait the prelude carries:
 
 ```rust
@@ -267,21 +273,47 @@ One key means one shard, and with it that shard's throughput. Name a key when th
 stay mutually ordered, and leave it off otherwise: with no key anywhere, a process-unique one
 spreads the records across the shards.
 
-A key can be named in three places, and they resolve in one order. A record that carries the
-`partition-key` header decides its own key, which is what `with_partition_key` sets; otherwise the
-key the mount site named on the policy applies; otherwise the record spreads. Setting that header
-by hand works as well, and a publish that names other headers keeps the key already decided
-alongside them.
+Four places can name the key, and they resolve in one order:
 
-The header is how the crate spells the key: the publisher sets the record's own partition key from
-it, and a delivered record carries it back in the same header. Deliveries also carry
-`kinesis-sequence-number` and `kinesis-shard-id` (`SEQUENCE_HEADER` and `SHARD_HEADER`).
+1. The `partition_key(..)` step of this publish.
+2. The `partition-key` header the call wrote by hand - the portable spelling, and what a record
+   carries when it arrives from another broker of this framework.
+3. The key the mount site named on the policy.
+4. A process-unique key, which spreads the records: a Kinesis record cannot go out without one.
 
-Some brokers add per-message steps to the publish builder - a priority, a quality of service, an
-expiry. This one adds none: a Kinesis record has a partition key and a payload, and the key is
-named above. So a handler body on this broker imports the framework prelude alone, and bounds an
-injected slot with a plain capability (`Out<impl Publisher, _>`) rather than naming an options
-type.
+The header is how the key travels: the publisher writes the resolved key into the record's own
+partition key field, and a delivered record reports it back in that header, where
+`IncomingMessage::partition_key` and the framework's per-key dispatch find it. Deliveries also
+carry `kinesis-sequence-number` and `kinesis-shard-id` (`SEQUENCE_HEADER` and `SHARD_HEADER`).
+
+The step is a per-message setting, and per-message settings are the one thing a handler body says a
+broker's name for. A body that names the key imports this crate's prelude and bounds its slot on
+the options type:
+
+```rust
+use ruststream_kinesis::prelude::*;
+
+#[subscriber(KinesisStream::new("orders"))]
+async fn journal(
+    order: &Order,
+    Out(journal): Out<impl Publisher<Options = KinesisPublishOptions>, Journal>,
+) -> HandlerOutcome {
+    if journal
+        .message(order)
+        .to("journal")
+        .partition_key("tenant-acme")
+        .publish()
+        .await
+        .is_err()
+    {
+        return HandlerOutcome::retry();
+    }
+    HandlerOutcome::ack()
+}
+```
+
+That signature says the body is written for Kinesis. A body that names no key keeps the framework's
+prelude and the plain `Out<impl Publisher, _>` bound, and moves between brokers untouched.
 
 ## The generated document
 
@@ -350,9 +382,15 @@ The mount is the service's own on both sides. `KinesisStream` opens the subscrip
 the settings it carries in production. `poll_interval` prices a read this transport never makes and
 `create_if_missing` has no stream to create, so both are accepted and ignored. A descriptor the
 service would reject, an empty stream name, fails the mount here as well. `Publish` pairs into the
-stand-in's publisher and carries the partition key the mount site named on it. It is also the
+stand-in's publisher, which resolves a record's partition key through the same four-step ladder the
+service uses, so a keyed publish reads back here the way it will read back live. It is also the
 default policy of the connected stand-in, so a reply with no publisher of its own goes through it.
 There is no test-only descriptor and no test-only policy.
+
+A per-message setting is recorded against the slot the publish left through, so the harness asserts
+it directly: `tb.out::<Journal>().with_options(&KinesisPublishOptions { partition_key: Some(..) })`
+for a call that named a key, and `assert_options_default()` for one that left the policy's own
+settings alone.
 
 The framework's contract suites run against the stand-in: routing
 (`conformance::harness::run_suite`), the lifecycle ladder (`harness::lifecycle`), and the `Seekable`
