@@ -1,14 +1,14 @@
 # ruststream-kinesis {#ruststream-kinesis}
 
 **`ruststream-kinesis`** запускает сервис [RustStream](https://powersemmi.github.io/ruststream/) на
-Amazon Kinesis Data Streams. Поток - это шардированный лог, как в Kafka.
+Amazon Kinesis Data Streams. Поток - это сегментированный лог, как в Kafka.
 
 Транспорт реализован поверх официального клиента
-[`aws-sdk-kinesis`](https://docs.rs/aws-sdk-kinesis). Над ним подписка находит шарды потока при их
-разделениях и слияниях, берёт на каждый шард аренду с ограждением и пишет контрольные точки
-продвижения по каждому шарду.
+[`aws-sdk-kinesis`](https://docs.rs/aws-sdk-kinesis). Над ним подписка находит сегменты потока при
+их разделениях и слияниях, берёт на каждый сегмент аренду с ограждением и пишет контрольные точки
+продвижения по каждому сегменту.
 
-Фича `testing` даёт брокер внутри процесса.
+Фича `testing` даёт внутрипроцессный брокер.
 
 ```toml
 ruststream = { version = "0.7", features = ["macros", "json"] }
