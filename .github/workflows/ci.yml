@@ -3,8 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
+  # No base filter: a pull request stacked on another one has a branch for its base, and a filter
+  # naming `main` leaves it with no checks at all - which reads as a conflicting branch rather
+  # than as a workflow that declined to run.
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -219,6 +221,8 @@ jobs:
       - name: Run integration + conformance against LocalStack
         env:
           KINESIS_TEST_ENDPOINT: http://127.0.0.1:4566
+          # This job started a stack, so a suite that skips past it is a defect, not a pass.
+          RUSTSTREAM_REQUIRE_LIVE: "1"
         run: >-
           cargo test --locked -p ruststream-kinesis --all-features
           --test integration_kinesis

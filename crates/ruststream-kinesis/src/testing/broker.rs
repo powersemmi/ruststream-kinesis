@@ -7,12 +7,13 @@ use std::sync::{Arc, OnceLock};
 use bytes::Bytes;
 use ruststream::testing::{Coordinator, TestableBroker};
 use ruststream::{
-    Broker, ConnectedBroker, DefaultPublish, HeaderMap, OutgoingMessage, PairError, PublishPolicy,
+    AddressedCopies, Broker, ConnectedBroker, DefaultPublish, HeaderMap, OutgoingMessage,
     Publisher, RawMessage, Subscribe,
 };
 
 use crate::error::KinesisError;
 use crate::message::PARTITION_KEY_HEADER;
+use crate::publisher::{KinesisPublish, KinesisPublishOptions, resolve_partition_key};
 use crate::testing::router::AddressRouter;
 use crate::testing::subscriber::KinesisTestSubscriber;
 
@@ -105,8 +106,10 @@ impl ConnectedKinesisTestBroker {
         }
     }
 
-    /// The same publisher carrying the partition key a mount site named on its policy.
-    fn publisher_keyed(&self, partition_key: Option<Arc<str>>) -> KinesisTestPublisher {
+    /// The same publisher carrying the partition key a mount site named on its policy. This is
+    /// what [`KinesisPublish`](crate::KinesisPublish) pairs into here, so the policy a service
+    /// ships is the policy its unit tests mount.
+    pub(crate) fn publisher_keyed(&self, partition_key: Option<Arc<str>>) -> KinesisTestPublisher {
         KinesisTestPublisher {
             state: Arc::clone(&self.state),
             partition_key,
@@ -134,6 +137,9 @@ impl ConnectedBroker for ConnectedKinesisTestBroker {
 
 impl Subscribe for ConnectedKinesisTestBroker {
     type Subscriber = KinesisTestSubscriber;
+    /// The same copy path the service declares: a name is a log here, and a publish to it
+    /// reaches the subscription reading it.
+    type Copies = AddressedCopies;
 
     fn subscribe(&self, name: &str) -> impl Future<Output = Result<Self::Subscriber, Self::Error>> {
         ready(Ok(self.open(name)))
@@ -161,6 +167,11 @@ impl TestableBroker for ConnectedKinesisTestBroker {
 ruststream::register_testable_broker!(ConnectedKinesisTestBroker);
 
 /// Publisher for the in-process broker.
+///
+/// A publisher outlives the connection it was paired from - it is a handle, and handles get
+/// cloned and handed on - so, like the real one, it reports
+/// [`KinesisError::NotConnected`](crate::KinesisError::NotConnected) once the transport has shut
+/// down rather than writing into a dead connection.
 #[derive(Debug, Clone)]
 pub struct KinesisTestPublisher {
     state: Arc<TestState>,
@@ -168,84 +179,44 @@ pub struct KinesisTestPublisher {
     partition_key: Option<Arc<str>>,
 }
 
-impl Publisher for KinesisTestPublisher {
-    type Error = KinesisError;
-
-    fn publish(&self, msg: OutgoingMessage<'_>) -> impl Future<Output = Result<(), Self::Error>> {
+impl KinesisTestPublisher {
+    /// Routes one record, or reports the closed transport. Synchronous because nothing here
+    /// leaves the process; [`Publisher::publish`] is the async seam.
+    fn route(
+        &self,
+        msg: &OutgoingMessage<'_>,
+        options: Option<&KinesisPublishOptions>,
+    ) -> Result<(), KinesisError> {
+        self.state.ensure_open()?;
+        // The service resolves the key through the same function and hands it to the record's own
+        // field; a record has no such field here, so the key lands in the header its deliveries
+        // read back. Same ladder, same point of the publish, one wire apart.
+        let key = resolve_partition_key(options, msg.headers(), self.partition_key.as_deref());
         let mut headers = msg.headers().clone();
-        // The service carries the key in the record's own field and this transport carries it in
-        // the header its deliveries read, so a record that names none takes the publisher's key
-        // here - the same ladder, at the same point of the publish.
-        if let Some(key) = &self.partition_key
-            && !headers.contains(PARTITION_KEY_HEADER)
-        {
-            headers.insert(PARTITION_KEY_HEADER, key.to_string());
-        }
+        headers.insert(PARTITION_KEY_HEADER, key);
         self.state
             .publish(msg.name(), Bytes::copy_from_slice(msg.payload()), headers);
-        ready(Ok(()))
+        Ok(())
     }
 }
 
-impl crate::sealed::Sealed for KinesisTestPublisher {}
-impl crate::KinesisPublishExt for KinesisTestPublisher {}
+impl Publisher for KinesisTestPublisher {
+    type Error = KinesisError;
+    /// The real publisher's options type, so a mount that compiles against the service compiles
+    /// against the stand-in.
+    type Options = KinesisPublishOptions;
 
-/// The publish policy for [`KinesisTestPublisher`].
-///
-/// It mirrors [`KinesisPublish`](crate::KinesisPublish) on the real broker down to the settings
-/// a mount site chains onto it, so a service tests the mount it ships.
-///
-/// # Examples
-///
-/// ```
-/// use ruststream_kinesis::testing::KinesisTestPublish;
-///
-/// let policy = KinesisTestPublish::default().partition_key("tenant-acme");
-/// # let _ = policy;
-/// ```
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[must_use]
-pub struct KinesisTestPublish {
-    partition_key: Option<String>,
-}
-
-impl KinesisTestPublish {
-    /// The partition key every record published through this policy carries. The stand-in's
-    /// [`KinesisPublish::partition_key`](crate::KinesisPublish::partition_key).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ruststream_kinesis::testing::KinesisTestPublish;
-    ///
-    /// let policy = KinesisTestPublish::default().partition_key("tenant-acme");
-    /// # let _ = policy;
-    /// ```
-    pub fn partition_key(mut self, key: impl Into<String>) -> Self {
-        self.partition_key = Some(key.into());
-        self
+    fn publish(
+        &self,
+        msg: OutgoingMessage<'_>,
+        options: Option<&Self::Options>,
+    ) -> impl Future<Output = Result<(), Self::Error>> {
+        ready(self.route(&msg, options))
     }
 }
 
-impl crate::sealed::PolicyKey for KinesisTestPublish {
-    fn with_partition_key(self, key: String) -> Self {
-        self.partition_key(key)
-    }
-}
-
-impl PublishPolicy<ConnectedKinesisTestBroker> for KinesisTestPublish {
-    type Live = KinesisTestPublisher;
-
-    fn pair(
-        self,
-        connected: &ConnectedKinesisTestBroker,
-    ) -> impl Future<Output = Result<Self::Live, PairError>> {
-        ready(Ok(connected.publisher_keyed(
-            self.partition_key.as_deref().map(Arc::from),
-        )))
-    }
-}
-
+/// The stand-in replies through the crate's own policy, so a mount that names no publisher gets
+/// [`KinesisPublish`] here exactly as it does against the service.
 impl DefaultPublish for ConnectedKinesisTestBroker {
-    type Policy = KinesisTestPublish;
+    type Policy = KinesisPublish;
 }

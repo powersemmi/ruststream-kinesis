@@ -1,0 +1,263 @@
+# Locked renderings for the documentation's terms of art.
+#
+# A machine translation of technical prose does not fail by producing unreadable text; it
+# fails by rendering a term of art with a dictionary synonym, so that two pages of the same
+# site name the same concept differently and the reader cannot tell whether a distinction is
+# meant. Each term below therefore has exactly one rendering per language, and
+# `scripts/check_doc_i18n.py` enforces it: where the English page uses a listed term, the
+# translated page has to use the locked equivalent.
+#
+# Fields:
+#   en        the English term, matched case-insensitively on word boundaries
+#   en_match  optional regex replacing that default match (for irregular plurals or spellings)
+#   ru, zh    the locked rendering, and what a translator must write
+#   ru_match  optional regex accepting inflected forms of the Russian rendering
+#   zh_match  optional regex, same purpose, rarely needed
+#
+# A term kept in Latin script in a target language is a deliberate choice, not an oversight:
+# `ack`, `trait` and `crate` are what Russian and Chinese Rust texts actually write, and
+# replacing them with a translated coinage would make the page harder to read, not easier.
+#
+# Adding a term here is cheap and retroactive: the check reports every existing translated
+# page that does not yet honour it, so add terms only once their rendering is settled.
+#
+# The list has two halves. The framework's terms come from the core's own glossary, so a
+# reader moving between this site and the RustStream documentation meets one word per concept.
+# Kinesis's terms come from AWS's Russian and Chinese documentation, because the reader met
+# them there first - in the console, in the service's own pages - and a coined synonym would
+# make them look like something else. Where the two halves name the same value, the service
+# keeps its word: the record's partition key is Kinesis's, and the framework's keyed worker
+# lanes are qualified ("партиции воркеров", 工作分区) rather than renamed.
+
+[[term]]
+en = "ack"
+ru = "ack"
+zh = "ack"
+
+[[term]]
+en = "nack"
+ru = "nack"
+zh = "nack"
+
+[[term]]
+en = "broker"
+en_match = "brokers?"
+ru = "брокер"
+ru_match = "брокер"
+zh = "Broker"
+zh_match = "(?i)broker"
+
+[[term]]
+en = "subscriber"
+en_match = "subscribers?"
+ru = "подписчик"
+ru_match = "подписчик"
+zh = "订阅者"
+
+[[term]]
+en = "publisher"
+en_match = "publishers?"
+ru = "издатель"
+ru_match = "издател"
+zh = "发布者"
+
+[[term]]
+en = "capability"
+en_match = "capabilit(y|ies)"
+ru = "совместимость"
+ru_match = "совместимост"
+zh = "能力"
+
+[[term]]
+en = "batch"
+en_match = "batch(es|ed|ing)?"
+ru = "пакет"
+ru_match = "пакет"
+zh = "批"
+
+[[term]]
+en = "subscription"
+en_match = "subscriptions?"
+ru = "подписка"
+ru_match = "подписк"
+zh = "订阅"
+
+[[term]]
+en = "handler"
+en_match = "handlers?"
+ru = "обработчик"
+ru_match = "обработчик"
+zh = "处理器"
+
+[[term]]
+en = "message"
+en_match = "messages?"
+ru = "сообщение"
+ru_match = "сообщени"
+zh = "消息"
+
+[[term]]
+en = "middleware"
+ru = "middleware"
+zh = "中间件"
+
+[[term]]
+en = "router"
+en_match = "routers?"
+ru = "роутер"
+ru_match = "роутер"
+zh = "路由器"
+
+[[term]]
+en = "codec"
+en_match = "codecs?"
+ru = "кодек"
+ru_match = "кодек"
+zh = "编解码器"
+
+[[term]]
+en = "back-pressure"
+en_match = "back[- ]?pressure"
+ru = "обратное давление"
+ru_match = "обратн\\w* давлени"
+zh = "背压"
+
+[[term]]
+en = "at-least-once"
+ru = "at-least-once"
+zh = "至少一次"
+
+[[term]]
+en = "at-most-once"
+ru = "at-most-once"
+zh = "至多一次"
+
+[[term]]
+en = "cancel safety"
+en_match = "cancel[- ]safe(ty)?"
+ru = "безопасность при отмене"
+ru_match = "безопасн\\w* при отмене"
+zh = "取消安全"
+
+[[term]]
+en = "compile time"
+en_match = "compile[- ]time"
+ru = "время компиляции"
+ru_match = "компиляци"
+zh = "编译期"
+zh_match = "编译(期|时)"
+
+[[term]]
+en = "zero-cost"
+ru = "zero-cost"
+zh = "零成本"
+
+[[term]]
+en = "trait"
+en_match = "traits?"
+ru = "трейт"
+ru_match = "трейт"
+zh = "trait"
+
+[[term]]
+en = "crate"
+en_match = "crates?"
+ru = "крейт"
+ru_match = "крейт"
+zh = "crate"
+
+[[term]]
+en = "typestate"
+ru = "typestate"
+zh = "typestate"
+
+# Kinesis's own vocabulary, as AWS writes it in Russian and Chinese.
+
+[[term]]
+en = "stream"
+en_match = "streams?"
+ru = "поток"
+ru_match = "поток"
+zh = "流"
+
+[[term]]
+en = "shard"
+en_match = "shard(s|ed)?"
+ru = "сегмент"
+ru_match = "сегмент"
+zh = "分片"
+
+[[term]]
+en = "record"
+en_match = "records?"
+ru = "запись"
+ru_match = "запис"
+zh = "记录"
+
+[[term]]
+en = "partition key"
+en_match = "partition[- ]keys?"
+ru = "ключ сегмента"
+ru_match = "ключ\\w* сегмента"
+zh = "分区键"
+
+# Never used in prose today - the pages name the sequence number through the header constants -
+# but the rendering is settled, so a page that starts saying it says it the same way.
+[[term]]
+en = "sequence number"
+en_match = "sequence numbers?"
+ru = "порядковый номер"
+ru_match = "порядков\\w* номер"
+zh = "序列号"
+
+[[term]]
+en = "lease"
+en_match = "lease[sd]?|leasing"
+ru = "аренда"
+ru_match = "аренд"
+zh = "租约"
+
+[[term]]
+en = "checkpoint"
+en_match = "checkpoint(s|ing|ed)?"
+ru = "контрольная точка"
+ru_match = "контрольн\\w* точ"
+zh = "检查点"
+
+[[term]]
+en = "position"
+en_match = "positions?"
+ru = "позиция"
+ru_match = "позици"
+zh = "位置"
+
+# This crate's own word for the per-shard acknowledgement frontier; Kinesis has no term for it.
+[[term]]
+en = "watermark"
+en_match = "watermarks?"
+ru = "отметка подтверждения"
+ru_match = "отметк"
+zh = "水位线"
+
+# The core's own guides settle both of these: a spent delivery goes to "мёртвые письма" / 死信,
+# and what a broker adds to the document is a "биндинг" / 绑定.
+[[term]]
+en = "dead letter"
+en_match = "dead[- ]letters?"
+ru = "мёртвые письма"
+ru_match = "мёртв\\w* пис"
+zh = "死信"
+
+[[term]]
+en = "binding"
+en_match = "bindings?"
+ru = "биндинг"
+ru_match = "биндинг"
+zh = "绑定"
+
+[[term]]
+en = "envelope"
+en_match = "envelopes?"
+ru = "конверт"
+ru_match = "конверт"
+zh = "信封"

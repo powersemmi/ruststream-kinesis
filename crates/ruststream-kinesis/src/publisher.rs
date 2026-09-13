@@ -4,21 +4,55 @@ use std::future::{Future, ready};
 use std::sync::Arc;
 
 use aws_sdk_kinesis::primitives::Blob;
-use ruststream::runtime::MapPublisher;
+#[cfg(feature = "asyncapi")]
+use ruststream::asyncapi::{Binding, Bindings};
+use ruststream::runtime::{MapPublisher, PublishBuilder, PublishSink};
 use ruststream::{HeaderMap, OutgoingMessage, PairError, PublishPolicy, Publisher};
+#[cfg(feature = "asyncapi")]
+use serde::Serialize;
+
+#[cfg(feature = "asyncapi")]
+use crate::stream::BINDING_KEY;
 
 use crate::broker::{ConnectedKinesisBroker, Core, CoreCell};
 use crate::error::{KinesisError, sdk_err};
 use crate::message::{PARTITION_KEY_HEADER, encode_envelope};
+#[cfg(feature = "testing")]
+use crate::testing::{ConnectedKinesisTestBroker, KinesisTestPublisher};
+
+/// The per-message publish settings of this broker: what one call varies, against what the mount
+/// site fixed on the policy.
+///
+/// Every field is optional, so a call says only what it changes, and a field no step touched
+/// keeps what the policy holds. A handler body that names a setting bounds its injected slot on
+/// this type - `Out<impl Publisher<Options = KinesisPublishOptions>, Marker>` - and takes the
+/// steps themselves from [`KinesisPublishSteps`].
+///
+/// # Examples
+///
+/// ```
+/// use ruststream_kinesis::KinesisPublishOptions;
+///
+/// let options = KinesisPublishOptions {
+///     partition_key: Some("tenant-acme".to_owned()),
+/// };
+/// # let _ = options;
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KinesisPublishOptions {
+    /// The record's partition key, named by
+    /// [`partition_key`](KinesisPublishSteps::partition_key) on the publish builder.
+    pub partition_key: Option<String>,
+}
 
 /// Publishes records to Kinesis streams (the destination is the stream name or ARN).
 ///
-/// The `partition-key` header becomes the record's partition key - the unit of shard routing
-/// and per-key ordering. A record that names none takes the key the mount site named on the
-/// policy ([`KinesisPublish::partition_key`]), and without that a process-unique key spreads the
-/// records across the shards. [`KinesisPublishExt::with_partition_key`] names the header without
-/// spelling it out. User headers beyond the partition key travel in a small conditional envelope (Kinesis
-/// records carry only a data blob and a partition key); plain payloads stay unenveloped.
+/// The record's partition key is the unit of shard routing and per-key ordering. A publish names
+/// it with [`partition_key`](KinesisPublishSteps::partition_key) on the publish builder; a record
+/// that names none takes the key the mount site named on the policy
+/// ([`KinesisPublish::partition_key`]), and without that a process-unique key spreads the records
+/// across the shards. User headers beyond the partition key travel in a small conditional envelope
+/// (Kinesis records carry only a data blob and a partition key); plain payloads stay unenveloped.
 /// Buildable before `connect` and usable until `shutdown`; afterwards every publish reports
 /// [`KinesisError::NotConnected`].
 #[derive(Clone)]
@@ -57,21 +91,29 @@ impl KinesisPublisher {
         core.ensure_open()?;
         Ok(core)
     }
+}
 
-    /// The record's partition key: what the message names, else what the mount site named on
-    /// the policy, else a process-unique key that spreads the records across the shards.
-    ///
-    /// Resolved here rather than through [`Publisher::base_headers`], because the key is not a
-    /// header on the wire and the base map reaches only publishes that go through the
-    /// framework's builder - a reply and an injected slot publish through neither.
-    fn partition_key(&self, msg: &OutgoingMessage<'_>) -> String {
-        if let Some(named) = msg.headers().get(PARTITION_KEY_HEADER) {
-            return String::from_utf8_lossy(named).into_owned();
-        }
-        self.partition_key
-            .as_deref()
-            .map_or_else(spread_key, str::to_owned)
+/// The record's partition key, in the order the four places that can name one resolve.
+///
+/// The call's step first, then the `partition-key` header a call site wrote by hand (the portable
+/// spelling, and what a message crossing from another broker carries), then the key the mount site
+/// named on the policy - the only place a reply and an injected slot can be given one - and last a
+/// process-unique key, because a record cannot go out without one.
+///
+/// One function for both transports: the in-process stand-in answers the key the service would,
+/// never one of its own.
+pub(crate) fn resolve_partition_key(
+    options: Option<&KinesisPublishOptions>,
+    headers: &HeaderMap,
+    from_policy: Option<&str>,
+) -> String {
+    if let Some(key) = options.and_then(|options| options.partition_key.as_deref()) {
+        return key.to_owned();
     }
+    if let Some(named) = headers.get(PARTITION_KEY_HEADER) {
+        return String::from_utf8_lossy(named).into_owned();
+    }
+    from_policy.map_or_else(spread_key, str::to_owned)
 }
 
 fn spread_key() -> String {
@@ -86,10 +128,22 @@ fn spread_key() -> String {
 
 impl Publisher for KinesisPublisher {
     type Error = KinesisError;
+    /// The partition key is the one setting a Kinesis record varies per message, and
+    /// [`KinesisPublishSteps`] is where a call site sets it.
+    type Options = KinesisPublishOptions;
 
-    async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
+    async fn publish(
+        &self,
+        msg: OutgoingMessage<'_>,
+        options: Option<&Self::Options>,
+    ) -> Result<(), Self::Error> {
         let core = self.core()?;
-        let partition_key = self.partition_key(&msg);
+        let partition_key =
+            resolve_partition_key(options, msg.headers(), self.partition_key.as_deref());
+        // The resolved key rides the record's own field, which is this transport's wire for it:
+        // a delivery reads it back into `PARTITION_KEY_HEADER`, where the cross-broker
+        // `Partitioned` capability finds it. Stamping the header here as well would cost a map
+        // copy per publish for a value the envelope drops on the next line.
         let data = encode_envelope(msg.headers(), msg.payload());
         core.client
             .put_record()
@@ -124,12 +178,14 @@ pub struct KinesisPublish {
 }
 
 impl KinesisPublish {
-    /// The partition key every record published through this policy carries.
+    /// The partition key every record published through this policy carries unless the call
+    /// names its own.
     ///
-    /// The named alternative to setting [`PARTITION_KEY_HEADER`] on each message, for the
-    /// publishers a service never holds: the reply of a `publish(..)` handler and the slots it
-    /// injects are paired from a policy, so this is where their key is decided. Without one the
-    /// records spread across the stream's shards under a process-unique key.
+    /// This is the mount site's default, and the only key a reply can be given: a replying
+    /// handler returns a value and never reaches a publish builder, so
+    /// [`partition_key`](KinesisPublishSteps::partition_key) has no call site there. A slot the
+    /// handler publishes through has one, and a step on that call wins over this. Without either
+    /// the records spread across the stream's shards under a process-unique key.
     ///
     /// One key means one shard, and with it one shard's throughput: name it when the records
     /// have to stay mutually ordered, and leave it off otherwise.
@@ -151,6 +207,34 @@ impl KinesisPublish {
     fn key(&self) -> Option<Arc<str>> {
         self.partition_key.as_deref().map(Arc::from)
     }
+
+    /// What the records published through this policy add to their message object in the
+    /// generated document.
+    ///
+    /// The key a single call names is not here: the document describes the mount, and a step on
+    /// the publish builder is a property of one record. A policy that names no key says nothing,
+    /// so the document carries no field the service did not fix.
+    #[cfg(feature = "asyncapi")]
+    fn binding(&self) -> Bindings {
+        let Some(partition_key) = self.partition_key.as_deref() else {
+            return Bindings::new();
+        };
+        let body = KinesisMessageBinding { partition_key };
+        Binding::extension(BINDING_KEY, &body)
+            .map_or_else(|_| Bindings::new(), |binding| Bindings::new().with(binding))
+    }
+}
+
+/// What a record published through [`KinesisPublish`] writes into the generated document.
+///
+/// The partition key is the record's own routing field, which is where the specification puts an
+/// ordering key on the brokers it does cover; the specification lists no Kinesis binding at all,
+/// so this travels as an `x-` extension.
+#[cfg(feature = "asyncapi")]
+#[derive(Debug, Serialize)]
+struct KinesisMessageBinding<'a> {
+    #[serde(rename = "partitionKey")]
+    partition_key: &'a str,
 }
 
 impl crate::sealed::PolicyKey for KinesisPublish {
@@ -168,15 +252,44 @@ impl PublishPolicy<ConnectedKinesisBroker> for KinesisPublish {
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
         ready(Ok(connected.publisher_keyed(self.key())))
     }
+
+    #[cfg(feature = "asyncapi")]
+    fn message_bindings(&self) -> Bindings {
+        self.binding()
+    }
 }
 
-/// The Kinesis publish settings, chained on a mount site after `.out(marker, policy)`.
+/// The same policy pairs with the in-process stand-in, so a routes file mounts unchanged in a
+/// unit test: `.out_reply(Publish::default())` names one type whichever broker it runs against,
+/// and the key it carries reaches the record here too - the stand-in carries the partition key in
+/// the header its deliveries read.
+#[cfg(feature = "testing")]
+impl PublishPolicy<ConnectedKinesisTestBroker> for KinesisPublish {
+    type Live = KinesisTestPublisher;
+
+    fn pair(
+        self,
+        connected: &ConnectedKinesisTestBroker,
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
+        ready(Ok(connected.publisher_keyed(self.key())))
+    }
+
+    /// The same binding the policy writes against the service, so a document built in a unit
+    /// test is the document the service publishes.
+    #[cfg(feature = "asyncapi")]
+    fn message_bindings(&self) -> Bindings {
+        self.binding()
+    }
+}
+
+/// The Kinesis publish settings, chained on a mount site after the position that named the
+/// policy: `.out_reply(policy)`, `.out_retry(policy)` or `.out(marker, policy)`.
 ///
 /// The publish-side mirror of [`KinesisSubscriberExt`](crate::KinesisSubscriberExt): the
 /// framework names the position and the policy, and what this transport does with a record
-/// beyond that is the broker's own vocabulary. A publisher a handler holds names the same thing
-/// with [`KinesisPublishExt::with_partition_key`]; this is for the ones it never holds - the
-/// reply of a `publish(..)` handler, and the slots it injects.
+/// beyond that is the broker's own vocabulary. A call that reaches the publish builder names its
+/// own key with [`KinesisPublishSteps::partition_key`]; this settles the key for every record
+/// published from the position, including the reply, which has no call site of its own.
 ///
 /// # Examples
 ///
@@ -184,10 +297,13 @@ impl PublishPolicy<ConnectedKinesisBroker> for KinesisPublish {
 /// use ruststream_kinesis::prelude::*;
 /// # #[derive(serde::Deserialize)]
 /// # struct Order { id: u64 }
-/// # #[derive(Outgoing, serde::Serialize)]
-/// # struct Receipt { id: u64 }
 ///
-/// #[subscriber(KinesisStream::new("orders"), publish("receipts"))]
+/// // The reply type names the stream it goes to; the mount site names how it is published.
+/// #[derive(Outgoing, serde::Serialize)]
+/// #[outgoing(name = "receipts")]
+/// struct Receipt { id: u64 }
+///
+/// #[subscriber(KinesisStream::new("orders"), publish)]
 /// async fn confirm(order: &Order) -> Receipt {
 ///     Receipt { id: order.id }
 /// }
@@ -197,7 +313,7 @@ impl PublishPolicy<ConnectedKinesisBroker> for KinesisPublish {
 ///     KinesisBroker::new(),
 ///     |b| {
 ///         b.include(confirm)
-///             .out(Reply, Publish::default())
+///             .out_reply(Publish::default())
 ///             .partition_key("tenant-acme");
 ///     },
 /// );
@@ -207,8 +323,8 @@ impl PublishPolicy<ConnectedKinesisBroker> for KinesisPublish {
 /// The settings live on the policy the chain named, so a chain that named another broker's
 /// policy - or no policy at all - does not have them.
 pub trait KinesisPublishSettings: Sized {
-    /// The partition key every record published from this position carries. The mount-site
-    /// spelling of [`KinesisPublish::partition_key`].
+    /// The partition key every record published from this position carries unless the call
+    /// names its own. The mount-site spelling of [`KinesisPublish::partition_key`].
     // Not `#[must_use]`: on the `with_broker` path a mount chain commits when it drops, so the
     // settled chain is meant to be discarded, exactly as the framework's own steps are.
     #[allow(clippy::return_self_not_must_use)]
@@ -225,19 +341,22 @@ where
     }
 }
 
-/// The Kinesis publish steps, on this crate's publishers.
+/// The Kinesis publish steps, on the framework's publish builder.
 ///
-/// A step goes in front of the framework's publish builder and returns a publisher, so
-/// `message(..)` follows it unchanged.
+/// A step sets one field of [`KinesisPublishOptions`] for the single record the call sends. It is
+/// a position on the builder rather than a value wrapping the publisher, so the record still
+/// leaves through the entry the mount site named, carrying that entry's codec and transforms and
+/// attributed to that entry's slot.
+///
+/// The bound is on the publisher's options type, so these steps appear on a builder over a
+/// Kinesis publisher and on no other broker's.
 ///
 /// # Examples
 ///
 /// ```
 /// # #[cfg(feature = "testing")]
 /// # async fn demo() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-/// use ruststream::runtime::PublishExt;
-/// use ruststream::{Outgoing, Serialized};
-/// use ruststream_kinesis::KinesisPublishExt;
+/// use ruststream_kinesis::prelude::*;
 /// use ruststream_kinesis::testing::KinesisTestBroker;
 ///
 /// // The record is already encoded, so it declares itself serialized: no codec runs on it,
@@ -245,99 +364,36 @@ where
 /// #[derive(Outgoing, Serialized)]
 /// struct Job(Vec<u8>);
 ///
-/// let publisher = KinesisTestBroker::new().publisher();
-/// publisher
-///     .with_partition_key("tenant-acme")
+/// KinesisTestBroker::new()
+///     .publisher()
 ///     .message(&Job(br#"{"id":1}"#.to_vec()))
 ///     .to("jobs")
+///     .partition_key("tenant-acme")
 ///     .publish()
 ///     .await?;
 /// # Ok(())
 /// # }
 /// ```
-pub trait KinesisPublishExt: Publisher + Clone + crate::sealed::Sealed {
-    /// Publishes through this publisher with `key` as the record's partition key.
+pub trait KinesisPublishSteps {
+    /// Sends this one record under `key` as its partition key.
     ///
-    /// The partition key selects the shard, and with it per-key ordering. It is the named
-    /// alternative to setting [`PARTITION_KEY_HEADER`] by hand.
-    ///
-    /// The key applies to every publish through the returned publisher. A publish that names
-    /// `partition-key` itself overrides it for that message; one that names other headers keeps it.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[cfg(feature = "testing")]
-    /// # async fn demo() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    /// use ruststream::runtime::PublishExt;
-    /// use ruststream::{Outgoing, Serialized};
-    /// use ruststream_kinesis::KinesisPublishExt;
-    /// use ruststream_kinesis::testing::KinesisTestBroker;
-    ///
-    /// #[derive(Outgoing, Serialized)]
-    /// struct Job(Vec<u8>);
-    ///
-    /// let publisher = KinesisTestBroker::new().publisher();
-    /// publisher
-    ///     .with_partition_key("tenant-acme")
-    ///     .message(&Job(br#"{"id":1}"#.to_vec()))
-    ///     .to("jobs")
-    ///     .publish()
-    ///     .await?;
-    /// # Ok(())
-    /// # }
-    /// ```
+    /// The partition key picks the shard, and with it the order the record keeps against its
+    /// neighbours. It wins over a `partition-key` header the call wrote by hand and over the key
+    /// the mount site named on the policy.
     #[must_use]
-    fn with_partition_key(&self, key: impl Into<String>) -> PartitionKeyed<Self> {
-        // Built once here, not per publish: `base_headers` hands the builder a borrow.
-        let mut base = self.base_headers().cloned().unwrap_or_default();
-        base.insert(PARTITION_KEY_HEADER, key.into());
-        PartitionKeyed {
-            inner: self.clone(),
-            base,
-        }
-    }
+    fn partition_key(self, key: impl Into<String>) -> Self;
 }
 
-impl crate::sealed::Sealed for KinesisPublisher {}
-impl KinesisPublishExt for KinesisPublisher {}
-
-/// The publisher returned by [`with_partition_key`](KinesisPublishExt::with_partition_key): it
-/// carries the key as a base header and otherwise delegates to the publisher it wraps.
-///
-/// It is a [`Publisher`] like any other, so the framework's publish builder (`message(..)`)
-/// applies to it unchanged.
-///
-/// # Examples
-///
-/// ```
-/// # #[cfg(feature = "testing")]
-/// # fn demo() {
-/// use ruststream_kinesis::{KinesisPublishExt, PartitionKeyed};
-/// use ruststream_kinesis::testing::{KinesisTestBroker, KinesisTestPublisher};
-///
-/// let keyed: PartitionKeyed<KinesisTestPublisher> =
-///     KinesisTestBroker::new().publisher().with_partition_key("tenant-acme");
-/// # let _ = keyed;
-/// # }
-/// ```
-#[derive(Debug, Clone)]
-pub struct PartitionKeyed<P> {
-    inner: P,
-    base: HeaderMap,
-}
-
-impl<P: Publisher> Publisher for PartitionKeyed<P> {
-    type Error = P::Error;
-
-    async fn publish(&self, msg: OutgoingMessage<'_>) -> Result<(), Self::Error> {
-        self.inner.publish(msg).await
-    }
-
-    fn base_headers(&self) -> Option<&HeaderMap> {
-        // The header is the crate's one wire for the key: the envelope, `Partitioned`, and the
-        // in-process broker all read it from here.
-        Some(&self.base)
+impl<Sink, Body, Enc, Hdrs, Dest> KinesisPublishSteps
+    for PublishBuilder<Sink, Body, Enc, Hdrs, Dest>
+where
+    Sink: PublishSink<Options = KinesisPublishOptions>,
+{
+    fn partition_key(mut self, key: impl Into<String>) -> Self {
+        self.options_mut()
+            .get_or_insert_with(KinesisPublishOptions::default)
+            .partition_key = Some(key.into());
+        self
     }
 }
 
@@ -359,7 +415,7 @@ mod tests {
         Payload(b"payload".to_vec())
     }
 
-    async fn connected() -> crate::testing::ConnectedKinesisTestBroker {
+    async fn connected() -> ConnectedKinesisTestBroker {
         KinesisTestBroker::new()
             .connect()
             .await
@@ -371,9 +427,9 @@ mod tests {
         let broker = connected().await;
         broker
             .publisher()
-            .with_partition_key("tenant-acme")
             .message(&payload())
             .to("jobs")
+            .partition_key("tenant-acme")
             .publish()
             .await
             .expect("the publish succeeds");
@@ -386,17 +442,18 @@ mod tests {
         );
     }
 
+    /// The step is the call's own answer, so it beats the header spelling of the same answer.
     #[tokio::test]
-    async fn a_key_named_at_the_call_site_wins_over_the_step() {
+    async fn the_step_wins_over_a_key_the_call_site_wrote_by_hand() {
         let broker = connected().await;
         let mut headers = HeaderMap::new();
-        headers.insert(PARTITION_KEY_HEADER, "named-on-the-call");
+        headers.insert(PARTITION_KEY_HEADER, "written-by-hand");
         broker
             .publisher()
-            .with_partition_key("named-on-the-step")
             .message(&payload())
             .to("jobs")
             .with_headers(headers)
+            .partition_key("named-by-the-step")
             .publish()
             .await
             .expect("the publish succeeds");
@@ -404,7 +461,7 @@ mod tests {
         let published = broker.published("jobs");
         assert_eq!(
             published[0].headers().get_str(PARTITION_KEY_HEADER),
-            Some("named-on-the-call")
+            Some("named-by-the-step")
         );
     }
 
@@ -415,10 +472,10 @@ mod tests {
         headers.insert("x-tenant", "acme");
         broker
             .publisher()
-            .with_partition_key("named-on-the-step")
             .message(&payload())
             .to("jobs")
             .with_headers(headers)
+            .partition_key("named-by-the-step")
             .publish()
             .await
             .expect("the publish succeeds");
@@ -426,19 +483,24 @@ mod tests {
         let published = broker.published("jobs");
         assert_eq!(
             published[0].headers().get_str(PARTITION_KEY_HEADER),
-            Some("named-on-the-step")
+            Some("named-by-the-step")
         );
         assert_eq!(published[0].headers().get_str("x-tenant"), Some("acme"));
     }
 
+    /// The portable spelling stays: a message that arrives carrying the header - from another
+    /// broker, or from a caller that writes headers by hand - keeps the key it carries.
     #[tokio::test]
-    async fn a_publish_without_the_step_keeps_the_header_route() {
+    async fn a_publish_without_a_step_keeps_the_header_route() {
         let broker = connected().await;
         let mut headers = HeaderMap::new();
         headers.insert(PARTITION_KEY_HEADER, "by-hand");
         broker
             .publisher()
-            .publish(OutgoingMessage::new("jobs", b"payload").with_headers(headers))
+            .publish(
+                OutgoingMessage::new("jobs", b"payload").with_headers(headers),
+                None,
+            )
             .await
             .expect("the publish succeeds");
 
@@ -449,12 +511,37 @@ mod tests {
         );
     }
 
-    /// The mount site's key is the bottom of the ladder, not an override: it applies to every
-    /// record that names none, and steps aside for one that does.
+    /// A record cannot go out without a key, so the bottom of the ladder is a key that spreads
+    /// the records rather than no key at all.
+    #[tokio::test]
+    async fn a_record_no_one_named_a_key_for_still_gets_one() {
+        let broker = connected().await;
+        broker
+            .publisher()
+            .message(&payload())
+            .to("jobs")
+            .publish()
+            .await
+            .expect("the publish succeeds");
+
+        let published = broker.published("jobs");
+        let key = published[0]
+            .headers()
+            .get_str(PARTITION_KEY_HEADER)
+            .expect("the record carries a partition key");
+        assert!(
+            key.starts_with("rs-"),
+            "expected the spreading fallback key, got {key:?}",
+        );
+    }
+
+    /// The mount site's key is a default, not an override: it applies to every record that names
+    /// none, and steps aside for one that does. The policy is the production one, paired against
+    /// the stand-in - the same type a routes file names.
     #[tokio::test]
     async fn the_mount_sites_key_applies_until_a_publish_names_its_own() {
         let broker = connected().await;
-        let publisher = crate::testing::KinesisTestPublish::default()
+        let publisher = KinesisPublish::default()
             .partition_key("named-on-the-mount")
             .pair(&broker)
             .await
@@ -467,9 +554,9 @@ mod tests {
             .await
             .expect("the publish succeeds");
         publisher
-            .with_partition_key("named-on-the-call")
             .message(&payload())
             .to("jobs")
+            .partition_key("named-on-the-call")
             .publish()
             .await
             .expect("the publish succeeds");

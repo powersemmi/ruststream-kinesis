@@ -7,17 +7,21 @@
 //! [`KinesisPosition`](crate::KinesisPosition), spoken through the framework's `start_at(..)`
 //! clause and the `Seekable` capability.
 
+use std::future::{Future, ready};
 use std::time::Duration;
 
-#[cfg(feature = "testing")]
-use std::future::{Future, ready};
-
-use ruststream::SubscriptionSource;
+#[cfg(feature = "asyncapi")]
+use ruststream::asyncapi::{Binding, Bindings};
 use ruststream::runtime::{Declared, IntoSource, SubscriberBuilder, SubscriberSettings};
+use ruststream::{AddressedCopies, RedeliveryAddress, RedeliveryAddressed, SubscriptionSource};
+#[cfg(feature = "asyncapi")]
+use serde::Serialize;
 
 use crate::broker::ConnectedKinesisBroker;
 use crate::error::KinesisError;
 use crate::subscriber::KinesisSubscriber;
+#[cfg(feature = "testing")]
+use crate::testing::{ConnectedKinesisTestBroker, KinesisTestSubscriber};
 
 /// A subscription descriptor for one Kinesis stream.
 ///
@@ -188,8 +192,51 @@ impl IntoSource for KinesisStream {
     }
 }
 
+/// What a Kinesis subscription writes into the generated document.
+///
+/// The `AsyncAPI` specification lists no Kinesis binding, and the protocol keys of a binding object
+/// are a closed list, so this travels as an `x-` extension at the same level. Only what the
+/// descriptor itself holds goes in: the real shard count of an existing stream, its ARN and its
+/// retention are the service's to answer and the document is built before anything connects.
+#[cfg(feature = "asyncapi")]
+#[derive(Debug, Serialize)]
+struct KinesisChannelBinding<'a> {
+    stream: &'a str,
+    #[serde(rename = "pollIntervalMs")]
+    poll_interval_ms: u64,
+    /// The shards the descriptor would provision, present only where it creates the stream.
+    #[serde(rename = "shardCount", skip_serializing_if = "Option::is_none")]
+    shard_count: Option<i32>,
+}
+
+/// The extension key this crate writes its bindings under, on the channel and on the message.
+#[cfg(feature = "asyncapi")]
+pub(crate) const BINDING_KEY: &str = "x-ruststream-kinesis";
+
+impl KinesisStream {
+    /// The channel binding of this descriptor, or nothing when it cannot be built.
+    ///
+    /// A document is a description of the service, so a binding that fails to serialize is one
+    /// the document goes without rather than a start-up the service loses.
+    #[cfg(feature = "asyncapi")]
+    fn binding(&self) -> Bindings {
+        let body = KinesisChannelBinding {
+            stream: self.stream(),
+            poll_interval_ms: u64::try_from(self.poll_interval.as_millis()).unwrap_or(u64::MAX),
+            shard_count: self.create_shards,
+        };
+        Binding::extension(BINDING_KEY, &body)
+            .map_or_else(|_| Bindings::new(), |binding| Bindings::new().with(binding))
+    }
+}
+
 impl SubscriptionSource<ConnectedKinesisBroker> for KinesisStream {
     type Subscriber = KinesisSubscriber;
+    /// Kinesis moves nothing on its own: it holds no redelivery timer, no delivery counter and
+    /// no dead-letter mechanism, so the framework publishes every copy. A stream is what a
+    /// subscription reads and what a publish writes to, so this descriptor knows where a copy
+    /// goes.
+    type Copies = AddressedCopies;
 
     fn name(&self) -> &str {
         self.stream()
@@ -201,6 +248,27 @@ impl SubscriptionSource<ConnectedKinesisBroker> for KinesisStream {
     ) -> Result<KinesisSubscriber, KinesisError> {
         connected.subscribe_stream(self).await
     }
+
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self) -> Bindings {
+        self.binding()
+    }
+}
+
+impl RedeliveryAddressed<ConnectedKinesisBroker> for KinesisStream {
+    /// The stream this descriptor names, which is where a deferred copy and a spent delivery of
+    /// this registration are published.
+    ///
+    /// The copy arrives at the tip rather than in the place the original held, and its partition
+    /// key picks the shard it lands on, so a deferred record loses its position in the stream's
+    /// order.
+    fn redelivery_address(
+        &self,
+        _connected: &ConnectedKinesisBroker,
+    ) -> impl Future<Output = Result<RedeliveryAddress, KinesisError>> + Send {
+        // The stream name is the answer, so nothing is asked of the broker and nothing is awaited.
+        ready(Ok(RedeliveryAddress::new(self.stream().to_owned())))
+    }
 }
 
 /// The same descriptor opens a subscription on the in-process stand-in, so a service keeps its
@@ -211,8 +279,12 @@ impl SubscriptionSource<ConnectedKinesisBroker> for KinesisStream {
 /// published to it. The descriptor is still validated, so a mount the service would reject
 /// fails here too.
 #[cfg(feature = "testing")]
-impl SubscriptionSource<crate::testing::ConnectedKinesisTestBroker> for KinesisStream {
-    type Subscriber = crate::testing::KinesisTestSubscriber;
+impl SubscriptionSource<ConnectedKinesisTestBroker> for KinesisStream {
+    type Subscriber = KinesisTestSubscriber;
+    /// The same copy path the descriptor declares against the service, so a registration that
+    /// caps its retries or names a dead-letter stream is driven in a unit test exactly as it
+    /// runs in production.
+    type Copies = AddressedCopies;
 
     fn name(&self) -> &str {
         self.stream()
@@ -220,9 +292,28 @@ impl SubscriptionSource<crate::testing::ConnectedKinesisTestBroker> for KinesisS
 
     fn subscribe(
         self,
-        connected: &crate::testing::ConnectedKinesisTestBroker,
+        connected: &ConnectedKinesisTestBroker,
     ) -> impl Future<Output = Result<Self::Subscriber, KinesisError>> + Send {
         ready(self.validate().map(|()| connected.open(self.stream())))
+    }
+
+    /// The same binding the descriptor writes against the service, so a document built in a
+    /// unit test is the document the service publishes.
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self) -> Bindings {
+        self.binding()
+    }
+}
+
+#[cfg(feature = "testing")]
+impl RedeliveryAddressed<ConnectedKinesisTestBroker> for KinesisStream {
+    /// The same answer the descriptor gives against the service, so a copy the framework
+    /// publishes in a unit test lands where it lands in production.
+    fn redelivery_address(
+        &self,
+        _connected: &ConnectedKinesisTestBroker,
+    ) -> impl Future<Output = Result<RedeliveryAddress, KinesisError>> + Send {
+        ready(Ok(RedeliveryAddress::new(self.stream().to_owned())))
     }
 }
 

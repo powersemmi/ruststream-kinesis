@@ -1,9 +1,9 @@
 //! Replying on a second stream, with the reply's partition key named at the mount site.
 //!
-//! A `publish(..)` handler's reply leaves through a publisher the service never holds: the
-//! runtime pairs it from the policy the mount site names. `.out(Reply, ..)` is where that policy
-//! is named, and this crate's publish settings chain after it - so the shard a receipt lands on,
-//! and with it the order receipts keep, is a decision of the mount rather than of the handler.
+//! The reply type declares the stream it goes to. It leaves through a publisher the service
+//! never holds: the runtime pairs it from the policy the mount site names. `.out_reply(..)` is
+//! where that policy is named, and this crate's publish settings chain after it - so the shard a
+//! receipt lands on, and with it the order receipts keep, is a decision of the mount.
 //!
 //! Run a local stack first (`just brokers-up`), then:
 //! `cargo run --example kinesis_replies`
@@ -17,13 +17,15 @@ struct Order {
     id: u64,
 }
 
+/// A receipt always goes to the receipts stream, so the type is where that stream is named.
 #[derive(Debug, Outgoing, Serialize)]
+#[outgoing(name = "receipts")]
 struct Receipt {
     order: u64,
 }
 
-/// The handler names what it replies with; where that reply goes, and how, is the mount's.
-#[subscriber(KinesisStream::new("orders"), publish("receipts"))]
+/// The handler names what it replies with; how that reply is published is the mount's.
+#[subscriber(KinesisStream::new("orders"), publish)]
 async fn confirm(order: &Order) -> Receipt {
     Receipt { order: order.id }
 }
@@ -39,7 +41,7 @@ fn app() -> impl App {
             // One key means one shard: every receipt is ordered against every other, at the cost
             // of a single shard's throughput. Leave it off to spread them instead.
             b.include(confirm)
-                .out(Reply, Publish::default())
+                .out_reply(Publish::default())
                 .partition_key("receipts-v1");
         },
     )

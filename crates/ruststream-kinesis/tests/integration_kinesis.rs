@@ -18,25 +18,25 @@ use futures::StreamExt;
 use futures::future::BoxFuture;
 use tokio::sync::Notify;
 
+use ruststream::runtime::PublishExt;
 use ruststream::{
-    Broker, ConnectedBroker, HeaderMap, IncomingMessage, OutgoingMessage, Publisher, StartAt,
-    Subscriber, SubscriptionSource,
+    Broker, ConnectedBroker, HeaderMap, IncomingMessage, Outgoing, OutgoingMessage, Publisher,
+    Serialized, StartAt, Subscriber, SubscriptionSource,
 };
 use ruststream_kinesis::{
-    ConnectedKinesisBroker, KinesisBroker, KinesisPosition, KinesisStream, LeaseError, LeaseState,
-    LeaseStore, MemoryLeaseStore, PARTITION_KEY_HEADER, SEQUENCE_HEADER,
+    ConnectedKinesisBroker, KinesisBroker, KinesisPosition, KinesisPublishSteps, KinesisStream,
+    LeaseError, LeaseState, LeaseStore, MemoryLeaseStore, PARTITION_KEY_HEADER, SEQUENCE_HEADER,
 };
+
+mod live;
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The stack's endpoint, or `None` to skip the live checks below. Under `RUSTSTREAM_REQUIRE_LIVE`
+/// a missing endpoint is a failure instead, so a job that started a stack cannot report `ok`
+/// without having reached it.
 fn test_endpoint() -> Option<String> {
-    match std::env::var("KINESIS_TEST_ENDPOINT") {
-        Ok(endpoint) if !endpoint.is_empty() => Some(endpoint),
-        _ => {
-            eprintln!("KINESIS_TEST_ENDPOINT is not set; skipping the live integration test");
-            None
-        }
-    }
+    live::url("KINESIS_TEST_ENDPOINT")
 }
 
 /// A lease store that announces a release.
@@ -163,7 +163,10 @@ async fn roundtrip_preserves_payload_headers_and_partition_key() {
     headers.insert(PARTITION_KEY_HEADER, "user-42");
     let publisher = connected.publisher();
     publisher
-        .publish(OutgoingMessage::new(&stream_name, b"{\"id\":1}".as_slice()).with_headers(headers))
+        .publish(
+            OutgoingMessage::new(&stream_name, b"{\"id\":1}".as_slice()).with_headers(headers),
+            None,
+        )
         .await
         .expect("publish succeeds");
 
@@ -182,6 +185,50 @@ async fn roundtrip_preserves_payload_headers_and_partition_key() {
     assert_eq!(message.headers().get_str("x-tenant"), Some("acme"));
     assert_eq!(message.partition_key(), Some(b"user-42".as_slice()));
     assert!(message.headers().get_str(SEQUENCE_HEADER).is_some());
+    message.ack().await.expect("ack succeeds");
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// Bytes the test already holds encoded: a serialized type reaches the stream as it is, so this
+/// check stays about the partition key rather than about a codec.
+#[derive(Outgoing, Serialized)]
+struct Seed(Vec<u8>);
+
+/// The partition key a call names has to land in the record's own field, which is the only place
+/// Kinesis keeps one - the header a delivery reports is rebuilt from it, so only a server can
+/// answer whether the step reached the record or merely the header map.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_step_puts_the_partition_key_on_the_record() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    let connected = connect(&endpoint).await;
+
+    let stream_name = unique("keyed");
+    let mut subscriber = from_horizon(&stream_name)
+        .subscribe(&connected)
+        .await
+        .expect("subscription opens");
+
+    connected
+        .publisher()
+        .message(&Seed(b"{\"id\":1}".to_vec()))
+        .to(stream_name.as_str())
+        .partition_key("tenant-acme")
+        .publish()
+        .await
+        .expect("publish succeeds");
+
+    let mut stream = pin!(subscriber.stream());
+    let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+        .await
+        .expect("delivery arrives")
+        .expect("stream is open")
+        .expect("delivery is ok");
+
+    assert_eq!(message.partition_key(), Some(b"tenant-acme".as_slice()));
+    assert_eq!(message.payload(), b"{\"id\":1}");
     message.ack().await.expect("ack succeeds");
 
     connected.shutdown().await.expect("shutdown succeeds");
@@ -206,7 +253,7 @@ async fn checkpoints_resume_where_acknowledgement_stopped() {
             .expect("subscription opens");
         for payload in [b"one".as_slice(), b"two".as_slice()] {
             publisher
-                .publish(OutgoingMessage::new(&stream_name, payload))
+                .publish(OutgoingMessage::new(&stream_name, payload), None)
                 .await
                 .expect("publish succeeds");
         }
@@ -230,7 +277,10 @@ async fn checkpoints_resume_where_acknowledgement_stopped() {
     // position forced, the shard resumes from its checkpoint and the acknowledged records
     // stay consumed.
     publisher
-        .publish(OutgoingMessage::new(&stream_name, b"three".as_slice()))
+        .publish(
+            OutgoingMessage::new(&stream_name, b"three".as_slice()),
+            None,
+        )
         .await
         .expect("publish succeeds");
     let mut subscriber = source(&stream_name)
@@ -273,7 +323,7 @@ async fn an_unacknowledged_record_replays_on_the_next_lease() {
             b"after".as_slice(),
         ] {
             publisher
-                .publish(OutgoingMessage::new(&stream_name, payload))
+                .publish(OutgoingMessage::new(&stream_name, payload), None)
                 .await
                 .expect("publish succeeds");
         }

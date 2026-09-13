@@ -2,7 +2,8 @@
 //!
 //! The framework's own prelude, the broker, its subscription descriptor and the settings that
 //! chain onto a mount site, its positions and seeker, the delivery context with the keys that
-//! read it, and its publish policy with the settings that chain onto that.
+//! read it, and its publish policy with the settings that chain onto that and the per-message
+//! steps that ride the publish builder.
 //!
 //! A service writes two kinds of file, and they import different things. A handler body names
 //! only what it needs of the framework (`use ruststream::prelude::*`) and bounds an injected
@@ -11,6 +12,11 @@
 //! their concept name with the prefix stripped - [`Publish`] here - so a mount site reads the
 //! same on every broker; each prefixed original stays at the crate root, for a file that mounts
 //! two brokers and has to say which [`Publish`] it means.
+//!
+//! The one handler body that imports this glob is the one that names a per-message setting: it
+//! takes [`partition_key`](KinesisPublishSteps::partition_key) from here and bounds its slot as
+//! `Out<impl Publisher<Options = KinesisPublishOptions>, Marker>`, which says in the signature
+//! that the body runs on Kinesis.
 //!
 //! # Examples
 //!
@@ -43,6 +49,11 @@ pub use crate::context::{KinesisBatchContext, KinesisContext, Position, SeekHand
 #[cfg(feature = "dynamodb-lease")]
 pub use crate::dynamo::DynamoLeaseStore;
 pub use crate::message::KinesisPosition;
-pub use crate::publisher::{KinesisPublish as Publish, KinesisPublishExt, KinesisPublishSettings};
+// The options type keeps its prefix: it is not a policy or a context key but the name a handler
+// body writes in its own bound (`Out<impl Publisher<Options = KinesisPublishOptions>, Marker>`),
+// and that body says which broker it is tied to.
+pub use crate::publisher::{
+    KinesisPublish as Publish, KinesisPublishOptions, KinesisPublishSettings, KinesisPublishSteps,
+};
 pub use crate::stream::{KinesisStream, KinesisSubscriberExt};
 pub use crate::subscriber::KinesisSeeker;
