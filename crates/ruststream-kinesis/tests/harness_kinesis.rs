@@ -14,7 +14,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use ruststream::codec::CborCodec;
-use ruststream::runtime::RETRY_COUNT_HEADER;
+use ruststream::runtime::{
+    ContextKind, ForSlot, Outgoing, PublishTransform, RETRY_COUNT_HEADER, Reads, SlotContext,
+};
 use ruststream::testing::{TestApp, TestError};
 use ruststream_kinesis::prelude::*;
 use ruststream_kinesis::testing::KinesisTestBroker;
@@ -789,6 +791,114 @@ async fn a_deferred_retry_comes_back_through_the_address_the_descriptor_reports(
         vec![Job { id: 1 }, Job { id: 1 }],
         "the deferred copy must reach the subscription that deferred it",
     );
+
+    tb.shutdown().await.expect("the harness shuts down");
+}
+
+/// The header a transform on the retry position writes, so a redelivered record says which
+/// position it came back through.
+const LEFT_THROUGH: &str = "x-left-through";
+
+/// A transform that writes a header and no broker setting, so it is generic over the options and
+/// mounts on any position. The retry is an ordinary `Out` slot, so what it reads is a
+/// [`SlotContext`].
+struct DeferredStamp;
+
+impl<Options> PublishTransform<ForSlot, Options> for DeferredStamp {
+    type Destination = Reads;
+
+    fn apply(&self, out: &mut Outgoing<'_>, _options: &mut Option<Options>, cx: &SlotContext<'_>) {
+        out.headers_mut().insert(LEFT_THROUGH, cx.slot().to_owned());
+    }
+}
+
+/// The deferred copy travels the pipeline the registration bound, so a transform named on the
+/// retry position reaches it. The copy is already serialized, which is what makes this worth
+/// asserting: a transform still runs on it, even though no codec does.
+#[tokio::test(start_paused = true)]
+async fn a_transform_on_the_retry_position_stamps_the_deferred_copy() {
+    let app = RustStream::new(AppInfo::new("stamped", "0.1.0")).with_broker(
+        KinesisTestBroker::new(),
+        |b| {
+            b.include(deferring)
+                .out_retry(Publish::default())
+                .transform(DeferredStamp);
+        },
+    );
+    let tb = TestApp::start(app).await.expect("the harness starts");
+
+    tb.broker::<KinesisTestBroker>()
+        .message(&Job { id: 1 })
+        .to("deferred")
+        .publish()
+        .await
+        .expect("the publish succeeds");
+    tb.broker::<KinesisTestBroker>()
+        .subscriber("deferred")
+        .assert_called_once()
+        .settled(HandlerOutcome::retry_after(RETRY_DELAY));
+
+    tb.advance(RETRY_DELAY).await.expect("the reaction settles");
+
+    // The record the test published carries no stamp, the copy the retry position sent does.
+    tb.broker::<KinesisTestBroker>()
+        .published::<Job>("deferred")
+        .assert_called(2)
+        .with(&Job { id: 1 })
+        .with_header(LEFT_THROUGH, "Retry");
+
+    tb.shutdown().await.expect("the harness shuts down");
+}
+
+/// A transform that names this crate's options type: it writes the partition key through the
+/// options position rather than through a header the publisher would parse back. The mount site
+/// admits it only over a Kinesis publisher, which is what naming the type buys.
+struct KeyByTenant;
+
+impl<K: ContextKind> PublishTransform<K, KinesisPublishOptions> for KeyByTenant {
+    type Destination = Reads;
+
+    fn apply(
+        &self,
+        _out: &mut Outgoing<'_>,
+        options: &mut Option<KinesisPublishOptions>,
+        _cx: &K::View<'_>,
+    ) {
+        options
+            .get_or_insert_with(KinesisPublishOptions::default)
+            .partition_key = Some(TENANT.to_owned());
+    }
+}
+
+/// A reply has no call site, so the mount site is where its settings come from: the policy fixes
+/// the defaults and a transform is what varies them per delivery. The key it names has to reach
+/// the record, not just the options the harness records.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_transform_names_the_partition_key_a_reply_has_no_call_site_for() {
+    let app = RustStream::new(AppInfo::new("keyed-reply", "0.1.0")).with_broker(
+        KinesisTestBroker::new(),
+        |b| {
+            b.include(confirm)
+                .out_reply(Publish::default())
+                .transform(KeyByTenant);
+        },
+    );
+    let tb = TestApp::start(app).await.expect("the harness starts");
+
+    tb.broker::<KinesisTestBroker>()
+        .message(&Job { id: 1 })
+        .to("orders")
+        .publish()
+        .await
+        .expect("the publish succeeds");
+
+    tb.broker::<KinesisTestBroker>()
+        .published::<Job>("receipts")
+        .assert_called_once()
+        .with_options(&KinesisPublishOptions {
+            partition_key: Some(TENANT.to_owned()),
+        })
+        .with_header(PARTITION_KEY_HEADER, TENANT);
 
     tb.shutdown().await.expect("the harness shuts down");
 }
