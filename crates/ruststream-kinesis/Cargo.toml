@@ -16,6 +16,9 @@ workspace = true
 
 [features]
 default = []
+# What this broker contributes to the generated AsyncAPI document. The specification lists no
+# Kinesis binding, so the crate writes its own `x-ruststream-kinesis` extension objects.
+asyncapi = ["ruststream/asyncapi", "dep:serde"]
 # A DynamoDB-backed lease store, so multiple service instances can share the shards.
 dynamodb-lease = ["dep:aws-sdk-dynamodb"]
 # The in-process test broker (TestableBroker + TestApp support). The conformance harness is a
@@ -29,6 +32,9 @@ aws-sdk-kinesis.workspace = true
 aws-sdk-dynamodb = { workspace = true, optional = true }
 bytes.workspace = true
 futures.workspace = true
+# Only the binding bodies of the `asyncapi` feature are serialized; a record's payload is the
+# codec's business, not this crate's.
+serde = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -37,7 +43,12 @@ tracing.workspace = true
 # `cbor` earns its place in one check: a per-message step must not cost the mount site's codec,
 # and proving that needs a second codec to mount.
 ruststream = { workspace = true, features = ["conformance", "testing", "macros", "json", "cbor"] }
-serde = { version = "1", features = ["derive"] }
+# A registration on the manual path is documented by default, so its message type derives
+# `JsonSchema` whether or not the test turns the `asyncapi` feature on (the core re-exports
+# `schemars` only under that feature).
+schemars.workspace = true
+serde.workspace = true
+serde_json = "1"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 [[example]]

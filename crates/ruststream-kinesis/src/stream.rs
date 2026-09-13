@@ -10,8 +10,12 @@
 use std::future::{Future, ready};
 use std::time::Duration;
 
+#[cfg(feature = "asyncapi")]
+use ruststream::asyncapi::{Binding, Bindings};
 use ruststream::runtime::{Declared, IntoSource, SubscriberBuilder, SubscriberSettings};
 use ruststream::{AddressedCopies, RedeliveryAddress, RedeliveryAddressed, SubscriptionSource};
+#[cfg(feature = "asyncapi")]
+use serde::Serialize;
 
 use crate::broker::ConnectedKinesisBroker;
 use crate::error::KinesisError;
@@ -188,6 +192,44 @@ impl IntoSource for KinesisStream {
     }
 }
 
+/// What a Kinesis subscription writes into the generated document.
+///
+/// The `AsyncAPI` specification lists no Kinesis binding, and the protocol keys of a binding object
+/// are a closed list, so this travels as an `x-` extension at the same level. Only what the
+/// descriptor itself holds goes in: the real shard count of an existing stream, its ARN and its
+/// retention are the service's to answer and the document is built before anything connects.
+#[cfg(feature = "asyncapi")]
+#[derive(Debug, Serialize)]
+struct KinesisChannelBinding<'a> {
+    stream: &'a str,
+    #[serde(rename = "pollIntervalMs")]
+    poll_interval_ms: u64,
+    /// The shards the descriptor would provision, present only where it creates the stream.
+    #[serde(rename = "shardCount", skip_serializing_if = "Option::is_none")]
+    shard_count: Option<i32>,
+}
+
+/// The extension key this crate writes its bindings under, on the channel and on the message.
+#[cfg(feature = "asyncapi")]
+pub(crate) const BINDING_KEY: &str = "x-ruststream-kinesis";
+
+impl KinesisStream {
+    /// The channel binding of this descriptor, or nothing when it cannot be built.
+    ///
+    /// A document is a description of the service, so a binding that fails to serialize is one
+    /// the document goes without rather than a start-up the service loses.
+    #[cfg(feature = "asyncapi")]
+    fn binding(&self) -> Bindings {
+        let body = KinesisChannelBinding {
+            stream: self.stream(),
+            poll_interval_ms: u64::try_from(self.poll_interval.as_millis()).unwrap_or(u64::MAX),
+            shard_count: self.create_shards,
+        };
+        Binding::extension(BINDING_KEY, &body)
+            .map_or_else(|_| Bindings::new(), |binding| Bindings::new().with(binding))
+    }
+}
+
 impl SubscriptionSource<ConnectedKinesisBroker> for KinesisStream {
     type Subscriber = KinesisSubscriber;
     /// Kinesis moves nothing on its own: it holds no redelivery timer, no delivery counter and
@@ -205,6 +247,11 @@ impl SubscriptionSource<ConnectedKinesisBroker> for KinesisStream {
         connected: &ConnectedKinesisBroker,
     ) -> Result<KinesisSubscriber, KinesisError> {
         connected.subscribe_stream(self).await
+    }
+
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self) -> Bindings {
+        self.binding()
     }
 }
 
@@ -248,6 +295,13 @@ impl SubscriptionSource<ConnectedKinesisTestBroker> for KinesisStream {
         connected: &ConnectedKinesisTestBroker,
     ) -> impl Future<Output = Result<Self::Subscriber, KinesisError>> + Send {
         ready(self.validate().map(|()| connected.open(self.stream())))
+    }
+
+    /// The same binding the descriptor writes against the service, so a document built in a
+    /// unit test is the document the service publishes.
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self) -> Bindings {
+        self.binding()
     }
 }
 

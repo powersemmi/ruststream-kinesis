@@ -21,6 +21,7 @@ use ruststream::testing::{TestApp, TestError};
 use ruststream_kinesis::prelude::*;
 use ruststream_kinesis::testing::KinesisTestBroker;
 use ruststream_kinesis::{PARTITION_KEY_HEADER, SEQUENCE_HEADER, SHARD_HEADER};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Barrier;
 use tokio::time::timeout;
@@ -36,8 +37,9 @@ const QUIESCENCE_BUDGET: Duration = Duration::from_secs(10);
 /// could account for the copy coming back; the test runs on paused time anyway.
 const RETRY_DELAY: Duration = Duration::from_secs(30);
 
-/// The destination is left to the call, so one model seeds every stream in this file.
-#[derive(Debug, Clone, PartialEq, Eq, Outgoing, Serialize, Deserialize)]
+/// The destination is left to the call, so one model seeds every stream in this file. The
+/// manual path documents its registrations by default, so the model carries a schema.
+#[derive(Debug, Clone, PartialEq, Eq, Outgoing, Serialize, Deserialize, JsonSchema)]
 struct Job {
     id: u64,
 }

@@ -4,12 +4,21 @@ use std::future::{Future, ready};
 use std::sync::Arc;
 
 use aws_sdk_kinesis::primitives::Blob;
+#[cfg(feature = "asyncapi")]
+use ruststream::asyncapi::{Binding, Bindings};
 use ruststream::runtime::{MapPublisher, PublishBuilder, PublishSink};
 use ruststream::{HeaderMap, OutgoingMessage, PairError, PublishPolicy, Publisher};
+#[cfg(feature = "asyncapi")]
+use serde::Serialize;
+
+#[cfg(feature = "asyncapi")]
+use crate::stream::BINDING_KEY;
 
 use crate::broker::{ConnectedKinesisBroker, Core, CoreCell};
 use crate::error::{KinesisError, sdk_err};
 use crate::message::{PARTITION_KEY_HEADER, encode_envelope};
+#[cfg(feature = "testing")]
+use crate::testing::{ConnectedKinesisTestBroker, KinesisTestPublisher};
 
 /// The per-message publish settings of this broker: what one call varies, against what the mount
 /// site fixed on the policy.
@@ -198,6 +207,34 @@ impl KinesisPublish {
     fn key(&self) -> Option<Arc<str>> {
         self.partition_key.as_deref().map(Arc::from)
     }
+
+    /// What the records published through this policy add to their message object in the
+    /// generated document.
+    ///
+    /// The key a single call names is not here: the document describes the mount, and a step on
+    /// the publish builder is a property of one record. A policy that names no key says nothing,
+    /// so the document carries no field the service did not fix.
+    #[cfg(feature = "asyncapi")]
+    fn binding(&self) -> Bindings {
+        let Some(partition_key) = self.partition_key.as_deref() else {
+            return Bindings::new();
+        };
+        let body = KinesisMessageBinding { partition_key };
+        Binding::extension(BINDING_KEY, &body)
+            .map_or_else(|_| Bindings::new(), |binding| Bindings::new().with(binding))
+    }
+}
+
+/// What a record published through [`KinesisPublish`] writes into the generated document.
+///
+/// The partition key is the record's own routing field, which is where the specification puts an
+/// ordering key on the brokers it does cover; the specification lists no Kinesis binding at all,
+/// so this travels as an `x-` extension.
+#[cfg(feature = "asyncapi")]
+#[derive(Debug, Serialize)]
+struct KinesisMessageBinding<'a> {
+    #[serde(rename = "partitionKey")]
+    partition_key: &'a str,
 }
 
 impl crate::sealed::PolicyKey for KinesisPublish {
@@ -215,6 +252,11 @@ impl PublishPolicy<ConnectedKinesisBroker> for KinesisPublish {
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
         ready(Ok(connected.publisher_keyed(self.key())))
     }
+
+    #[cfg(feature = "asyncapi")]
+    fn message_bindings(&self) -> Bindings {
+        self.binding()
+    }
 }
 
 /// The same policy pairs with the in-process stand-in, so a routes file mounts unchanged in a
@@ -222,14 +264,21 @@ impl PublishPolicy<ConnectedKinesisBroker> for KinesisPublish {
 /// and the key it carries reaches the record here too - the stand-in carries the partition key in
 /// the header its deliveries read.
 #[cfg(feature = "testing")]
-impl PublishPolicy<crate::testing::ConnectedKinesisTestBroker> for KinesisPublish {
-    type Live = crate::testing::KinesisTestPublisher;
+impl PublishPolicy<ConnectedKinesisTestBroker> for KinesisPublish {
+    type Live = KinesisTestPublisher;
 
     fn pair(
         self,
-        connected: &crate::testing::ConnectedKinesisTestBroker,
+        connected: &ConnectedKinesisTestBroker,
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
         ready(Ok(connected.publisher_keyed(self.key())))
+    }
+
+    /// The same binding the policy writes against the service, so a document built in a unit
+    /// test is the document the service publishes.
+    #[cfg(feature = "asyncapi")]
+    fn message_bindings(&self) -> Bindings {
+        self.binding()
     }
 }
 
@@ -366,7 +415,7 @@ mod tests {
         Payload(b"payload".to_vec())
     }
 
-    async fn connected() -> crate::testing::ConnectedKinesisTestBroker {
+    async fn connected() -> ConnectedKinesisTestBroker {
         KinesisTestBroker::new()
             .connect()
             .await
