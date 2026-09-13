@@ -368,7 +368,7 @@ async fn a_mount_site_names_the_partition_key_of_a_reply() {
         KinesisTestBroker::new(),
         |b| {
             b.include(confirm)
-                .out(Reply, Publish::default())
+                .out_reply(Publish::default())
                 .partition_key("tenant-acme");
         },
     );
@@ -399,7 +399,7 @@ async fn a_reply_type_lands_on_the_stream_it_declares() {
         KinesisTestBroker::new(),
         |b| {
             b.include(issue)
-                .out(Reply, Publish::default())
+                .out_reply(Publish::default())
                 .partition_key("tenant-acme");
         },
     );
@@ -430,7 +430,7 @@ async fn a_reply_type_without_a_stream_takes_the_mount_site_name() {
     let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
         KinesisTestBroker::new(),
         |b| {
-            b.include(confirm).out(Reply, Publish::default());
+            b.include(confirm).out_reply(Publish::default());
         },
     );
     let tb = TestApp::start(app).await.expect("the harness starts");

@@ -210,8 +210,8 @@ Kinesis 没有重新投递定时器，因此返回 `HandlerOutcome::retry_after(
 
 `KinesisPublish` 是构造 `KinesisPublisher` 的策略，运行时在启动时于已连接的 Broker 上实例化一个。
 它同时是这个 Broker 的默认策略，因此挂载时没有指定策略的回复处理器，就通过它回复。挂载点上的
-`.out(Reply, Publish::default())` 明确点名它；标记换成注入槽位自己的标记而不是 `Reply` 时，同一个
-调用绑定的是那个槽位的发布者。
+`.out_reply(Publish::default())` 明确点名它，`.out_retry(Publish::default())` 为延迟重试点名它，
+而 `.out(marker, Publish::default())` 绑定的是注入槽位的发布者。
 
 处理器函数体只导入框架（`use ruststream::prelude::*`），用一项能力 trait 约束注入进来的发布者，因
 此它永远不知道自己跑在哪个 Broker 上。挂载这些处理器的文件导入

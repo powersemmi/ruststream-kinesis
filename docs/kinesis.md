@@ -235,9 +235,9 @@ the framework docs.
 
 `KinesisPublish` is the policy that constructs `KinesisPublisher`, and the runtime instantiates one
 on the connected broker at startup. It is also this broker's default policy, so a replying handler
-mounted without an explicit policy replies through it. `.out(Reply, Publish::default())` at the
-mount site names it explicitly, and the same call binds the publisher of an injected slot when the
-marker is the slot's instead of `Reply`.
+mounted without an explicit policy replies through it. `.out_reply(Publish::default())` at the
+mount site names it explicitly, `.out_retry(Publish::default())` names it for the deferred retry,
+and `.out(marker, Publish::default())` binds the publisher of an injected slot.
 
 A handler body imports the framework alone (`use ruststream::prelude::*`) and bounds an injected
 publisher with a capability trait, so it never learns which broker it runs on. The file that mounts

@@ -1,7 +1,7 @@
 //! Replying on a second stream, with the reply's partition key named at the mount site.
 //!
 //! The reply type declares the stream it goes to. It leaves through a publisher the service
-//! never holds: the runtime pairs it from the policy the mount site names. `.out(Reply, ..)` is
+//! never holds: the runtime pairs it from the policy the mount site names. `.out_reply(..)` is
 //! where that policy is named, and this crate's publish settings chain after it - so the shard a
 //! receipt lands on, and with it the order receipts keep, is a decision of the mount.
 //!
@@ -41,7 +41,7 @@ fn app() -> impl App {
             // One key means one shard: every receipt is ordered against every other, at the cost
             // of a single shard's throughput. Leave it off to spread them instead.
             b.include(confirm)
-                .out(Reply, Publish::default())
+                .out_reply(Publish::default())
                 .partition_key("receipts-v1");
         },
     )

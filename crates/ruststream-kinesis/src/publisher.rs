@@ -218,7 +218,7 @@ impl PublishPolicy<ConnectedKinesisBroker> for KinesisPublish {
 }
 
 /// The same policy pairs with the in-process stand-in, so a routes file mounts unchanged in a
-/// unit test: `.out(Reply, Publish::default())` names one type whichever broker it runs against,
+/// unit test: `.out_reply(Publish::default())` names one type whichever broker it runs against,
 /// and the key it carries reaches the record here too - the stand-in carries the partition key in
 /// the header its deliveries read.
 #[cfg(feature = "testing")]
@@ -233,7 +233,8 @@ impl PublishPolicy<crate::testing::ConnectedKinesisTestBroker> for KinesisPublis
     }
 }
 
-/// The Kinesis publish settings, chained on a mount site after `.out(marker, policy)`.
+/// The Kinesis publish settings, chained on a mount site after the position that named the
+/// policy: `.out_reply(policy)`, `.out_retry(policy)` or `.out(marker, policy)`.
 ///
 /// The publish-side mirror of [`KinesisSubscriberExt`](crate::KinesisSubscriberExt): the
 /// framework names the position and the policy, and what this transport does with a record
@@ -263,7 +264,7 @@ impl PublishPolicy<crate::testing::ConnectedKinesisTestBroker> for KinesisPublis
 ///     KinesisBroker::new(),
 ///     |b| {
 ///         b.include(confirm)
-///             .out(Reply, Publish::default())
+///             .out_reply(Publish::default())
 ///             .partition_key("tenant-acme");
 ///     },
 /// );

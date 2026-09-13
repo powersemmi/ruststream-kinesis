@@ -65,7 +65,7 @@ pub mod sealed {
     #[diagnostic::on_unimplemented(
         message = "`{Self}` is not a Kinesis publish policy",
         note = "a Kinesis publish setting rides the position named right before it: \
-                `.out(Reply, Publish::default()).partition_key(\"tenant-acme\")`"
+                `.out_reply(Publish::default()).partition_key(\"tenant-acme\")`"
     )]
     pub trait PolicyKey: Sized {
         /// Names the record's partition key on this policy.
