@@ -1,0 +1,7 @@
+{
+  "x-ruststream-kinesis": {
+    "pollIntervalMs": 250,
+    "shardCount": 2,
+    "stream": "orders"
+  }
+}

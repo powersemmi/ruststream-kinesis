@@ -1,11 +1,10 @@
 //! Retrying a record after a delay, which Kinesis itself cannot hold back.
 //!
-//! The framework re-publishes the record once the delay is over, through the publisher the mount
-//! site names. Run a local stack first (`just brokers-up`), then:
+//! The framework re-publishes the record once the delay is over, and stops once the registration
+//! says the attempts are spent. Run a local stack first (`just brokers-up`), then:
 //! `cargo run --example kinesis_retry`
 
 // --8<-- [start:handler]
-use ruststream::runtime::RETRY_COUNT_HEADER;
 use ruststream_kinesis::prelude::*;
 use serde::Deserialize;
 use std::time::Duration;
@@ -15,22 +14,14 @@ struct Order {
     id: u64,
 }
 
-/// Asks for a pause when the order cannot be settled yet, and gives up after three attempts.
-/// The count rides the header the framework increments on each re-publish.
+/// Asks for a pause when the order cannot be settled yet. How many pauses it gets is the mount
+/// site's to say, so the handler never counts them.
 #[subscriber(KinesisStream::new("orders"))]
-async fn reconcile(order: &Order, ctx: &mut Context<'_, KinesisContext>) -> HandlerOutcome {
-    let attempt = ctx
-        .headers()
-        .get_str(RETRY_COUNT_HEADER)
-        .and_then(|count| count.parse::<u64>().ok())
-        .unwrap_or(0);
+async fn reconcile(order: &Order) -> HandlerOutcome {
     if settled(order.id) {
         HandlerOutcome::ack()
-    } else if attempt < 3 {
-        HandlerOutcome::retry_after(Duration::from_secs(30))
     } else {
-        // Out of attempts: checkpoint past it so the shard's watermark is not held by one order.
-        HandlerOutcome::drop()
+        HandlerOutcome::retry_after(Duration::from_secs(30))
     }
 }
 
@@ -48,10 +39,10 @@ fn app() -> impl App {
         .region("us-east-1");
 
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        // The deferred copy is an ordinary publish, so the registration names the policy it
-        // leaves through. Nothing else is needed: the descriptor answers where the copy goes,
-        // and a stream is both what the subscription reads and what a publish reaches.
-        b.include(reconcile).out_retry(Publish::default());
+        // Four deliveries per order, then the record leaves for a stream an operator reads.
+        b.include(reconcile)
+            .max_attempts(nonzero!(4))
+            .dead_letter("orders.unsettled");
     })
 }
 // --8<-- [end:retry]

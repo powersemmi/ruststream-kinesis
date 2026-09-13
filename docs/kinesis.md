@@ -16,6 +16,9 @@ ruststream-kinesis = "0.7"
 serde = { version = "1", features = ["derive"] }
 ```
 
+Three features: `dynamodb-lease` shares the shards between service instances, `testing` ships the
+in-process broker, and `asyncapi` writes this broker's own vocabulary into the generated document.
+
 ## Capabilities
 
 The framework's optional capability traits, and what this crate does with each:
@@ -133,7 +136,8 @@ unhandled.
 - `HandlerOutcome::ack()` marks the record handled.
 - `HandlerOutcome::retry()` leaves it unhandled. The watermark stops there, so the shard replays
   from that record when its lease is next taken. A sharded log repositions; it cannot requeue one
-  record.
+  record. Under a declared cap the framework publishes a copy instead, so the attempt count travels
+  with the record; see [Retrying after a delay](#retrying-after-a-delay).
 - `HandlerOutcome::drop()` checkpoints past the record, which is how a poison one is retired.
 
 Delivery is at-least-once: an unacknowledged record holds the watermark where it is, and everything
@@ -151,32 +155,42 @@ empty again after a restart.
 
 ### Retrying after a delay
 
-Kinesis holds no redelivery timer, so a handler that returns
-`HandlerOutcome::retry_after(delay)` is served by the framework: it publishes the record again once
-the delay is over, with the retry count in a header. The registration names the policy that copy is
-published through:
+Kinesis holds no redelivery timer, so a handler that returns `HandlerOutcome::retry_after(delay)`
+is served by the framework: it publishes the record again once the delay is over, with the attempt
+count in a header. How many times that may happen, and where the record goes when it has happened
+enough, are declared at the mount site:
 
 ```rust
 --8<-- "crates/ruststream-kinesis/examples/kinesis_retry.rs:retry"
 ```
 
-The handler asks for the pause, and reads how many times it has already asked:
+The handler asks for the pause and counts nothing:
 
 ```rust
 --8<-- "crates/ruststream-kinesis/examples/kinesis_retry.rs:handler"
 ```
 
-The copy goes to the stream the subscription reads, which the descriptor reports. A registration
-that binds no `out_retry` keeps no delay: the record is replayed from the shard at once.
+`max_attempts(n)` is how many deliveries one record gets, counting the first. `dead_letter(name)`
+is the dead-letter stream a spent record is published to, as it arrived, payload and headers. A cap
+declared without one checkpoints past the spent record instead, which is what `drop()` does by
+hand.
 
-The retry is an ordinary `Out` slot, so the same chain takes `.codec(..)`, `.transform(..)` and
-this crate's `partition_key(..)`. The copy carries the record's own bytes, so the codec resolves
-the position and encodes nothing, while a transform still runs on the copy.
+The count is the framework's header and nothing else: a delivered Kinesis record does not say how
+many times it has been read. That is also why `HandlerOutcome::retry()` becomes a published copy
+under a declaration - only a copy carries the count forward, and a record left on the shard would
+be read again with the count it started with.
+
+The copy goes to the stream the subscription reads, which the descriptor reports, so a registration
+owes no destination of its own and starts as it is. `.out_retry(policy)` replaces the publisher
+those copies leave through rather than enabling them; the position is an ordinary `Out` slot, so
+the chain then takes `.codec(..)`, `.transform(..)` and this crate's `partition_key(..)`. The copy
+carries the record's own bytes, so the codec resolves the position and encodes nothing, while a
+transform still runs on the copy and reads the delivery it answers.
 
 The copy arrives at the tip of the stream, not in the place the record held, and its partition key
 picks the shard it lands on. A deferred record therefore loses its order against the records it was
-published among. Where that order matters, hold the shard with `HandlerOutcome::retry()` instead:
-the watermark stops at the record, and the shard replays from it.
+published among. Where that order matters and no cap is declared, `HandlerOutcome::retry()` holds
+the shard instead: the watermark stops at the record, and the shard replays from it.
 
 ### Sharing shards between instances
 
@@ -312,6 +326,26 @@ the `kinesis` protocol. What it reports is a coordinate: the host and port a cli
 - Otherwise `kinesis.<region>.amazonaws.com` when `region(..)` named one.
 - Otherwise `kinesis.amazonaws.com`, because a broker resolving its region from the environment has
   not resolved it yet when the document is built.
+
+The `asyncapi` feature adds what only this broker knows. A subscription describes its channel with
+the stream it reads, the pause between reads, and the shards it provisions where it creates the
+stream:
+
+```json
+--8<-- "crates/ruststream-kinesis/tests/snippets/asyncapi-channel.json"
+```
+
+A publish policy that fixed a partition key describes the records that leave through it:
+
+```json
+--8<-- "crates/ruststream-kinesis/tests/snippets/asyncapi-message.json"
+```
+
+The AsyncAPI specification has no Kinesis binding, and the protocol keys it does define are a
+closed list, so both objects travel under the extension key `x-ruststream-kinesis`. Only what the
+descriptor and the policy hold is reported: the document is built before anything connects, so an
+existing stream's real shard count and its ARN are not in it, and neither is a key named on a
+single publish call.
 
 ## The header envelope
 

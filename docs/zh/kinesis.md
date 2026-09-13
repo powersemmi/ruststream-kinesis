@@ -14,6 +14,9 @@ ruststream-kinesis = "0.7"
 serde = { version = "1", features = ["derive"] }
 ```
 
+一共三个 feature：`dynamodb-lease` 在服务的多个实例之间分摊分片，`testing` 提供进程内的 Broker，
+`asyncapi` 把这个 Broker 自己的词汇写进生成的文档。
+
 ## 能力 { #capabilities }
 
 框架的可选能力 trait，以及这个 crate 对每一项的处理：
@@ -118,7 +121,8 @@ protobuf 形式送到处理器。
 
 - `HandlerOutcome::ack()` 把记录标记为已处理。
 - `HandlerOutcome::retry()` 让它保持未处理。水位线停在那里，因此下次有人取走这个分片的租约时，分
-  片会从这条记录重放。分片日志能重新定位，却没法把单独一条记录放回队列。
+  片会从这条记录重放。分片日志能重新定位，却没法把单独一条记录放回队列。声明了上限时，框架改为发
+  布一份副本，让投递计数跟着记录走，见[延迟后重试](#retrying-after-a-delay)。
 - `HandlerOutcome::drop()` 把检查点写到这条记录之后，有毒记录就是这样退役的。
 
 投递是至少一次的：一条没有确认的记录把水位线按在原地，从它往后的一切，在重启或租约交接之后会再投
@@ -134,29 +138,36 @@ protobuf 形式送到处理器。
 ### 延迟后重试 { #retrying-after-a-delay }
 
 Kinesis 没有重新投递定时器，因此返回 `HandlerOutcome::retry_after(delay)` 的处理器由框架来照应：
-延迟走完之后，框架把这条记录再发布一次，并把重试次数放进一个消息头。副本经由哪个策略发出，由这次
-挂载自己点名：
+延迟走完之后，框架把这条记录再发布一次，并把投递计数放进一个消息头。这件事最多重复几次、次数用完
+之后记录去哪里，都在挂载点上声明：
 
 ```rust
 --8<-- "crates/ruststream-kinesis/examples/kinesis_retry.rs:retry"
 ```
 
-处理器请求这次停顿，并读出自己已经请求过多少次：
+处理器请求这次停顿，自己不计数：
 
 ```rust
 --8<-- "crates/ruststream-kinesis/examples/kinesis_retry.rs:handler"
 ```
 
-副本进入订阅所读的那条流，这条流由描述符报出。没有点名 `out_retry` 的挂载不保留延迟：这条记录立即
-从分片重放。
+`max_attempts(n)` 是一条记录一共能被投递几次，第一次也算在内。`dead_letter(name)` 是次数用完的记
+录去往的死信流，它按原样发布过去，消息体和消息头都在。只封顶而不给地址，用完次数的那条记录改为被
+写上检查点跳过，跟手写 `drop()` 是一回事。
 
-重试是一个普通的 `Out` 槽位，因此同一条链也接受 `.codec(..)`、`.transform(..)` 和本 crate 的
-`partition_key(..)`。副本带的是这条记录自己的字节，因此编解码器只解析这个位置、不做编码，而变换
-仍然作用在副本上。
+计数只有框架的消息头一处：投递过来的 Kinesis 记录并不说自己已经被读过几次。因此在声明之下
+`HandlerOutcome::retry()` 成了一份发布出去的副本：只有副本能把计数带走，而留在分片上的记录再读一
+次时，计数还是它开始时的那个。
+
+副本进入订阅所读的那条流，这条流由描述符报出，因此这次挂载不欠一个地址，照原样就能启动。
+`.out_retry(policy)` 替换副本经由的发布者，而不是把副本打开；这个位置是一个普通的 `Out` 槽位，因
+此链上接着可以写 `.codec(..)`、`.transform(..)` 和本 crate 的 `partition_key(..)`。副本带的是这条
+记录自己的字节，因此编解码器只解析这个位置、不做编码，而变换仍然作用在副本上，并读得到它所回应的
+那次投递。
 
 副本落在流的尾部，而不是这条记录原来占的位置，落在哪个分片由它的分区键挑定。因此延迟的记录会丢掉
-它相对于原先同处一批发布的那些记录的顺序。这个顺序要紧的地方，改用 `HandlerOutcome::retry()` 按住
-分片：水位线停在这条记录上，分片从它重放。
+它相对于原先同处一批发布的那些记录的顺序。这个顺序要紧而又没有声明上限的地方，用
+`HandlerOutcome::retry()` 按住分片：水位线停在这条记录上，分片从它重放。
 
 ### 在多个实例间共享分片 { #sharing-shards-between-instances }
 
@@ -278,6 +289,23 @@ Kinesis 没有重新投递定时器，因此返回 `HandlerOutcome::retry_after(
   要发布的，凭证绝不能跟着它走。
 - 否则，`region(..)` 点过名时是 `kinesis.<region>.amazonaws.com`。
 - 否则是 `kinesis.amazonaws.com`，因为从环境里解析区域的 Broker，在构建文档的时刻还没有解析出来。
+
+`asyncapi` feature 补上只有这个 Broker 知道的东西。订阅用它所读的流、两次读取之间的停顿，以及它创
+建流时开的分片数，来描述自己的通道：
+
+```json
+--8<-- "crates/ruststream-kinesis/tests/snippets/asyncapi-channel.json"
+```
+
+被点名过分区键的发布策略，描述经由它发出的记录：
+
+```json
+--8<-- "crates/ruststream-kinesis/tests/snippets/asyncapi-message.json"
+```
+
+AsyncAPI 规范里没有 Kinesis 绑定，而它确实定义的那些协议键是一份封闭清单，因此这两个对象都走扩展
+键 `x-ruststream-kinesis`。报出的只有描述符和策略自己持有的东西：文档在任何连接之前就构建好了，因
+此已有流的真实分片数和它的 ARN 都不在里面，单次发布调用上点名的键也不在。
 
 ## 消息头信封 { #the-header-envelope }
 

@@ -37,25 +37,13 @@ async fn confirm(order: &Order) -> Receipt {
     Receipt { id: order.id }
 }
 
-/// The channel object of a Kinesis subscription, exactly as the document reports it.
-// --8<-- [start:channel]
-const CHANNEL_BINDING: &str = r#"{
-  "x-ruststream-kinesis": {
-    "pollIntervalMs": 250,
-    "shardCount": 2,
-    "stream": "orders"
-  }
-}"#;
-// --8<-- [end:channel]
+/// The channel object of a Kinesis subscription, exactly as the document reports it. The
+/// documentation embeds the same file, so a change to the binding shows up in the page or fails
+/// here.
+const CHANNEL_BINDING: &str = include_str!("snippets/asyncapi-channel.json");
 
 /// The message object of a record whose mount site fixed a partition key.
-// --8<-- [start:message]
-const MESSAGE_BINDING: &str = r#"{
-  "x-ruststream-kinesis": {
-    "partitionKey": "tenant-acme"
-  }
-}"#;
-// --8<-- [end:message]
+const MESSAGE_BINDING: &str = include_str!("snippets/asyncapi-message.json");
 
 /// One mount, one document: the subscription describes its channel and the reply policy
 /// describes the records that leave through it.
@@ -80,7 +68,7 @@ fn the_channel_reports_what_the_descriptor_holds() {
 
     let bindings = serde_json::to_string_pretty(&spec.channels["orders"].bindings)
         .expect("a binding body serialized once at construction serializes again here");
-    assert_eq!(bindings, CHANNEL_BINDING);
+    assert_eq!(bindings, CHANNEL_BINDING.trim_end());
 }
 
 /// The key the mount site fixed on the policy travels with the message, which is where the
@@ -92,7 +80,7 @@ fn the_message_reports_the_partition_key_the_mount_site_fixed() {
 
     let bindings = serde_json::to_string_pretty(&spec.components.messages["Receipt"].bindings)
         .expect("a binding body serialized once at construction serializes again here");
-    assert_eq!(bindings, MESSAGE_BINDING);
+    assert_eq!(bindings, MESSAGE_BINDING.trim_end());
 }
 
 /// A policy that fixes no key says nothing rather than writing an empty object, so a document

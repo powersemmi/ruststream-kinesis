@@ -239,6 +239,22 @@ ru = "отметка подтверждения"
 ru_match = "отметк"
 zh = "水位线"
 
+# The core's own guides settle both of these: a spent delivery goes to "мёртвые письма" / 死信,
+# and what a broker adds to the document is a "биндинг" / 绑定.
+[[term]]
+en = "dead letter"
+en_match = "dead[- ]letters?"
+ru = "мёртвые письма"
+ru_match = "мёртв\\w* пис"
+zh = "死信"
+
+[[term]]
+en = "binding"
+en_match = "bindings?"
+ru = "биндинг"
+ru_match = "биндинг"
+zh = "绑定"
+
 [[term]]
 en = "envelope"
 en_match = "envelopes?"
