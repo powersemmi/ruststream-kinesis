@@ -752,12 +752,12 @@ async fn a_reposition_replaced_before_it_is_applied_leaves_nothing_in_flight() {
 /// answering at all: a service that wires a deferred retry learns at startup whether it has one.
 #[tokio::test(start_paused = true)]
 async fn a_deferred_retry_comes_back_through_the_address_the_descriptor_reports() {
-    let broker = KinesisTestBroker::new();
-    let retry_publisher = broker.publisher();
-    let app = RustStream::new(AppInfo::new("deferred", "0.1.0")).with_broker(broker, |b| {
-        b.retry_via(retry_publisher);
-        b.include(deferring);
-    });
+    let app = RustStream::new(AppInfo::new("deferred", "0.1.0")).with_broker(
+        KinesisTestBroker::new(),
+        |b| {
+            b.include(deferring).out_retry(Publish::default());
+        },
+    );
     let tb = TestApp::start(app).await.expect("the harness starts");
 
     tb.broker::<KinesisTestBroker>()

@@ -200,8 +200,9 @@ impl SubscriptionSource<ConnectedKinesisBroker> for KinesisStream {
         connected.subscribe_stream(self).await
     }
 
-    /// A stream is what a subscription reads and what a publish writes to, so a `retry_via`
-    /// scope publishes the deferred copy back to the stream this descriptor names.
+    /// A stream is what a subscription reads and what a publish writes to, so a registration
+    /// bound with `out_retry` publishes the deferred copy back to the stream this descriptor
+    /// names.
     ///
     /// The copy arrives at the tip rather than in the place the original held, and its partition
     /// key picks the shard it lands on, so a deferred record loses its position in the stream's
@@ -237,8 +238,8 @@ impl SubscriptionSource<crate::testing::ConnectedKinesisTestBroker> for KinesisS
         ready(self.validate().map(|()| connected.open(self.stream())))
     }
 
-    /// The same answer the descriptor gives against the service, so a `retry_via` scope that
-    /// starts in production starts in a unit test too.
+    /// The same answer the descriptor gives against the service, so a registration bound with
+    /// `out_retry` that starts in production starts in a unit test too.
     fn redelivery_address(
         &self,
         _connected: &crate::testing::ConnectedKinesisTestBroker,

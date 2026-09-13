@@ -134,8 +134,8 @@ protobuf 形式送到处理器。
 ### 延迟后重试 { #retrying-after-a-delay }
 
 Kinesis 没有重新投递定时器，因此返回 `HandlerOutcome::retry_after(delay)` 的处理器由框架来照应：
-延迟走完之后，框架把这条记录再发布一次，并把重试次数放进一个消息头。它用的那个发布者，在 Broker
-作用域上接好：
+延迟走完之后，框架把这条记录再发布一次，并把重试次数放进一个消息头。副本经由哪个策略发出，由这次
+挂载自己点名：
 
 ```rust
 --8<-- "crates/ruststream-kinesis/examples/kinesis_retry.rs:retry"
@@ -147,8 +147,12 @@ Kinesis 没有重新投递定时器，因此返回 `HandlerOutcome::retry_after(
 --8<-- "crates/ruststream-kinesis/examples/kinesis_retry.rs:handler"
 ```
 
-副本进入订阅所读的那条流，这条流由描述符报出。没有 `retry_via` 时，延迟退化成从这条记录起对分片
-的一次立即重放。
+副本进入订阅所读的那条流，这条流由描述符报出。没有点名 `out_retry` 的挂载不保留延迟：这条记录立即
+从分片重放。
+
+重试是一个普通的 `Out` 槽位，因此同一条链也接受 `.codec(..)`、`.transform(..)` 和本 crate 的
+`partition_key(..)`。副本带的是这条记录自己的字节，因此编解码器只解析这个位置、不做编码，而变换
+仍然作用在副本上。
 
 副本落在流的尾部，而不是这条记录原来占的位置，落在哪个分片由它的分区键挑定。因此延迟的记录会丢掉
 它相对于原先同处一批发布的那些记录的顺序。这个顺序要紧的地方，改用 `HandlerOutcome::retry()` 按住

@@ -1,7 +1,7 @@
 //! Retrying a record after a delay, which Kinesis itself cannot hold back.
 //!
-//! The framework re-publishes the record once the delay is over, through the publisher the scope
-//! wires. Run a local stack first (`just brokers-up`), then:
+//! The framework re-publishes the record once the delay is over, through the publisher the mount
+//! site names. Run a local stack first (`just brokers-up`), then:
 //! `cargo run --example kinesis_retry`
 
 // --8<-- [start:handler]
@@ -46,12 +46,12 @@ fn app() -> impl App {
         .endpoint("http://localhost:4566")
         .test_credentials()
         .region("us-east-1");
-    // The deferred copy is an ordinary publish, so it needs a publisher on this same broker.
-    let retries = broker.publisher();
 
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.retry_via(retries);
-        b.include(reconcile);
+        // The deferred copy is an ordinary publish, so the registration names the policy it
+        // leaves through. Nothing else is needed: the descriptor answers where the copy goes,
+        // and a stream is both what the subscription reads and what a publish reaches.
+        b.include(reconcile).out_retry(Publish::default());
     })
 }
 // --8<-- [end:retry]

@@ -153,8 +153,8 @@ empty again after a restart.
 
 Kinesis holds no redelivery timer, so a handler that returns
 `HandlerOutcome::retry_after(delay)` is served by the framework: it publishes the record again once
-the delay is over, with the retry count in a header. Wire the publisher it uses on the broker
-scope:
+the delay is over, with the retry count in a header. The registration names the policy that copy is
+published through:
 
 ```rust
 --8<-- "crates/ruststream-kinesis/examples/kinesis_retry.rs:retry"
@@ -166,8 +166,12 @@ The handler asks for the pause, and reads how many times it has already asked:
 --8<-- "crates/ruststream-kinesis/examples/kinesis_retry.rs:handler"
 ```
 
-The copy goes to the stream the subscription reads, which the descriptor reports. Without
-`retry_via` the delay degrades to an immediate replay of the shard from that record.
+The copy goes to the stream the subscription reads, which the descriptor reports. A registration
+that binds no `out_retry` keeps no delay: the record is replayed from the shard at once.
+
+The retry is an ordinary `Out` slot, so the same chain takes `.codec(..)`, `.transform(..)` and
+this crate's `partition_key(..)`. The copy carries the record's own bytes, so the codec resolves
+the position and encodes nothing, while a transform still runs on the copy.
 
 The copy arrives at the tip of the stream, not in the place the record held, and its partition key
 picks the shard it lands on. A deferred record therefore loses its order against the records it was
