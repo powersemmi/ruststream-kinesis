@@ -11,11 +11,13 @@ use std::future::{Future, ready};
 use std::time::Duration;
 
 use ruststream::runtime::{Declared, IntoSource, SubscriberBuilder, SubscriberSettings};
-use ruststream::{RedeliveryAddress, SubscriptionSource};
+use ruststream::{AddressedCopies, RedeliveryAddress, RedeliveryAddressed, SubscriptionSource};
 
 use crate::broker::ConnectedKinesisBroker;
 use crate::error::KinesisError;
 use crate::subscriber::KinesisSubscriber;
+#[cfg(feature = "testing")]
+use crate::testing::{ConnectedKinesisTestBroker, KinesisTestSubscriber};
 
 /// A subscription descriptor for one Kinesis stream.
 ///
@@ -188,6 +190,11 @@ impl IntoSource for KinesisStream {
 
 impl SubscriptionSource<ConnectedKinesisBroker> for KinesisStream {
     type Subscriber = KinesisSubscriber;
+    /// Kinesis moves nothing on its own: it holds no redelivery timer, no delivery counter and
+    /// no dead-letter mechanism, so the framework publishes every copy. A stream is what a
+    /// subscription reads and what a publish writes to, so this descriptor knows where a copy
+    /// goes.
+    type Copies = AddressedCopies;
 
     fn name(&self) -> &str {
         self.stream()
@@ -199,10 +206,11 @@ impl SubscriptionSource<ConnectedKinesisBroker> for KinesisStream {
     ) -> Result<KinesisSubscriber, KinesisError> {
         connected.subscribe_stream(self).await
     }
+}
 
-    /// A stream is what a subscription reads and what a publish writes to, so a registration
-    /// bound with `out_retry` publishes the deferred copy back to the stream this descriptor
-    /// names.
+impl RedeliveryAddressed<ConnectedKinesisBroker> for KinesisStream {
+    /// The stream this descriptor names, which is where a deferred copy and a spent delivery of
+    /// this registration are published.
     ///
     /// The copy arrives at the tip rather than in the place the original held, and its partition
     /// key picks the shard it lands on, so a deferred record loses its position in the stream's
@@ -210,9 +218,9 @@ impl SubscriptionSource<ConnectedKinesisBroker> for KinesisStream {
     fn redelivery_address(
         &self,
         _connected: &ConnectedKinesisBroker,
-    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, KinesisError>> + Send {
+    ) -> impl Future<Output = Result<RedeliveryAddress, KinesisError>> + Send {
         // The stream name is the answer, so nothing is asked of the broker and nothing is awaited.
-        ready(Ok(Some(RedeliveryAddress::new(self.stream().to_owned()))))
+        ready(Ok(RedeliveryAddress::new(self.stream().to_owned())))
     }
 }
 
@@ -224,8 +232,12 @@ impl SubscriptionSource<ConnectedKinesisBroker> for KinesisStream {
 /// published to it. The descriptor is still validated, so a mount the service would reject
 /// fails here too.
 #[cfg(feature = "testing")]
-impl SubscriptionSource<crate::testing::ConnectedKinesisTestBroker> for KinesisStream {
-    type Subscriber = crate::testing::KinesisTestSubscriber;
+impl SubscriptionSource<ConnectedKinesisTestBroker> for KinesisStream {
+    type Subscriber = KinesisTestSubscriber;
+    /// The same copy path the descriptor declares against the service, so a registration that
+    /// caps its retries or names a dead-letter stream is driven in a unit test exactly as it
+    /// runs in production.
+    type Copies = AddressedCopies;
 
     fn name(&self) -> &str {
         self.stream()
@@ -233,18 +245,21 @@ impl SubscriptionSource<crate::testing::ConnectedKinesisTestBroker> for KinesisS
 
     fn subscribe(
         self,
-        connected: &crate::testing::ConnectedKinesisTestBroker,
+        connected: &ConnectedKinesisTestBroker,
     ) -> impl Future<Output = Result<Self::Subscriber, KinesisError>> + Send {
         ready(self.validate().map(|()| connected.open(self.stream())))
     }
+}
 
-    /// The same answer the descriptor gives against the service, so a registration bound with
-    /// `out_retry` that starts in production starts in a unit test too.
+#[cfg(feature = "testing")]
+impl RedeliveryAddressed<ConnectedKinesisTestBroker> for KinesisStream {
+    /// The same answer the descriptor gives against the service, so a copy the framework
+    /// publishes in a unit test lands where it lands in production.
     fn redelivery_address(
         &self,
-        _connected: &crate::testing::ConnectedKinesisTestBroker,
-    ) -> impl Future<Output = Result<Option<RedeliveryAddress>, KinesisError>> + Send {
-        ready(Ok(Some(RedeliveryAddress::new(self.stream().to_owned()))))
+        _connected: &ConnectedKinesisTestBroker,
+    ) -> impl Future<Output = Result<RedeliveryAddress, KinesisError>> + Send {
+        ready(Ok(RedeliveryAddress::new(self.stream().to_owned())))
     }
 }
 

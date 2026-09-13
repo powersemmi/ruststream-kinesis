@@ -7,8 +7,8 @@ use std::sync::{Arc, OnceLock};
 use bytes::Bytes;
 use ruststream::testing::{Coordinator, TestableBroker};
 use ruststream::{
-    Broker, ConnectedBroker, DefaultPublish, HeaderMap, OutgoingMessage, Publisher, RawMessage,
-    RedeliveryAddress, Subscribe,
+    AddressedCopies, Broker, ConnectedBroker, DefaultPublish, HeaderMap, OutgoingMessage,
+    Publisher, RawMessage, Subscribe,
 };
 
 use crate::error::KinesisError;
@@ -137,15 +137,12 @@ impl ConnectedBroker for ConnectedKinesisTestBroker {
 
 impl Subscribe for ConnectedKinesisTestBroker {
     type Subscriber = KinesisTestSubscriber;
+    /// The same copy path the service declares: a name is a log here, and a publish to it
+    /// reaches the subscription reading it.
+    type Copies = AddressedCopies;
 
     fn subscribe(&self, name: &str) -> impl Future<Output = Result<Self::Subscriber, Self::Error>> {
         ready(Ok(self.open(name)))
-    }
-
-    /// The same answer the service gives: a name is a log here, and a publish to it reaches the
-    /// subscription reading it.
-    fn redelivery_address(&self, name: &str) -> Option<RedeliveryAddress> {
-        Some(RedeliveryAddress::new(name.to_owned()))
     }
 }
 

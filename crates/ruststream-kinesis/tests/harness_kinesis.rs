@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use ruststream::codec::CborCodec;
 use ruststream::runtime::{
-    ContextKind, ForSlot, Outgoing, PublishTransform, RETRY_COUNT_HEADER, Reads, SlotContext,
+    ContextKind, ForReply, Outgoing, PublishContext, PublishTransform, RETRY_COUNT_HEADER, Reads,
 };
 use ruststream::testing::{TestApp, TestError};
 use ruststream_kinesis::prelude::*;
@@ -164,6 +164,21 @@ async fn deferring(_job: &Job, ctx: &mut Context<'_, KinesisContext>) -> Handler
     } else {
         HandlerOutcome::ack()
     }
+}
+
+/// A handler that never makes progress: every delivery asks for the same pause. Left alone the
+/// copies circulate forever, which is what the cap declared at the mount site ends.
+#[subscriber(KinesisStream::new("capped"))]
+async fn stubborn(_job: &Job) -> HandlerOutcome {
+    HandlerOutcome::retry_after(RETRY_DELAY)
+}
+
+/// The same refusal without a pause. Kinesis counts no redeliveries of its own, so under a
+/// declaration the framework republishes the record at once instead of wedging the shard: that
+/// copy is what carries the count forward.
+#[subscriber(KinesisStream::new("insistent"))]
+async fn insistent(_job: &Job) -> HandlerOutcome {
+    HandlerOutcome::retry()
 }
 
 // --8<-- [start:keyed_handler]
@@ -746,18 +761,19 @@ async fn a_reposition_replaced_before_it_is_applied_leaves_nothing_in_flight() {
 }
 
 /// Kinesis holds no redelivery timer of its own, so a handler that asks for a delay is served by
-/// the framework's fallback: it publishes the record again once the delay is over. The descriptor
-/// answers where that copy goes, and a stream is both the subscription and the publish
-/// destination, so it goes back to the stream the handler reads.
+/// the framework: it publishes the record again once the delay is over. The descriptor answers
+/// where that copy goes, and a stream is both the subscription and the publish destination, so it
+/// goes back to the stream the handler reads.
 ///
-/// A descriptor that cannot answer makes the mount refuse to start, which is the point of
-/// answering at all: a service that wires a deferred retry learns at startup whether it has one.
+/// The mount names no publisher, which is the point: a stream addresses its own copies, so the
+/// registration gets the broker's default publisher without asking, and `out_retry(policy)` is
+/// only there to replace it.
 #[tokio::test(start_paused = true)]
 async fn a_deferred_retry_comes_back_through_the_address_the_descriptor_reports() {
     let app = RustStream::new(AppInfo::new("deferred", "0.1.0")).with_broker(
         KinesisTestBroker::new(),
         |b| {
-            b.include(deferring).out_retry(Publish::default());
+            b.include(deferring);
         },
     );
     let tb = TestApp::start(app).await.expect("the harness starts");
@@ -795,26 +811,116 @@ async fn a_deferred_retry_comes_back_through_the_address_the_descriptor_reports(
     tb.shutdown().await.expect("the harness shuts down");
 }
 
-/// The header a transform on the retry position writes, so a redelivered record says which
-/// position it came back through.
-const LEFT_THROUGH: &str = "x-left-through";
+/// The cap and the destination are declared at the mount site, the same two steps on every
+/// broker. Kinesis applies neither itself - it has no delivery counter and no dead-letter
+/// mechanism - so the framework counts the copies it publishes and carries the spent record away
+/// under the header count.
+#[tokio::test(start_paused = true)]
+async fn a_capped_registration_carries_a_spent_record_to_the_dead_letter_stream() {
+    let app = RustStream::new(AppInfo::new("capped", "0.1.0")).with_broker(
+        KinesisTestBroker::new(),
+        |b| {
+            b.include(stubborn)
+                .max_attempts(nonzero!(3))
+                .dead_letter("capped.dead");
+        },
+    );
+    let tb = TestApp::start(app).await.expect("the harness starts");
 
-/// A transform that writes a header and no broker setting, so it is generic over the options and
-/// mounts on any position. The retry is an ordinary `Out` slot, so what it reads is a
-/// [`SlotContext`].
+    tb.broker::<KinesisTestBroker>()
+        .message(&Job { id: 1 })
+        .to("capped")
+        .publish()
+        .await
+        .expect("the publish succeeds");
+
+    // Two deferred copies, one per attempt that still has a retry left; the third delivery is
+    // the last the cap allows, and it leaves for the dead-letter stream without the delay.
+    tb.advance(RETRY_DELAY).await.expect("the reaction settles");
+    tb.advance(RETRY_DELAY).await.expect("the reaction settles");
+
+    tb.broker::<KinesisTestBroker>()
+        .subscriber("capped")
+        .assert_called(3);
+    tb.broker::<KinesisTestBroker>()
+        .published::<Job>("capped.dead")
+        .assert_called_once()
+        .with(&Job { id: 1 });
+
+    tb.shutdown().await.expect("the harness shuts down");
+}
+
+/// An immediate retry obeys the same cap, and on this transport that changes what it is. A
+/// Kinesis shard replays an unhandled record with no count attached, so under a declaration the
+/// framework publishes the copy instead: the count travels in the header and the cap can be
+/// reached at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_immediate_retry_under_a_cap_travels_as_a_counted_copy() {
+    let app = RustStream::new(AppInfo::new("insistent", "0.1.0")).with_broker(
+        KinesisTestBroker::new(),
+        |b| {
+            b.include(insistent)
+                .max_attempts(nonzero!(2))
+                .dead_letter("insistent.dead");
+        },
+    );
+    let tb = TestApp::start(app).await.expect("the harness starts");
+
+    tb.broker::<KinesisTestBroker>()
+        .message(&Job { id: 1 })
+        .to("insistent")
+        .publish()
+        .await
+        .expect("the publish succeeds");
+    timeout(QUIESCENCE_BUDGET, tb.settle())
+        .await
+        .expect("the reaction reaches quiescence")
+        .expect("the copies settle");
+
+    tb.broker::<KinesisTestBroker>()
+        .subscriber("insistent")
+        .assert_called(2);
+    // The copy the requeue became carries the count, which is the only reason the second
+    // delivery is the last one.
+    tb.broker::<KinesisTestBroker>()
+        .published::<Job>("insistent")
+        .assert_called(2)
+        .with_header(RETRY_COUNT_HEADER, "1");
+    tb.broker::<KinesisTestBroker>()
+        .published::<Job>("insistent.dead")
+        .assert_called_once()
+        .with(&Job { id: 1 });
+
+    tb.shutdown().await.expect("the harness shuts down");
+}
+
+/// The header a transform on the retry position writes, so a redelivered record says which
+/// stream it was deferred from.
+const DEFERRED_FROM: &str = "x-deferred-from";
+
+/// A transform that writes a header and no broker setting, so it is generic over the options.
+/// The retry position answers a delivery, so what it reads is a [`PublishContext`] over the
+/// handler's own context type: the stream the record arrived on, its headers, its context keys.
 struct DeferredStamp;
 
-impl<Options> PublishTransform<ForSlot, Options> for DeferredStamp {
+impl<Context, Options> PublishTransform<ForReply<Context>, Options> for DeferredStamp {
     type Destination = Reads;
 
-    fn apply(&self, out: &mut Outgoing<'_>, _options: &mut Option<Options>, cx: &SlotContext<'_>) {
-        out.headers_mut().insert(LEFT_THROUGH, cx.slot().to_owned());
+    fn apply(
+        &self,
+        out: &mut Outgoing<'_>,
+        _options: &mut Option<Options>,
+        cx: &PublishContext<'_, Context>,
+    ) {
+        out.headers_mut()
+            .insert(DEFERRED_FROM, cx.name().to_owned());
     }
 }
 
 /// The deferred copy travels the pipeline the registration bound, so a transform named on the
-/// retry position reaches it. The copy is already serialized, which is what makes this worth
-/// asserting: a transform still runs on it, even though no codec does.
+/// retry position reaches it, reading the delivery it answers. The copy is already serialized,
+/// which is what makes this worth asserting: a transform still runs on it, even though no codec
+/// does.
 #[tokio::test(start_paused = true)]
 async fn a_transform_on_the_retry_position_stamps_the_deferred_copy() {
     let app = RustStream::new(AppInfo::new("stamped", "0.1.0")).with_broker(
@@ -845,7 +951,7 @@ async fn a_transform_on_the_retry_position_stamps_the_deferred_copy() {
         .published::<Job>("deferred")
         .assert_called(2)
         .with(&Job { id: 1 })
-        .with_header(LEFT_THROUGH, "Retry");
+        .with_header(DEFERRED_FROM, "deferred");
 
     tb.shutdown().await.expect("the harness shuts down");
 }

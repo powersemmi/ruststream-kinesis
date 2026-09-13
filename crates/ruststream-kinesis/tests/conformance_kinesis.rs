@@ -54,6 +54,20 @@ async fn kinesis_test_broker_passes_lifecycle() {
     .await;
 }
 
+/// A Kinesis stream addresses its own retry copies, so the descriptor promises that a publish to
+/// the address it reports arrives at the subscription that reported it. That promise is the whole
+/// deferred retry: an address reaching nothing would lose every delayed record silently.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kinesis_test_broker_reports_a_reachable_redelivery_address() {
+    harness::redelivery_address(
+        KinesisTestBroker::new,
+        |name| KinesisStream::new(name),
+        |connected| connected.publisher(),
+    )
+    .await;
+}
+
 /// The stand-in claims `Seekable` and `Positioned` over its retained log, so it owes the same
 /// contract the service does: a captured position redelivers exactly its record and the ordered
 /// suffix after it, and a forward seek skips what was queued. Running the framework's own suite
@@ -118,6 +132,35 @@ async fn kinesis_broker_passes_seeking_suite() {
         return;
     };
     capabilities::seeking(
+        || {
+            KinesisBroker::new()
+                .endpoint(endpoint.clone())
+                .test_credentials()
+                .region("us-east-1")
+        },
+        |name| {
+            StartAt::new(
+                KinesisStream::new(name)
+                    .create_if_missing(1)
+                    .poll_interval(Duration::from_millis(200)),
+                KinesisPosition::horizon(),
+            )
+        },
+        |connected| connected.publisher(),
+    )
+    .await;
+}
+
+/// The same promise against the service, where the address is a real stream name and the publish
+/// is a real `PutRecord`: only a server shows that a copy published under the reported name is
+/// picked up by the shard reader the descriptor opened.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kinesis_broker_reports_a_reachable_redelivery_address() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    harness::redelivery_address(
         || {
             KinesisBroker::new()
                 .endpoint(endpoint.clone())

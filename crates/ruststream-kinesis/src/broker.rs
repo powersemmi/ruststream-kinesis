@@ -13,8 +13,7 @@ use std::time::Duration;
 use aws_config::{BehaviorVersion, Region, SdkConfig};
 use aws_sdk_kinesis::client::Waiters;
 use ruststream::{
-    Broker, ConnectedBroker, DefaultPublish, DescribeServer, RedeliveryAddress, ServerSpec,
-    Subscribe,
+    AddressedCopies, Broker, ConnectedBroker, DefaultPublish, DescribeServer, ServerSpec, Subscribe,
 };
 use tokio::sync::OnceCell;
 
@@ -324,20 +323,18 @@ impl ConnectedBroker for ConnectedKinesisBroker {
 
 impl Subscribe for ConnectedKinesisBroker {
     type Subscriber = KinesisSubscriber;
+    /// A stream is both what a subscription reads and what a publish writes to, so a bare name
+    /// is the address of its own copies: the framework publishes the deferred copy of a
+    /// `retry_after`, and a spent delivery, back under the name the subscription opened.
+    ///
+    /// A copy reaches the subscription from the tip, so a service that defers a record gets it
+    /// back at the end of the stream rather than in place. Ordering against the records already
+    /// in the stream is not preserved, and the shard the copy lands on is the one its partition
+    /// key picks.
+    type Copies = AddressedCopies;
 
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
         self.subscribe_stream(KinesisStream::new(name)).await
-    }
-
-    /// A stream is both what a subscription reads and what a publish writes to, so the deferred
-    /// copy of a `retry_after` goes back to the stream the subscription opened.
-    ///
-    /// It reaches the subscription from the tip, so a service that defers a record gets it back
-    /// at the end of the stream rather than in place. Ordering against the records already in
-    /// the stream is not preserved, and the shard the copy lands on is the one its partition key
-    /// picks.
-    fn redelivery_address(&self, name: &str) -> Option<RedeliveryAddress> {
-        Some(RedeliveryAddress::new(name.to_owned()))
     }
 }
 
