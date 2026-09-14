@@ -215,7 +215,7 @@ impl KinesisPublish {
     /// the publish builder is a property of one record. A policy that names no key says nothing,
     /// so the document carries no field the service did not fix.
     #[cfg(feature = "asyncapi")]
-    fn binding(&self) -> Bindings {
+    fn message_binding(&self) -> Bindings {
         let Some(partition_key) = self.partition_key.as_deref() else {
             return Bindings::new();
         };
@@ -223,6 +223,20 @@ impl KinesisPublish {
         Binding::extension(BINDING_KEY, &body)
             .map_or_else(|_| Bindings::new(), |binding| Bindings::new().with(binding))
     }
+}
+
+/// The stream a position publishes to, written onto that position's channel object.
+///
+/// The policy reads nothing of its own here: a policy holds this broker's settings and never a
+/// destination, so the stream is the one the mount site resolved and the runtime handed over -
+/// the reply type's `#[outgoing(name)]`, the `publish("dest")` clause, a slot entry's name. The
+/// subscription side names its stream on the same object, so both ends of a channel report the
+/// Kinesis stream behind it.
+#[cfg(feature = "asyncapi")]
+fn channel_binding(stream: &str) -> Bindings {
+    let body = KinesisPublishChannelBinding { stream };
+    Binding::extension(BINDING_KEY, &body)
+        .map_or_else(|_| Bindings::new(), |binding| Bindings::new().with(binding))
 }
 
 /// What a record published through [`KinesisPublish`] writes into the generated document.
@@ -235,6 +249,17 @@ impl KinesisPublish {
 struct KinesisMessageBinding<'a> {
     #[serde(rename = "partitionKey")]
     partition_key: &'a str,
+}
+
+/// What a position publishing through [`KinesisPublish`] writes into its channel object.
+///
+/// The stream and nothing else: a publisher holds no read settings, and the shard count, the ARN
+/// and the retention of an existing stream are the service's to answer while the document is
+/// built before anything connects.
+#[cfg(feature = "asyncapi")]
+#[derive(Debug, Serialize)]
+struct KinesisPublishChannelBinding<'a> {
+    stream: &'a str,
 }
 
 impl crate::sealed::PolicyKey for KinesisPublish {
@@ -254,8 +279,15 @@ impl PublishPolicy<ConnectedKinesisBroker> for KinesisPublish {
     }
 
     #[cfg(feature = "asyncapi")]
-    fn message_bindings(&self) -> Bindings {
-        self.binding()
+    fn channel_bindings(&self, channel: &str) -> Bindings {
+        channel_binding(channel)
+    }
+
+    /// The partition key is the record's own routing field, so it describes the message and not
+    /// the channel the message goes to; the destination therefore has no part in it.
+    #[cfg(feature = "asyncapi")]
+    fn message_bindings(&self, _channel: &str) -> Bindings {
+        self.message_binding()
     }
 }
 
@@ -274,11 +306,16 @@ impl PublishPolicy<ConnectedKinesisTestBroker> for KinesisPublish {
         ready(Ok(connected.publisher_keyed(self.key())))
     }
 
-    /// The same binding the policy writes against the service, so a document built in a unit
+    /// The same bindings the policy writes against the service, so a document built in a unit
     /// test is the document the service publishes.
     #[cfg(feature = "asyncapi")]
-    fn message_bindings(&self) -> Bindings {
-        self.binding()
+    fn channel_bindings(&self, channel: &str) -> Bindings {
+        channel_binding(channel)
+    }
+
+    #[cfg(feature = "asyncapi")]
+    fn message_bindings(&self, _channel: &str) -> Bindings {
+        self.message_binding()
     }
 }
 

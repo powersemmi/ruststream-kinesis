@@ -335,14 +335,23 @@ stream:
 --8<-- "crates/ruststream-kinesis/tests/snippets/asyncapi-channel.json"
 ```
 
-A publish policy that fixed a partition key describes the records that leave through it:
+A publishing position describes its own channel with the stream the records land in. The policy
+holds no destination, so the stream is the one the mount site resolved: the reply type's
+`#[outgoing(name = "..")]`, the `publish("..")` clause, or a slot entry's name.
+
+```json
+--8<-- "crates/ruststream-kinesis/tests/snippets/asyncapi-publish-channel.json"
+```
+
+A publish policy that fixed a partition key describes the records that leave through it. The key
+routes one record, so it stays on the message object and never names a stream:
 
 ```json
 --8<-- "crates/ruststream-kinesis/tests/snippets/asyncapi-message.json"
 ```
 
 The AsyncAPI specification has no Kinesis binding, and the protocol keys it does define are a
-closed list, so both objects travel under the extension key `x-ruststream-kinesis`. Only what the
+closed list, so all three objects travel under the extension key `x-ruststream-kinesis`. Only what the
 descriptor and the policy hold is reported: the document is built before anything connects, so an
 existing stream's real shard count and its ARN are not in it, and neither is a key named on a
 single publish call.

@@ -297,13 +297,21 @@ Kinesis 没有重新投递定时器，因此返回 `HandlerOutcome::retry_after(
 --8<-- "crates/ruststream-kinesis/tests/snippets/asyncapi-channel.json"
 ```
 
-被点名过分区键的发布策略，描述经由它发出的记录：
+发布位置用记录落入的流来描述自己的通道。策略不持有目的地，因此这个流是挂载点定下来的那一个：回复
+类型的 `#[outgoing(name = "..")]`、`publish("..")` 子句，或者某个槽条目的名字。
+
+```json
+--8<-- "crates/ruststream-kinesis/tests/snippets/asyncapi-publish-channel.json"
+```
+
+被点名过分区键的发布策略，描述经由它发出的记录。分区键路由的是一条记录，因此它留在消息对象上，不
+点名任何流：
 
 ```json
 --8<-- "crates/ruststream-kinesis/tests/snippets/asyncapi-message.json"
 ```
 
-AsyncAPI 规范里没有 Kinesis 绑定，而它确实定义的那些协议键是一份封闭清单，因此这两个对象都走扩展
+AsyncAPI 规范里没有 Kinesis 绑定，而它确实定义的那些协议键是一份封闭清单，因此这三个对象都走扩展
 键 `x-ruststream-kinesis`。报出的只有描述符和策略自己持有的东西：文档在任何连接之前就构建好了，因
 此已有流的真实分片数和它的 ARN 都不在里面，单次发布调用上点名的键也不在。
 

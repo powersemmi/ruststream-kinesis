@@ -45,6 +45,10 @@ const CHANNEL_BINDING: &str = include_str!("snippets/asyncapi-channel.json");
 /// The message object of a record whose mount site fixed a partition key.
 const MESSAGE_BINDING: &str = include_str!("snippets/asyncapi-message.json");
 
+/// The channel object of the stream a reply lands in, which the policy learns from the
+/// destination the mount site resolved.
+const PUBLISH_CHANNEL_BINDING: &str = include_str!("snippets/asyncapi-publish-channel.json");
+
 /// One mount, one document: the subscription describes its channel and the reply policy
 /// describes the records that leave through it.
 fn document() -> Spec {
@@ -81,6 +85,33 @@ fn the_message_reports_the_partition_key_the_mount_site_fixed() {
     let bindings = serde_json::to_string_pretty(&spec.components.messages["Receipt"].bindings)
         .expect("a binding body serialized once at construction serializes again here");
     assert_eq!(bindings, MESSAGE_BINDING.trim_end());
+}
+
+/// A Kinesis publish names the stream its records land in, and the policy holds no destination:
+/// the name is the reply type's own `#[outgoing(name = "receipts")]`, which the runtime hands to
+/// the policy as the channel it describes.
+#[test]
+fn the_reply_channel_reports_the_stream_the_records_land_in() {
+    let spec = document();
+
+    let bindings = serde_json::to_string_pretty(&spec.channels["receipts"].bindings)
+        .expect("a binding body serialized once at construction serializes again here");
+    assert_eq!(bindings, PUBLISH_CHANNEL_BINDING.trim_end());
+}
+
+/// The destination reaches the channel object and stops there. A partition key is the record's
+/// own routing field, so the message object carries the key the mount site fixed and no stream
+/// name: one reply type published to two streams would otherwise report one of them on both.
+#[test]
+fn the_message_object_names_no_stream() {
+    let spec = document();
+
+    let bindings = serde_json::to_string(&spec.components.messages["Receipt"].bindings)
+        .expect("a binding body serialized once at construction serializes again here");
+    assert!(
+        !bindings.contains("receipts"),
+        "the message object named a stream: {bindings}"
+    );
 }
 
 /// A policy that fixes no key says nothing rather than writing an empty object, so a document
