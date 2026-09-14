@@ -14,6 +14,10 @@ categories = ["asynchronous", "network-programming"]
 [lints]
 workspace = true
 
+# The overview links into the modules the features gate, so the published page carries them all.
+[package.metadata.docs.rs]
+all-features = true
+
 [features]
 default = []
 # What this broker contributes to the generated AsyncAPI document. The specification lists no
