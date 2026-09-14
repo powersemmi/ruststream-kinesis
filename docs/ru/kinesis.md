@@ -247,7 +247,7 @@ handler)`.
 Перемотка сбрасывает учёт отметки у каждого сегмента, который она двигает, поэтому подтверждение
 записи, доставленной до перемотки, не может утянуть курсор назад через только что занятую позицию.
 Записи начиная с новой позиции доставляются заново, что at-least-once допускает. Сама совместимость
-описана как [Перемотка](https://powersemmi.github.io/ruststream/latest/guides/subscribers/#seeking)
+описана как [Перемотка](https://docs.rs/ruststream/latest/ruststream/runtime/index.html#seeking)
 в документации фреймворка.
 
 ## Публикация {#publishing}
@@ -271,7 +271,7 @@ handler)`.
 нагрузка, которую
 сервис уже держит закодированной, объявляется newtype-обёрткой `#[derive(Outgoing, Serialized)]`:
 кодек по ней не работает, а сгенерированный документ всё равно называет сообщение. См.
-[руководство по публикации](https://powersemmi.github.io/ruststream/latest/guides/publishing/).
+[руководство по публикации](https://docs.rs/ruststream/latest/ruststream/runtime/index.html#publishing).
 
 ### Ключ сегмента {#the-partition-key}
 
@@ -403,7 +403,7 @@ Compose-файл закрепляет последний образ без то�
 те же состояния, что и у настоящего брокера, и на нём работает обвязка `TestApp`. Ни одного
 из этих имён в прелюдии нет, поэтому тест импортирует
 `ruststream_kinesis::testing::KinesisTestBroker` и рядом `ruststream::testing::TestApp`. См.
-[Юнит-тестирование сервиса через `TestApp`](https://powersemmi.github.io/ruststream/latest/guides/testing/#unit-testing-a-service-with-testapp).
+[Юнит-тестирование сервиса через `TestApp`](https://docs.rs/ruststream/latest/ruststream/testing/index.html#examples).
 
 Транспорт держит по хранимому логу на поток, потому что именно это свойство обработчик может
 наблюдать без сервера. Подписка открывается в хвосте, там же, где открывается сегмент без

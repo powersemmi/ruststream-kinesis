@@ -215,7 +215,7 @@ Kinesis 没有重新投递定时器，因此返回 `HandlerOutcome::retry_after(
 
 一次重新定位会丢掉它移动的每个分片的水位线记账，因此定位之前投递的记录，它的确认没法把游标拉回到
 刚刚取到的位置之前。从新位置往后的记录会再投递一次，这是至少一次所允许的。这项能力本身在框架文档
-里是[定位](https://powersemmi.github.io/ruststream/latest/guides/subscribers/#seeking)。
+里是[定位](https://docs.rs/ruststream/latest/ruststream/runtime/index.html#seeking)。
 
 ## 发布 { #publishing }
 
@@ -232,7 +232,7 @@ Kinesis 没有重新投递定时器，因此返回 `HandlerOutcome::retry_after(
 发布构建器是框架自己的：`message(..)` 带上声明好的类型，然后是 `to(..)` 带上流名或 ARN、
 `with_headers(..)`、`with_codec(..)` 和 `publish()`。服务手上已经编码好的载荷，声明成
 `#[derive(Outgoing, Serialized)]` 的 newtype：编解码器不在它上面运行，生成的文档照样写出这条消
-息。见[发布指南](https://powersemmi.github.io/ruststream/latest/guides/publishing/)。
+息。见[发布指南](https://docs.rs/ruststream/latest/ruststream/runtime/index.html#publishing)。
 
 ### 分区键 { #the-partition-key }
 
@@ -347,7 +347,7 @@ compose 文件钉住最后一个不需要令牌的镜像，因为更新的 Local
 `testing` feature 提供 `KinesisTestBroker`：一个进程内传输，没有服务器，也没有网络。它和真实的
 Broker 有同样的状态，`TestApp` 测试套件在它上面运行。这两个名字都不在 prelude 里，因此测试导入
 `ruststream_kinesis::testing::KinesisTestBroker`，并在旁边导入 `ruststream::testing::TestApp`。见
-[用 `TestApp` 对服务做单元测试](https://powersemmi.github.io/ruststream/latest/guides/testing/#unit-testing-a-service-with-testapp)。
+[用 `TestApp` 对服务做单元测试](https://docs.rs/ruststream/latest/ruststream/testing/index.html#examples)。
 
 这个传输给每条流保留一份日志，因为这正是处理器在没有服务器时能观察到的性质。订阅在尾部打开，没有
 检查点的分片也是在那里打开；`start_at(..)` 或者处理器的 `SeekHandle` 会真的从它点名的位置重读日

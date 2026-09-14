@@ -242,7 +242,7 @@ a position reads the `kinesis-sequence-number` and `kinesis-shard-id` headers of
 A reposition drops the watermark bookkeeping of every shard it moves, so an acknowledgement of a
 record delivered before the seek cannot pull the cursor back over the position just taken. Records
 from the new position onward are delivered again, which at-least-once permits. The capability
-itself is [Seeking](https://powersemmi.github.io/ruststream/latest/guides/subscribers/#seeking) in
+itself is [Seeking](https://docs.rs/ruststream/latest/ruststream/runtime/index.html#seeking) in
 the framework docs.
 
 ## Publishing
@@ -263,7 +263,7 @@ The publish builder is the framework's: `message(..)` with a declared type, then
 stream name or ARN, `with_headers(..)`, `with_codec(..)` and `publish()`. A payload the service
 already holds encoded is declared as a `#[derive(Outgoing, Serialized)]` newtype: no codec runs on
 it, and the generated document still names the message. See the
-[publishing guide](https://powersemmi.github.io/ruststream/latest/guides/publishing/).
+[publishing guide](https://docs.rs/ruststream/latest/ruststream/runtime/index.html#publishing).
 
 ### The partition key
 
@@ -391,7 +391,7 @@ The `testing` feature ships `KinesisTestBroker`: an in-process transport with no
 network. It has the same states as the real broker and drives the `TestApp` harness. Neither name
 is in the prelude, so a test imports `ruststream_kinesis::testing::KinesisTestBroker` and
 `ruststream::testing::TestApp` alongside it. See
-[Unit-testing a service with TestApp](https://powersemmi.github.io/ruststream/latest/guides/testing/#unit-testing-a-service-with-testapp).
+[Unit-testing a service with TestApp](https://docs.rs/ruststream/latest/ruststream/testing/index.html#examples).
 
 The transport keeps a retained log per stream, because that is the property a handler can observe
 without a server. A subscription opens at the tip, where a shard without a checkpoint opens, and
