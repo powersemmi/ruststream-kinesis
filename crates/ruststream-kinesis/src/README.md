@@ -337,7 +337,9 @@ fn app() -> impl App {
 
 A reposition drops the watermark bookkeeping of every shard it moves, so an acknowledgement of a
 record delivered before the seek cannot pull the cursor back over the position just taken. Records
-from the new position onward are delivered again, which at-least-once permits.
+from the new position onward are delivered again, which at-least-once permits. The capability itself is
+[seeking](https://docs.rs/ruststream/latest/ruststream/runtime/index.html#seeking) in the
+framework's own overview.
 
 ## The delivery context
 
@@ -366,7 +368,9 @@ without an explicit policy replies through it.
 - `.out_retry(Publish::default())` names it for the deferred retry copy.
 
 The publish builder is the framework's - `message(..)`, `to(..)` with the stream name or ARN,
-`with_headers(..)`, `publish()` - and this crate adds one step to it. There is no `RequestReply`
+`with_headers(..)`, `publish()`, all of it documented under
+[publishing](https://docs.rs/ruststream/latest/ruststream/runtime/index.html#publishing) - and
+this crate adds one step to it. There is no `RequestReply`
 here: Kinesis has no reply address and no correlation primitive, so a request/reply exchange would
 be a second stream the crate would have to invent. There are no transactions either, neither owned
 nor borrowed: a publish is one `PutRecord` call and the service has nothing to commit.
