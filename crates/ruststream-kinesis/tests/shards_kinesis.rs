@@ -34,6 +34,8 @@ const RECV_TIMEOUT: Duration = Duration::from_secs(60);
 /// two shards cover both: the service hashes the key, so which shard each one takes is fixed.
 const PINNED: usize = 8;
 const SPREAD: usize = 16;
+/// Records published while two subscriptions contend for the one shard that holds them.
+const RECORDS: usize = 4;
 
 /// The stack's endpoint, or `None` to skip the live checks below. Under `RUSTSTREAM_REQUIRE_LIVE`
 /// a missing endpoint is a failure instead, so a job that started a stack cannot report `ok`
@@ -390,4 +392,66 @@ async fn a_split_hands_the_stream_to_the_children_once_the_parent_is_consumed() 
     );
 
     connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// One instance reads a shard at a time. Two subscriptions over one stream, sharing the lease
+/// store a deployment would share, and the records go to whichever took the lease - never to
+/// both. This is the promise behind at-least-once delivery on a sharded log, and it lives in the
+/// coordinator that takes leases, not in the store the other suite exercises.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_instance_reads_a_shard_and_the_other_waits() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    // The store is shared, the owner ids are not: each broker mints its own.
+    let leases = Arc::new(MemoryLeaseStore::new());
+    let first = connect_with(&endpoint, &leases).await;
+    let second = connect_with(&endpoint, &leases).await;
+    let stream_name = unique("exclusive");
+
+    let mut one = from_horizon(&stream_name, 1)
+        .subscribe(&first)
+        .await
+        .expect("the first subscription opens");
+    let mut other = from_horizon(&stream_name, 1)
+        .subscribe(&second)
+        .await
+        .expect("the second subscription opens");
+
+    let publisher = first.publisher();
+    for index in 0..RECORDS {
+        publish_keyed(
+            &publisher,
+            &stream_name,
+            "tenant-acme",
+            &format!("record-{index}"),
+        )
+        .await;
+    }
+
+    let mut to_one = 0_usize;
+    let mut to_other = 0_usize;
+    let mut one_stream = pin!(one.stream());
+    let mut other_stream = pin!(other.stream());
+    let deadline = tokio::time::Instant::now() + RECV_TIMEOUT;
+    while to_one + to_other < RECORDS && tokio::time::Instant::now() < deadline {
+        tokio::select! {
+            Some(Ok(message)) = one_stream.next() => {
+                message.ack().await.expect("ack succeeds");
+                to_one += 1;
+            }
+            Some(Ok(message)) = other_stream.next() => {
+                message.ack().await.expect("ack succeeds");
+                to_other += 1;
+            }
+        }
+    }
+
+    assert!(
+        (to_one, to_other) == (RECORDS, 0) || (to_one, to_other) == (0, RECORDS),
+        "one shard is one instance's: got {to_one} and {to_other}",
+    );
+
+    first.shutdown().await.expect("shutdown succeeds");
+    second.shutdown().await.expect("shutdown succeeds");
 }
