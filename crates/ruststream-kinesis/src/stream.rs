@@ -89,6 +89,9 @@ impl KinesisStream {
     /// Creates the stream with `shards` provisioned shards on subscribe when it does not
     /// exist yet. Meant for local development and tests; production streams are usually
     /// managed as infrastructure.
+    ///
+    /// Without it a stream the service does not have refuses the subscription when it opens,
+    /// so the name is checked while a service is starting rather than after it has started.
     pub fn create_if_missing(mut self, shards: i32) -> Self {
         self.create_shards = Some(shards);
         self

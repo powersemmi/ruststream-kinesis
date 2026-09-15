@@ -84,10 +84,10 @@ A string literal names a stream too: `#[subscriber("orders")]` builds the same d
 defaults. Reach for the descriptor as soon as a read setting matters.
 
 An invalid descriptor - an empty stream name, a zero shard count - fails the mount before any
-I/O. A stream the service does not have is a different case: the shards are listed by the
-subscription's own coordinator and not by the mount, so the mount succeeds and the failure
-arrives as an error on the subscription, repeated while the stream stays missing. Name
-`create_if_missing` where a service may start ahead of its infrastructure.
+I/O. A stream the service does not have fails it too, at the moment the subscription opens: a
+descriptor that does not create its stream asks the service for it once, so a mistyped name stops
+the service from starting instead of reporting itself on every shard listing for as long as it
+runs. Name `create_if_missing` where a service may start ahead of its infrastructure.
 
 A subscription lists the stream's shards, re-lists them as splits and merges change the set, takes
 a lease per shard, and runs one reader per shard it owns. A child of a split or a merge starts only

@@ -249,8 +249,9 @@ impl ConnectedKinesisBroker {
     ///
     /// # Errors
     ///
-    /// Returns [`KinesisError`] when the descriptor is invalid, stream creation (when opted
-    /// in) fails, or the broker is shut down.
+    /// Returns [`KinesisError`] when the descriptor is invalid, the stream does not exist and
+    /// the descriptor does not create it, stream creation (when opted in) fails, or the broker
+    /// is shut down.
     pub async fn subscribe_stream(
         &self,
         descriptor: KinesisStream,
@@ -259,8 +260,30 @@ impl ConnectedKinesisBroker {
         self.core.ensure_open()?;
         if let Some(shards) = descriptor.create_value() {
             self.ensure_stream(descriptor.stream(), shards).await?;
+        } else {
+            self.require_stream(descriptor.stream()).await?;
         }
         Ok(KinesisSubscriber::open(&self.core, descriptor))
+    }
+
+    /// Refuses a stream the service does not have, before the subscription exists.
+    ///
+    /// The shards are listed by the subscription's coordinator, which runs detached, so a
+    /// mistyped stream name would otherwise start the service and report itself once per shard
+    /// sync for as long as it runs. One describe per subscription, at startup, is what turns
+    /// that into a failure the caller sees.
+    async fn require_stream(&self, stream: &str) -> Result<(), KinesisError> {
+        self.core
+            .client
+            .describe_stream_summary()
+            .stream_name(stream)
+            .send()
+            .await
+            .map(|_| ())
+            .map_err(|e| KinesisError::Stream {
+                stream: stream.to_owned(),
+                source: sdk_err(&e),
+            })
     }
 
     /// Creates the stream when missing and waits until it is active.

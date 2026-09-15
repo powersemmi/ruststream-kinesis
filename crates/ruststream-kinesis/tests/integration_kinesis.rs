@@ -526,36 +526,39 @@ async fn a_publish_to_a_missing_stream_names_the_stream() {
     connected.shutdown().await.expect("shutdown succeeds");
 }
 
-/// A descriptor that does not create its stream opens anyway - the stream is listed by the
-/// coordinator, not by `subscribe` - so a missing stream reaches the service as the
-/// subscription's first item rather than as a failed mount.
+/// A descriptor that does not create its stream is refused when the subscription opens, so a
+/// mistyped stream name fails the start of a service rather than reporting itself once per shard
+/// sync for as long as it runs. The same descriptor creating the stream opens on the same name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_subscription_on_a_missing_stream_reports_it_on_its_own_stream() {
+async fn a_subscription_on_a_missing_stream_is_refused_when_it_opens() {
     let Some(endpoint) = test_endpoint() else {
         return;
     };
     let connected = connect(&endpoint).await;
 
     let missing = unique("absent-subscribe");
-    let mut subscriber = KinesisStream::new(missing.as_str())
+    let refused = KinesisStream::new(missing.as_str())
         .subscribe(&connected)
         .await
-        .expect("opening a subscription reaches the service only from the coordinator");
-
-    let mut stream = pin!(subscriber.stream());
-    let reported = tokio::time::timeout(RECV_TIMEOUT, stream.next())
-        .await
-        .expect("the coordinator reports the missing stream")
-        .expect("stream is open")
-        .expect_err("a missing stream is not a delivery");
-    let KinesisError::Stream { stream, source } = &reported else {
-        panic!("expected a stream failure, got {reported:?}")
+        .expect_err("a stream the service does not have cannot be subscribed to");
+    let KinesisError::Stream {
+        stream,
+        source: cause,
+    } = &refused
+    else {
+        panic!("expected a stream failure, got {refused:?}")
     };
     assert_eq!(stream, &missing);
     assert!(
-        source.to_string().contains("ResourceNotFound"),
-        "the cause chain must name what the service answered, got {source}",
+        cause.to_string().contains("ResourceNotFound"),
+        "the cause chain must name what the service answered, got {cause}",
     );
+
+    let subscriber = source(&missing)
+        .subscribe(&connected)
+        .await
+        .expect("the descriptor that creates the stream opens on the same name");
+    drop(subscriber);
 
     connected.shutdown().await.expect("shutdown succeeds");
 }
