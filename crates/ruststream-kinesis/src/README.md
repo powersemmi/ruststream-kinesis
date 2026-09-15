@@ -83,7 +83,11 @@ before `start_at(..)`, which replaces it with the framework's position wrapper.
 A string literal names a stream too: `#[subscriber("orders")]` builds the same descriptor with its
 defaults. Reach for the descriptor as soon as a read setting matters.
 
-An invalid descriptor - an empty stream name, a zero shard count - fails the mount before any I/O.
+An invalid descriptor - an empty stream name, a zero shard count - fails the mount before any
+I/O. A stream the service does not have is a different case: the shards are listed by the
+subscription's own coordinator and not by the mount, so the mount succeeds and the failure
+arrives as an error on the subscription, repeated while the stream stays missing. Name
+`create_if_missing` where a service may start ahead of its infrastructure.
 
 A subscription lists the stream's shards, re-lists them as splits and merges change the set, takes
 a lease per shard, and runs one reader per shard it owns. A child of a split or a merge starts only
@@ -292,6 +296,10 @@ shard resumes from its stored checkpoint, and a shard without one opens at the t
 | [`KinesisPosition::latest()`](KinesisPosition::latest) | Stream-wide | The tip: only records published after the reposition. |
 | [`KinesisPosition::timestamp(millis)`](KinesisPosition::timestamp) | Stream-wide | Each shard opens at its first record from that instant, in milliseconds since the Unix epoch. |
 | [`KinesisPosition::sequence(shard, seq)`](KinesisPosition::sequence) | One shard | Exactly one record. |
+
+The instant a timestamp names is matched against the arrival timestamp the service stamped on
+each record, and the service calls that stamp approximate: records that arrived around the same
+moment are not separated exactly.
 
 A stream-wide position reaches shards discovered later too, the children of a split among them, so
 a seek keeps its meaning when the stream reshards. The shard-scoped form is the pinned position the
