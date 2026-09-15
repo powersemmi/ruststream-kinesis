@@ -108,7 +108,10 @@ pub enum KinesisPosition {
     Latest,
     /// The first record at or after this timestamp, in milliseconds since the Unix epoch.
     ///
-    /// Stream-wide; each shard opens at its own first record from that instant.
+    /// Stream-wide; each shard opens at its own first record from that instant. The instant is
+    /// matched against the arrival timestamp the service stamped on the record, and the service
+    /// calls that stamp approximate: records that arrived around the same moment are not
+    /// separated exactly.
     Timestamp(u64),
     /// Exactly one record on one shard.
     ///

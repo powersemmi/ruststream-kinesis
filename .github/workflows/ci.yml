@@ -3,8 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
+  # No base filter: a pull request stacked on another one has a branch for its base, and a filter
+  # naming `main` leaves it with no checks at all - which reads as a conflicting branch rather
+  # than as a workflow that declined to run.
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -199,7 +201,7 @@ jobs:
         run: |
           docker run -d --name localstack \
             -p 127.0.0.1:4566:4566 \
-            -e SERVICES=kinesis -e KINESIS_LATENCY=0 \
+            -e SERVICES=kinesis,dynamodb -e KINESIS_LATENCY=0 \
             -e EAGER_SERVICE_LOADING=1 \
             -e SQS_ENDPOINT_STRATEGY=path \
             localstack/localstack:4.14.0
@@ -208,6 +210,8 @@ jobs:
         timeout-minutes: 3
         run: |
           timeout 150 bash -c 'until curl -fsS http://127.0.0.1:4566/_localstack/health | grep -q "\"kinesis\": \"running\""; do sleep 2; done'
+          # DynamoDB backs the lease store, and its suite creates a table before it asserts.
+          timeout 150 bash -c 'until curl -fsS http://127.0.0.1:4566/_localstack/health | grep -q "\"dynamodb\": \"running\""; do sleep 2; done'
           curl -fsS http://127.0.0.1:4566/_localstack/health
 
       - name: Install Rust toolchain
@@ -216,13 +220,18 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Run integration + conformance against LocalStack
+      - name: Run the live suites against LocalStack
         env:
           KINESIS_TEST_ENDPOINT: http://127.0.0.1:4566
+          # This job started a stack, so a suite that skips past it is a defect, not a pass.
+          RUSTSTREAM_REQUIRE_LIVE: "1"
         run: >-
           cargo test --locked -p ruststream-kinesis --all-features
           --test integration_kinesis
           --test conformance_kinesis
+          --test positions_kinesis
+          --test shards_kinesis
+          --test leases_kinesis
           -- --test-threads=1
 
       - name: Cleanup

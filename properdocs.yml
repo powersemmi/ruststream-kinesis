@@ -79,7 +79,7 @@ plugins:
   #
   # English is normative; a page with no translation yet falls back to the English text inside
   # the localized site rather than disappearing from it, which is what lets translations land
-  # page by page. Nothing is translated yet, so every locale currently serves the English text.
+  # page by page. Both locales are complete today, so the fallback covers only new pages.
   - i18n:
       docs_structure: folder
       fallback_to_default: true
@@ -95,7 +95,6 @@ plugins:
           build: true
           nav_translations:
             Home: Главная
-            Guide: Руководство
             RustStream docs: Документация RustStream
             API reference: Справочник API
         - locale: zh
@@ -103,9 +102,15 @@ plugins:
           build: true
           nav_translations:
             Home: 首页
-            Guide: 指南
             RustStream docs: RustStream 文档
             API reference: API 参考
+  # The guide moved into the crate's rustdoc, where the code it describes is. Each old URL
+  # keeps working and lands on the overview section that took its topic over.
+  - redirects:
+      redirect_maps:
+        kinesis.md: https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html
+        ru/kinesis.md: https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html
+        zh/kinesis.md: https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html
 
 extra:
   version:
@@ -116,8 +121,6 @@ extra:
 
 nav:
   - Home: index.md
-  - Guide:
-      - kinesis.md
   - RustStream docs: https://powersemmi.github.io/ruststream/
   - API reference: https://docs.rs/ruststream-kinesis
 

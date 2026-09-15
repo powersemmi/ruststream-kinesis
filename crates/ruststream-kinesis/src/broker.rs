@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use aws_config::{BehaviorVersion, Region, SdkConfig};
 use aws_sdk_kinesis::client::Waiters;
-use ruststream::{Broker, ConnectedBroker, DefaultPublish, DescribeServer, ServerSpec, Subscribe};
+use ruststream::{
+    AddressedCopies, Broker, ConnectedBroker, DefaultPublish, DescribeServer, ServerSpec, Subscribe,
+};
 use tokio::sync::OnceCell;
 
 use crate::error::{KinesisError, sdk_err};
@@ -201,11 +203,23 @@ impl Broker for KinesisBroker {
 }
 
 impl DescribeServer for KinesisBroker {
+    /// The coordinate clients connect to: the host and port, never the endpoint URL as written.
+    ///
+    /// An overridden endpoint is a URL, so the scheme and any userinfo come off it here - the
+    /// generated document is published and shared, and a URL carrying credentials would leave the
+    /// service with it. Without an override the coordinate is the regional Kinesis endpoint; a
+    /// broker that takes its region from the environment cannot name it before `connect`, so the
+    /// document reports the service-wide host instead.
     fn describe_server(&self) -> ServerSpec {
-        let host = self
-            .endpoint
-            .clone()
-            .unwrap_or_else(|| "kinesis.amazonaws.com".to_owned());
+        let host = self.endpoint.as_deref().map_or_else(
+            || {
+                self.region.as_ref().map_or_else(
+                    || "kinesis.amazonaws.com".to_owned(),
+                    |region| format!("kinesis.{region}.amazonaws.com"),
+                )
+            },
+            ServerSpec::host_from_url,
+        );
         ServerSpec::new(host, "kinesis")
     }
 }
@@ -235,8 +249,9 @@ impl ConnectedKinesisBroker {
     ///
     /// # Errors
     ///
-    /// Returns [`KinesisError`] when the descriptor is invalid, stream creation (when opted
-    /// in) fails, or the broker is shut down.
+    /// Returns [`KinesisError`] when the descriptor is invalid, the stream does not exist and
+    /// the descriptor does not create it, stream creation (when opted in) fails, or the broker
+    /// is shut down.
     pub async fn subscribe_stream(
         &self,
         descriptor: KinesisStream,
@@ -245,8 +260,30 @@ impl ConnectedKinesisBroker {
         self.core.ensure_open()?;
         if let Some(shards) = descriptor.create_value() {
             self.ensure_stream(descriptor.stream(), shards).await?;
+        } else {
+            self.require_stream(descriptor.stream()).await?;
         }
         Ok(KinesisSubscriber::open(&self.core, descriptor))
+    }
+
+    /// Refuses a stream the service does not have, before the subscription exists.
+    ///
+    /// The shards are listed by the subscription's coordinator, which runs detached, so a
+    /// mistyped stream name would otherwise start the service and report itself once per shard
+    /// sync for as long as it runs. One describe per subscription, at startup, is what turns
+    /// that into a failure the caller sees.
+    async fn require_stream(&self, stream: &str) -> Result<(), KinesisError> {
+        self.core
+            .client
+            .describe_stream_summary()
+            .stream_name(stream)
+            .send()
+            .await
+            .map(|_| ())
+            .map_err(|e| KinesisError::Stream {
+                stream: stream.to_owned(),
+                source: sdk_err(&e),
+            })
     }
 
     /// Creates the stream when missing and waits until it is active.
@@ -309,6 +346,15 @@ impl ConnectedBroker for ConnectedKinesisBroker {
 
 impl Subscribe for ConnectedKinesisBroker {
     type Subscriber = KinesisSubscriber;
+    /// A stream is both what a subscription reads and what a publish writes to, so a bare name
+    /// is the address of its own copies: the framework publishes the deferred copy of a
+    /// `retry_after`, and a spent delivery, back under the name the subscription opened.
+    ///
+    /// A copy reaches the subscription from the tip, so a service that defers a record gets it
+    /// back at the end of the stream rather than in place. Ordering against the records already
+    /// in the stream is not preserved, and the shard the copy lands on is the one its partition
+    /// key picks.
+    type Copies = AddressedCopies;
 
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {
         self.subscribe_stream(KinesisStream::new(name)).await
@@ -317,4 +363,41 @@ impl Subscribe for ConnectedKinesisBroker {
 
 impl DefaultPublish for ConnectedKinesisBroker {
     type Policy = KinesisPublish;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The generated document is published and shared, so the server it names is a coordinate:
+    /// the host and port a client dials, never the endpoint URL the service was configured with.
+    #[test]
+    fn the_described_server_is_a_host_not_the_configured_url() {
+        let spec = KinesisBroker::new()
+            .endpoint("https://kinesis.eu-west-1.amazonaws.com:443")
+            .describe_server();
+        assert_eq!(
+            spec.host.as_deref(),
+            Some("kinesis.eu-west-1.amazonaws.com:443")
+        );
+    }
+
+    /// A URL may carry credentials, and the document must not.
+    #[test]
+    fn credentials_in_an_endpoint_url_stay_out_of_the_description() {
+        let spec = KinesisBroker::new()
+            .endpoint("http://key:secret@localhost:4566")
+            .describe_server();
+        assert_eq!(spec.host.as_deref(), Some("localhost:4566"));
+    }
+
+    /// Without an override the coordinate is the regional endpoint the SDK dials.
+    #[test]
+    fn a_named_region_names_the_regional_endpoint() {
+        let spec = KinesisBroker::new().region("eu-west-1").describe_server();
+        assert_eq!(
+            spec.host.as_deref(),
+            Some("kinesis.eu-west-1.amazonaws.com")
+        );
+    }
 }
