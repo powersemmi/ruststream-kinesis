@@ -36,6 +36,9 @@ const PINNED: usize = 8;
 const SPREAD: usize = 16;
 /// Records published while two subscriptions contend for the one shard that holds them.
 const RECORDS: usize = 4;
+/// How long the contended stream is watched after the last record, for a copy that should not
+/// exist.
+const QUIET: Duration = Duration::from_secs(2);
 
 /// The stack's endpoint, or `None` to skip the live checks below. Under `RUSTSTREAM_REQUIRE_LIVE`
 /// a missing endpoint is a failure instead, so a job that started a stack cannot report `ok`
@@ -429,21 +432,36 @@ async fn one_instance_reads_a_shard_and_the_other_waits() {
         .await;
     }
 
+    // Counting stops on a quiet window rather than on the fourth record, so a second reader
+    // handing out its own copies is counted instead of being cut off by the loop.
     let mut to_one = 0_usize;
     let mut to_other = 0_usize;
     let mut one_stream = pin!(one.stream());
     let mut other_stream = pin!(other.stream());
-    let deadline = tokio::time::Instant::now() + RECV_TIMEOUT;
-    while to_one + to_other < RECORDS && tokio::time::Instant::now() < deadline {
-        tokio::select! {
-            Some(Ok(message)) = one_stream.next() => {
-                message.ack().await.expect("ack succeeds");
-                to_one += 1;
+    loop {
+        let step = if to_one + to_other < RECORDS {
+            RECV_TIMEOUT
+        } else {
+            QUIET
+        };
+        let next = tokio::time::timeout(step, async {
+            tokio::select! {
+                Some(Ok(message)) = one_stream.next() => {
+                    message.ack().await.expect("ack succeeds");
+                    Some(true)
+                }
+                Some(Ok(message)) = other_stream.next() => {
+                    message.ack().await.expect("ack succeeds");
+                    Some(false)
+                }
+                else => None,
             }
-            Some(Ok(message)) = other_stream.next() => {
-                message.ack().await.expect("ack succeeds");
-                to_other += 1;
-            }
+        })
+        .await;
+        match next {
+            Ok(Some(true)) => to_one += 1,
+            Ok(Some(false)) => to_other += 1,
+            Ok(None) | Err(_) => break,
         }
     }
 
