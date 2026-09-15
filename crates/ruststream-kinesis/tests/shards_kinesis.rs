@@ -473,3 +473,101 @@ async fn one_instance_reads_a_shard_and_the_other_waits() {
     first.shutdown().await.expect("shutdown succeeds");
     second.shutdown().await.expect("shutdown succeeds");
 }
+
+/// A merge is the other half of resharding, and the only one with two parents to wait for: the
+/// crate gates a child on its parent and its adjacent parent alike, which is what keeps a key's
+/// records in order when two shards become one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_merge_gates_the_child_on_both_of_its_parents() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    let client = observer(&endpoint).await;
+    let leases = Arc::new(MemoryLeaseStore::new());
+    let connected = connect_with(&endpoint, &leases).await;
+    let stream_name = unique("merge");
+
+    let mut subscriber = from_horizon(&stream_name, 2)
+        .subscribe(&connected)
+        .await
+        .expect("subscription opens");
+    let publisher = connected.publisher();
+    for index in 0..SPREAD {
+        let name = format!("spread-{index}");
+        publish_keyed(&publisher, &stream_name, &name, &name).await;
+    }
+
+    let mut parents: HashSet<String> = HashSet::new();
+    let mut stream = pin!(subscriber.stream());
+    for _ in 0..SPREAD {
+        let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+            .await
+            .expect("delivery arrives")
+            .expect("stream is open")
+            .expect("delivery is ok");
+        parents.insert(
+            message
+                .headers()
+                .get_str(SHARD_HEADER)
+                .expect("every delivery names its shard")
+                .to_owned(),
+        );
+        message.ack().await.expect("ack succeeds");
+    }
+    assert_eq!(parents.len(), 2, "the records must cover both shards");
+
+    let mut ordered: Vec<String> = parents.iter().cloned().collect();
+    ordered.sort();
+    client
+        .merge_shards()
+        .stream_name(&stream_name)
+        .shard_to_merge(&ordered[0])
+        .adjacent_shard_to_merge(&ordered[1])
+        .send()
+        .await
+        .expect("the stack merges the shards");
+    client
+        .wait_until_stream_exists()
+        .stream_name(&stream_name)
+        .wait(Duration::from_secs(60))
+        .await
+        .expect("the stream becomes usable again");
+
+    let merged = shards_of(&client, &stream_name).await;
+    let child = merged
+        .iter()
+        .find(|shard| {
+            shard.parent_shard_id() == Some(ordered[0].as_str())
+                && shard.adjacent_parent_shard_id() == Some(ordered[1].as_str())
+        })
+        .expect("the merged child names both of its parents");
+    let child_id = child.shard_id().to_owned();
+
+    publish_keyed(&publisher, &stream_name, "spread-0", "after-the-merge").await;
+    let delivered = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+        .await
+        .expect("the child delivers once both parents are consumed")
+        .expect("stream is open")
+        .expect("delivery is ok");
+    assert_eq!(delivered.payload(), b"after-the-merge");
+    assert_eq!(
+        delivered.headers().get_str(SHARD_HEADER),
+        Some(child_id.as_str()),
+        "a record published after the merge arrives on the child",
+    );
+    delivered.ack().await.expect("ack succeeds");
+
+    for parent in &ordered {
+        let state = leases
+            .read(parent)
+            .await
+            .expect("the store answers the parent's state");
+        assert_eq!(
+            state.checkpoint.as_deref(),
+            Some(SHARD_END),
+            "both parents must be finished before the child starts",
+        );
+    }
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
