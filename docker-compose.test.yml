@@ -6,12 +6,14 @@ services:
     ports:
       - "127.0.0.1:4566:4566"
     environment:
-      SERVICES: kinesis
+      # DynamoDB is here for the lease store: its every operation is a conditional write, and the
+      # condition is the database's to evaluate, so the store can only be proven against one.
+      SERVICES: kinesis,dynamodb
       EAGER_SERVICE_LOADING: 1
       # The mock injects 500ms of artificial latency per call by default.
       KINESIS_LATENCY: 0
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_localstack/health | grep -q '\"kinesis\": \"running\"'"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_localstack/health | grep -q '\"kinesis\": \"running\"' && curl -fsS http://localhost:4566/_localstack/health | grep -q '\"dynamodb\": \"running\"'"]
       interval: 5s
       timeout: 5s
       retries: 24

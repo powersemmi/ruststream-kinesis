@@ -38,6 +38,17 @@ struct LogEntry {
     at_millis: u64,
 }
 
+impl LogEntry {
+    /// The delivery this record makes at `sequence`, its index in the retained log.
+    fn delivery(&self, sequence: usize) -> Delivery {
+        Delivery {
+            payload: self.payload.clone(),
+            headers: self.headers.clone(),
+            sequence,
+        }
+    }
+}
+
 /// Single delivery handed to a matching subscriber, stamped with its index in the retained log.
 #[derive(Debug, Clone)]
 pub(crate) struct Delivery {
@@ -133,6 +144,11 @@ impl AddressRouter {
 
     /// Appends to the name's retained log and fans the record out to every live subscription on
     /// it. Under a harness run every live enqueue is counted with [`Coordinator::enqueued`].
+    ///
+    /// The append and the fanout happen under one lock, so the log and a subscription's queue
+    /// never disagree about a record: a [`reposition`](Self::reposition) running beside this one
+    /// sees the record in both or in neither, and so cannot drop one that neither its replay nor
+    /// its queue then carries.
     pub(crate) fn publish(
         &self,
         address: &str,
@@ -140,38 +156,82 @@ impl AddressRouter {
         headers: HeaderMap,
         coordinator: Option<&Coordinator>,
     ) {
-        let mut to_notify: Vec<DeliverySender> = Vec::new();
-        let sequence;
-        {
-            let mut state = self
-                .state
-                .lock()
-                .expect("kinesis test router mutex poisoned");
-            let log = state.log.entry(address.to_owned()).or_default();
-            sequence = log.len();
-            log.push(LogEntry {
-                payload: payload.clone(),
-                headers: headers.clone(),
-                at_millis: now_millis(),
-            });
-            for sub in state.subscriptions.values() {
-                if sub.address == address {
-                    to_notify.push(sub.sender.clone());
-                }
-            }
-        }
-
-        let delivery = Delivery {
+        let entry = LogEntry {
             payload,
             headers,
-            sequence,
+            at_millis: now_millis(),
         };
-        for tx in to_notify {
-            if tx.send(delivery.clone()).is_ok()
+        let mut state = self
+            .state
+            .lock()
+            .expect("kinesis test router mutex poisoned");
+        let log = state.log.entry(address.to_owned()).or_default();
+        let delivery = entry.delivery(log.len());
+        log.push(entry);
+
+        for sub in state.subscriptions.values() {
+            if sub.address == address
+                && sub.sender.send(delivery.clone()).is_ok()
                 && let Some(coordinator) = coordinator
             {
                 coordinator.enqueued();
             }
+        }
+    }
+
+    /// Repositions one subscription over the name's retained log: what it had queued is dropped,
+    /// and the retained suffix from `plan.target` on is enqueued in its place.
+    ///
+    /// The swap holds the lock [`publish`](Self::publish) takes, which is what makes it safe: a
+    /// record published beside it is either already in the suffix this enqueues, or arrives after
+    /// the queue has been swapped. Split across two lock acquisitions, a publish landing between
+    /// the snapshot and the drain would be carried by neither - dropped as though it were a
+    /// pre-seek copy, with the harness's in-flight count still balanced, so a test would observe
+    /// quiescence and a missing delivery.
+    ///
+    /// Under a harness run the swap is counted: the seek already counted the records the log held
+    /// when it resolved ([`Plan::count`]), so only the growth since is added here, and every
+    /// drained delivery is balanced with [`Coordinator::consumed`].
+    // The guard is held across the whole swap on purpose - that is the invariant documented
+    // above - so the lint's advice to narrow its scope is what the fix had to undo.
+    #[allow(clippy::significant_drop_tightening)]
+    pub(crate) fn reposition(
+        &self,
+        address: &str,
+        plan: Plan,
+        queue: &mut DeliveryReceiver,
+        requeue: &DeliverySender,
+        coordinator: Option<&Coordinator>,
+    ) {
+        let state = self
+            .state
+            .lock()
+            .expect("kinesis test router mutex poisoned");
+        let replay: Vec<Delivery> = state.log.get(address).map_or_else(Vec::new, |log| {
+            log.iter()
+                .enumerate()
+                .skip(plan.target)
+                .map(|(sequence, entry)| entry.delivery(sequence))
+                .collect()
+        });
+
+        // Counted before the drain, so the in-flight total never touches zero while a replay is
+        // still pending: a harness waiting for quiescence would otherwise call the reaction
+        // finished mid-swap.
+        if let Some(coordinator) = coordinator {
+            for _ in plan.count..replay.len() {
+                coordinator.enqueued();
+            }
+        }
+        while queue.try_recv().is_ok() {
+            // Every drained delivery was counted in flight when it was enqueued.
+            if let Some(coordinator) = coordinator {
+                coordinator.consumed();
+            }
+        }
+        for delivery in replay {
+            // The send cannot fail: the subscription holds both ends of its own channel.
+            let _ = requeue.send(delivery);
         }
     }
 
@@ -238,25 +298,6 @@ impl AddressRouter {
         })
     }
 
-    /// The retained suffix from `target` on, as deliveries ready to enqueue.
-    pub(crate) fn replay_from(&self, address: &str, target: usize) -> Vec<Delivery> {
-        let state = self
-            .state
-            .lock()
-            .expect("kinesis test router mutex poisoned");
-        state.log.get(address).map_or_else(Vec::new, |log| {
-            log.iter()
-                .enumerate()
-                .skip(target)
-                .map(|(sequence, entry)| Delivery {
-                    payload: entry.payload.clone(),
-                    headers: entry.headers.clone(),
-                    sequence,
-                })
-                .collect()
-        })
-    }
-
     /// Returns every message retained for `address`, in publish order.
     pub(crate) fn published(&self, address: &str) -> Vec<RawMessage> {
         self.state
@@ -295,5 +336,62 @@ impl std::fmt::Debug for AddressRouter {
             .field("subscriptions", &state.subscriptions.len())
             .field("logged_addresses", &state.log.len())
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::seek::sequence_of;
+
+    /// One retained record published at `at_millis`; what it carries plays no part in resolving
+    /// a position.
+    fn entry(at_millis: u64) -> LogEntry {
+        LogEntry {
+            payload: Bytes::from_static(b"record"),
+            headers: HeaderMap::new(),
+            at_millis,
+        }
+    }
+
+    fn target_of(log: &[LogEntry], to: &KinesisPosition) -> Result<usize, KinesisError> {
+        AddressRouter::plan_over(log, "jobs", to).map(|plan| plan.target)
+    }
+
+    /// A timestamp is stream-wide and opens at the first record from that instant on: an instant
+    /// before the log opens the whole of it, one between two records opens at the later one, and
+    /// one past the last record opens at the tip.
+    #[test]
+    fn a_timestamp_opens_at_the_first_record_from_that_instant() {
+        let log = [entry(10), entry(20), entry(30)];
+        let at = |millis| {
+            target_of(&log, &KinesisPosition::timestamp(millis)).expect("a timestamp resolves")
+        };
+        assert_eq!(at(0), 0);
+        assert_eq!(at(20), 1);
+        assert_eq!(at(25), 2);
+        assert_eq!(at(40), 3);
+    }
+
+    /// The stand-in routes one shard, so a captured position from another one is refused rather
+    /// than applied to the one it has: a test that seeks to a foreign shard would otherwise pass
+    /// here and fail against the service, where that shard has a reader of its own.
+    #[test]
+    fn a_position_this_transport_never_issued_is_refused() {
+        let log = [entry(10)];
+        let elsewhere = KinesisPosition::sequence("shardId-000000000007", sequence_of(0));
+        assert!(target_of(&log, &elsewhere).is_err());
+
+        let unissued = KinesisPosition::sequence(IN_PROCESS_SHARD, "not-a-sequence-number");
+        assert!(target_of(&log, &unissued).is_err());
+    }
+
+    /// A sequence past the tip clamps to it, the way the service clamps one: the subscription
+    /// resumes with the next publish instead of failing.
+    #[test]
+    fn a_sequence_past_the_tip_clamps_to_it() {
+        let log = [entry(10)];
+        let ahead = KinesisPosition::sequence(IN_PROCESS_SHARD, sequence_of(9));
+        assert_eq!(target_of(&log, &ahead).expect("a sequence resolves"), 1);
     }
 }
