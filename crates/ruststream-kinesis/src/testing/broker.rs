@@ -7,8 +7,8 @@ use std::sync::{Arc, OnceLock};
 use bytes::Bytes;
 use ruststream::testing::{Coordinator, TestableBroker};
 use ruststream::{
-    AddressedCopies, Broker, ConnectedBroker, DefaultPublish, HeaderMap, OutgoingMessage,
-    Publisher, RawMessage, Str, Subscribe,
+    AddressedCopies, Broker, ConnectedBroker, DefaultPublish, HeaderMap, OutgoingFor,
+    OutgoingMessage, Publisher, RawMessage, Str, Subscribe, Take,
 };
 
 use crate::error::KinesisError;
@@ -184,7 +184,7 @@ impl KinesisTestPublisher {
     /// leaves the process; [`Publisher::publish`] is the async seam.
     fn route(
         &self,
-        msg: &OutgoingMessage<'_>,
+        msg: &OutgoingFor<'_, Take>,
         options: Option<&KinesisPublishOptions>,
     ) -> Result<(), KinesisError> {
         self.state.ensure_open()?;
@@ -201,6 +201,8 @@ impl KinesisTestPublisher {
 }
 
 impl Publisher for KinesisTestPublisher {
+    /// The real publisher's form: the in-process router keeps the payload as well.
+    type Payload = Take;
     type Error = KinesisError;
     /// The real publisher's options type, so a mount that compiles against the service compiles
     /// against the stand-in.
@@ -208,7 +210,7 @@ impl Publisher for KinesisTestPublisher {
 
     fn publish(
         &self,
-        msg: OutgoingMessage<'_>,
+        msg: OutgoingFor<'_, Take>,
         options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
         ready(self.route(&msg, options))

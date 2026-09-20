@@ -7,7 +7,7 @@ use aws_sdk_kinesis::primitives::Blob;
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::{Binding, Bindings};
 use ruststream::runtime::{MapPublisher, PublishBuilder, PublishSink};
-use ruststream::{HeaderMap, OutgoingMessage, PairError, PublishPolicy, Publisher};
+use ruststream::{HeaderMap, OutgoingFor, PairError, PublishPolicy, Publisher, Take};
 #[cfg(feature = "asyncapi")]
 use serde::Serialize;
 
@@ -127,6 +127,10 @@ fn spread_key() -> String {
 }
 
 impl Publisher for KinesisPublisher {
+    /// A record's data is a `Blob`, a vector the client keeps for the request, so the publisher
+    /// takes the buffer the framework wrote: a publish that carries no header hands it straight
+    /// through, and one that does spends it as the body of the envelope.
+    type Payload = Take;
     type Error = KinesisError;
     /// The partition key is the one setting a Kinesis record varies per message, and
     /// [`KinesisPublishSteps`] is where a call site sets it.
@@ -134,7 +138,7 @@ impl Publisher for KinesisPublisher {
 
     async fn publish(
         &self,
-        msg: OutgoingMessage<'_>,
+        msg: OutgoingFor<'_, Take>,
         options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
         let core = self.core()?;
@@ -438,7 +442,7 @@ where
 mod tests {
     use ruststream::runtime::PublishExt;
     use ruststream::testing::TestableBroker;
-    use ruststream::{Broker, HeaderMap, Outgoing, Serialized};
+    use ruststream::{Broker, HeaderMap, Outgoing, OutgoingMessage, Serialized};
 
     use super::*;
     use crate::testing::KinesisTestBroker;
