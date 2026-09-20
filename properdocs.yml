@@ -95,6 +95,7 @@ plugins:
           build: true
           nav_translations:
             Home: Главная
+            Benchmarks: Бенчмарки
             RustStream docs: Документация RustStream
             API reference: Справочник API
         - locale: zh
@@ -102,6 +103,7 @@ plugins:
           build: true
           nav_translations:
             Home: 首页
+            Benchmarks: 基准测试
             RustStream docs: RustStream 文档
             API reference: API 参考
   # The guide moved into the crate's rustdoc, where the code it describes is. Each old URL
@@ -112,6 +114,11 @@ plugins:
         ru/kinesis.md: https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html
         zh/kinesis.md: https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html
 
+# The benchmarks page builds its tables in the browser from the document `just bench` publishes,
+# so a re-measurement rewrites that document and no page. The script is a no-op everywhere else.
+extra_javascript:
+  - assets/benchmarks.js
+
 extra:
   version:
     provider: mike
@@ -121,6 +128,7 @@ extra:
 
 nav:
   - Home: index.md
+  - Benchmarks: benchmarks.md
   - RustStream docs: https://powersemmi.github.io/ruststream/
   - API reference: https://docs.rs/ruststream-kinesis
 

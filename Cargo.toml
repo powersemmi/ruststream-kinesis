@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/ruststream-kinesis"]
+members = ["crates/ruststream-kinesis", "crates/ruststream-kinesis-bench"]
 
 [workspace.package]
 version = "0.7.0"
