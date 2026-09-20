@@ -13,7 +13,7 @@
     "memory_speed": "unknown",
     "os": "Linux 7.2.6-x64v3-xanmod1-1",
     "broker": "localstack/localstack:4.14.0 (Kinesis and DynamoDB emulator) in Docker on localhost, not AWS",
-    "round_trip": "4.351 ms (DescribeStreamSummary, 2299 calls on one client)",
+    "round_trip": "4.495 ms (DescribeStreamSummary, 2225 calls on one client)",
     "rustc": "1.98.1",
     "profile": "bench, inheriting release (opt-level = 3, lto = false, codegen-units = 16)",
     "features": "ruststream-kinesis dynamodb-lease, ruststream macros,json",
@@ -26,25 +26,25 @@
       "messages": 5000,
       "pairs": 11,
       "raw": {
-        "median": 373,
-        "min": 361,
-        "max": 379
+        "median": 362,
+        "min": 194,
+        "max": 376
       },
       "adapter": {
-        "median": 371,
-        "min": 363,
+        "median": 362,
+        "min": 273,
         "max": 376
       },
       "framework": {
-        "median": 372,
-        "min": 359,
-        "max": 379
+        "median": 365,
+        "min": 250,
+        "max": 377
       },
-      "adapter_overhead_percent": 0.5,
-      "overhead_percent": 0.2,
+      "adapter_overhead_percent": -0.2,
+      "overhead_percent": -1.0,
       "verdict": "indistinguishable",
       "broker_bound": false,
-      "round_trips_per_message": 0.0624
+      "round_trips_per_message": 0.0623
     },
     {
       "name": "one shard, 512 B JSON, DynamoDB checkpoints",
@@ -52,25 +52,25 @@
       "messages": 500,
       "pairs": 11,
       "raw": {
-        "median": 79,
+        "median": 85,
         "min": 77,
-        "max": 80
+        "max": 91
       },
       "adapter": {
-        "median": 78,
-        "min": 77,
-        "max": 81
+        "median": 84,
+        "min": 78,
+        "max": 89
       },
       "framework": {
-        "median": 79,
+        "median": 85,
         "min": 76,
-        "max": 80
+        "max": 89
       },
-      "adapter_overhead_percent": 1.5,
-      "overhead_percent": 0.4,
+      "adapter_overhead_percent": 0.5,
+      "overhead_percent": -0.2,
       "verdict": "indistinguishable",
       "broker_bound": false,
-      "round_trips_per_message": 1.0042
+      "round_trips_per_message": 1.0045
     }
   ]
 }
