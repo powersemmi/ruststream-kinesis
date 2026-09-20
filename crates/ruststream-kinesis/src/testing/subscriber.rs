@@ -22,7 +22,7 @@ use futures::Stream;
 use ruststream::testing::Coordinator;
 use ruststream::{
     AckError, BatchSubscriber, BufferedSubscriber, HeaderMap, IncomingMessage, Partitioned,
-    Positioned, Seekable, Subscriber,
+    Positioned, Seekable, Str, Subscriber,
 };
 
 use crate::error::KinesisError;
@@ -282,8 +282,8 @@ impl KinesisTestMessage {
         for (name, value) in delivery.headers.iter() {
             headers.insert(name, value.to_vec());
         }
-        headers.insert(SEQUENCE_HEADER, sequence.to_string());
-        headers.insert(SHARD_HEADER, shard.to_string());
+        headers.insert(Str::from_static(SEQUENCE_HEADER), sequence.to_string());
+        headers.insert(Str::from_static(SHARD_HEADER), shard.to_string());
         Self {
             delivery: Some(delivery),
             payload,

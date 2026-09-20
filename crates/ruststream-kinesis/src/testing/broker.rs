@@ -8,7 +8,7 @@ use bytes::Bytes;
 use ruststream::testing::{Coordinator, TestableBroker};
 use ruststream::{
     AddressedCopies, Broker, ConnectedBroker, DefaultPublish, HeaderMap, OutgoingMessage,
-    Publisher, RawMessage, Subscribe,
+    Publisher, RawMessage, Str, Subscribe,
 };
 
 use crate::error::KinesisError;
@@ -193,7 +193,7 @@ impl KinesisTestPublisher {
         // read back. Same ladder, same point of the publish, one wire apart.
         let key = resolve_partition_key(options, msg.headers(), self.partition_key.as_deref());
         let mut headers = msg.headers().clone();
-        headers.insert(PARTITION_KEY_HEADER, key);
+        headers.insert(Str::from_static(PARTITION_KEY_HEADER), key);
         self.state
             .publish(msg.name(), Bytes::copy_from_slice(msg.payload()), headers);
         Ok(())

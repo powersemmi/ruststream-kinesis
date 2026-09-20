@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned, Positioned};
+use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned, Positioned, Str};
 
 use crate::lease::LeaseStore;
 use crate::subscriber::KinesisSeeker;
@@ -209,9 +209,12 @@ impl KinesisMessage {
         settlement: Settlement,
     ) -> Self {
         let (mut headers, payload) = decode_envelope(data);
-        headers.insert(PARTITION_KEY_HEADER, partition_key.to_owned());
-        headers.insert(SEQUENCE_HEADER, sequence.to_owned());
-        headers.insert(SHARD_HEADER, settlement.shard.to_string());
+        headers.insert(
+            Str::from_static(PARTITION_KEY_HEADER),
+            partition_key.to_owned(),
+        );
+        headers.insert(Str::from_static(SEQUENCE_HEADER), sequence.to_owned());
+        headers.insert(Str::from_static(SHARD_HEADER), settlement.shard.to_string());
         Self {
             payload,
             headers,
