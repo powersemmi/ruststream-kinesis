@@ -21,7 +21,9 @@
 
   // The schema this page renders. A later revision may retype a field, and rendering it as if it
   // were this one would print wrong numbers instead of no numbers.
-  const SCHEMAS = [1];
+  // Schema 3 reports each loop as its best and worst round; a schema 1 document carried a
+  // median with its extremes, and both render.
+  const SCHEMAS = [1, 3];
   const TIMEOUT_MS = 8000;
   // Where the document sits when the page does not say. The English page is the one it sits
   // next to; a translated page carries the way back to it on the container.
@@ -63,6 +65,13 @@
     if (!measurement) {
       return "-";
     }
+    if (typeof measurement.best === "number") {
+      const best = number(measurement.best, lang) + " " + unit;
+      if (typeof measurement.worst !== "number") {
+        return best;
+      }
+      return best + " (" + number(measurement.worst, lang) + ")";
+    }
     const median = number(measurement.median, lang) + " " + unit;
     if (typeof measurement.min !== "number" || typeof measurement.max !== "number") {
       return median;
@@ -72,8 +81,15 @@
 
   const percent = (value) => (value >= 0 ? "+" : "") + value + "%";
 
-  const spread = (side) =>
-    side && typeof side.min === "number" && typeof side.max === "number" ? side.max - side.min : 0;
+  // A schema 3 loop is its best and worst round; a schema 1 loop was a median with its extremes.
+  const figure = (measurement) =>
+    typeof measurement?.best === "number" ? measurement.best : measurement?.median;
+  const spread = (side) => {
+    if (typeof side?.best === "number" && typeof side?.worst === "number") {
+      return side.best - side.worst;
+    }
+    return side && typeof side.min === "number" && typeof side.max === "number" ? side.max - side.min : 0;
+  };
 
   // The honesty rule of the methodology, enforced where it is read: a difference smaller than the
   // run-to-run spread is a verdict, never a percentage. The document carries that verdict for the
@@ -94,7 +110,7 @@
     if (typeof scenario.adapter_overhead_percent !== "number") {
       return "-";
     }
-    const difference = Math.abs(scenario.raw.median - scenario.adapter.median);
+    const difference = Math.abs(figure(scenario.raw) - figure(scenario.adapter));
     return difference < Math.max(spread(scenario.raw), spread(scenario.adapter))
       ? labels.indistinguishable
       : percent(scenario.adapter_overhead_percent);
