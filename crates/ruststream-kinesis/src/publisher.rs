@@ -148,17 +148,21 @@ impl Publisher for KinesisPublisher {
         // a delivery reads it back into `PARTITION_KEY_HEADER`, where the cross-broker
         // `Partitioned` capability finds it. Stamping the header here as well would cost a map
         // copy per publish for a value the envelope drops on the next line.
-        let data = encode_envelope(msg.headers(), msg.payload());
+        //
+        // The stream name is the caller's string and outlives the message the record is built
+        // from.
+        let (stream, payload, headers) = msg.into_parts();
+        let data = encode_envelope(&headers, payload);
         core.client
             .put_record()
-            .stream_name(msg.name())
+            .stream_name(stream)
             .partition_key(partition_key)
             .data(Blob::new(data))
             .send()
             .await
             .map(|_| ())
             .map_err(|e| KinesisError::Publish {
-                stream: msg.name().to_owned(),
+                stream: stream.to_owned(),
                 source: sdk_err(&e),
             })
     }

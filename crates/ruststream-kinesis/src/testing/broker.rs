@@ -184,7 +184,7 @@ impl KinesisTestPublisher {
     /// leaves the process; [`Publisher::publish`] is the async seam.
     fn route(
         &self,
-        msg: &OutgoingFor<'_, Take>,
+        msg: OutgoingFor<'_, Take>,
         options: Option<&KinesisPublishOptions>,
     ) -> Result<(), KinesisError> {
         self.state.ensure_open()?;
@@ -192,10 +192,11 @@ impl KinesisTestPublisher {
         // field; a record has no such field here, so the key lands in the header its deliveries
         // read back. Same ladder, same point of the publish, one wire apart.
         let key = resolve_partition_key(options, msg.headers(), self.partition_key.as_deref());
+        let stream = msg.name();
         let mut headers = msg.headers().clone();
         headers.insert(Str::from_static(PARTITION_KEY_HEADER), key);
         self.state
-            .publish(msg.name(), Bytes::copy_from_slice(msg.payload()), headers);
+            .publish(stream, msg.into_payload().freeze(), headers);
         Ok(())
     }
 }
@@ -213,7 +214,7 @@ impl Publisher for KinesisTestPublisher {
         msg: OutgoingFor<'_, Take>,
         options: Option<&Self::Options>,
     ) -> impl Future<Output = Result<(), Self::Error>> {
-        ready(self.route(&msg, options))
+        ready(self.route(msg, options))
     }
 }
 
