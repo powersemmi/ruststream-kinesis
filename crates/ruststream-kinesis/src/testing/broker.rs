@@ -152,11 +152,9 @@ impl TestableBroker for ConnectedKinesisTestBroker {
     }
 
     fn inject(&self, message: OutgoingMessage<'_>) {
-        self.state.publish(
-            message.name(),
-            Bytes::copy_from_slice(message.payload()),
-            message.headers().clone(),
-        );
+        let (name, payload, headers) = message.into_parts();
+        self.state
+            .publish(name, Bytes::copy_from_slice(payload), headers);
     }
 
     fn published(&self, name: &str) -> Vec<RawMessage> {
@@ -191,12 +189,10 @@ impl KinesisTestPublisher {
         // The service resolves the key through the same function and hands it to the record's own
         // field; a record has no such field here, so the key lands in the header its deliveries
         // read back. Same ladder, same point of the publish, one wire apart.
-        let key = resolve_partition_key(options, msg.headers(), self.partition_key.as_deref());
-        let stream = msg.name();
-        let mut headers = msg.headers().clone();
+        let (stream, payload, mut headers) = msg.into_parts();
+        let key = resolve_partition_key(options, &headers, self.partition_key.as_deref());
         headers.insert(Str::from_static(PARTITION_KEY_HEADER), key);
-        self.state
-            .publish(stream, msg.into_payload().freeze(), headers);
+        self.state.publish(stream, payload.freeze(), headers);
         Ok(())
     }
 }
