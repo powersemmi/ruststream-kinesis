@@ -167,7 +167,9 @@ fn callgrind() -> Callgrind {
 /// The measured region: everything this runs is counted, nothing around it is.
 #[inline(never)]
 pub fn measure<T>(body: impl FnOnce() -> T) -> T {
-    body()
+    // `black_box` runs after the body returns, so the call cannot become a tail jump: DHAT
+    // attributes an allocation to this region only while this frame is on the stack.
+    black_box(body())
 }
 
 /// DHAT with a stack window deep enough to reach the measured frame from a publish inside a
