@@ -1,0 +1,70 @@
+{
+  "schema": 3,
+  "crate": "ruststream-kinesis",
+  "crate_version": "0.7.0",
+  "core_version": "0.7.0-rc.9",
+  "measured_at": "2026-09-21",
+  "environment": {
+    "cpu": "AMD Ryzen 9 7900X 12-Core Processor",
+    "architecture": "x86_64",
+    "cpu_frequency": "427-5912 MHz",
+    "cores": "12 physical, 24 logical",
+    "memory": "62.4 GiB",
+    "memory_speed": "unknown",
+    "os": "Linux 7.2.6-x64v3-xanmod1-1",
+    "broker": "localstack/localstack:4.14.0 (Kinesis and DynamoDB emulator) in Docker on localhost, not AWS",
+    "round_trip": "4.359 ms (DescribeStreamSummary, 2295 calls on one client)",
+    "rustc": "1.98.1",
+    "profile": "bench, inheriting release (opt-level = 3, lto = false, codegen-units = 16)",
+    "features": "ruststream-kinesis dynamodb-lease, ruststream macros,json",
+    "rustflags": "none (the recipe clears RUSTFLAGS, so the numbers are not tied to this CPU)"
+  },
+  "scenarios": [
+    {
+      "name": "one shard, 512 B JSON, in-process checkpoints",
+      "unit": "msg/s",
+      "messages": 5000,
+      "pairs": 3,
+      "raw": {
+        "best": 381,
+        "worst": 367
+      },
+      "adapter": {
+        "best": 377,
+        "worst": 362
+      },
+      "framework": {
+        "best": 377,
+        "worst": 367
+      },
+      "adapter_overhead_percent": 1.2,
+      "overhead_percent": 1.0,
+      "verdict": "indistinguishable",
+      "broker_bound": false,
+      "round_trips_per_message": 0.0625
+    },
+    {
+      "name": "one shard, 512 B JSON, DynamoDB checkpoints",
+      "unit": "msg/s",
+      "messages": 500,
+      "pairs": 3,
+      "raw": {
+        "best": 83,
+        "worst": 74
+      },
+      "adapter": {
+        "best": 83,
+        "worst": 69
+      },
+      "framework": {
+        "best": 85,
+        "worst": 58
+      },
+      "adapter_overhead_percent": -0.2,
+      "overhead_percent": -2.4,
+      "verdict": "indistinguishable",
+      "broker_bound": false,
+      "round_trips_per_message": 1.0047
+    }
+  ]
+}

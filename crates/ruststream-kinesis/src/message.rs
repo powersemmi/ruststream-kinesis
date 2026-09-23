@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use ruststream::{AckError, HeaderMap, IncomingMessage, Partitioned, Positioned};
+use ruststream::{AckError, BytesMut, HeaderMap, IncomingMessage, Partitioned, Positioned, Str};
 
 use crate::lease::LeaseStore;
 use crate::subscriber::KinesisSeeker;
@@ -32,7 +32,7 @@ pub(crate) const KPL_MAGIC: [u8; 4] = [0xF3, 0x89, 0x9A, 0xC2];
 pub(crate) const ENVELOPE_MAGIC: [u8; 4] = *b"RSK1";
 
 /// Encodes a payload with its user headers (partition key excluded - it travels natively).
-pub(crate) fn encode_envelope(headers: &HeaderMap, payload: &[u8]) -> Vec<u8> {
+pub(crate) fn encode_envelope(headers: &HeaderMap, payload: BytesMut) -> Vec<u8> {
     let mut lines = String::new();
     for (name, value) in headers.iter() {
         if name == PARTITION_KEY_HEADER {
@@ -44,14 +44,16 @@ pub(crate) fn encode_envelope(headers: &HeaderMap, payload: &[u8]) -> Vec<u8> {
         lines.push('\n');
     }
     if lines.is_empty() {
-        return payload.to_vec();
+        // `Vec::from` reclaims the buffer the framework wrote: a record with nothing in front of
+        // its payload is that buffer.
+        return Vec::from(payload);
     }
     let header_bytes = lines.as_bytes();
     let mut out = Vec::with_capacity(8 + header_bytes.len() + payload.len());
     out.extend_from_slice(&ENVELOPE_MAGIC);
     out.extend_from_slice(&u32::try_from(header_bytes.len()).unwrap_or(0).to_be_bytes());
     out.extend_from_slice(header_bytes);
-    out.extend_from_slice(payload);
+    out.extend_from_slice(&payload);
     out
 }
 
@@ -108,7 +110,10 @@ pub enum KinesisPosition {
     Latest,
     /// The first record at or after this timestamp, in milliseconds since the Unix epoch.
     ///
-    /// Stream-wide; each shard opens at its own first record from that instant.
+    /// Stream-wide; each shard opens at its own first record from that instant. The instant is
+    /// matched against the arrival timestamp the service stamped on the record, and the service
+    /// calls that stamp approximate: records that arrived around the same moment are not
+    /// separated exactly.
     Timestamp(u64),
     /// Exactly one record on one shard.
     ///
@@ -206,9 +211,12 @@ impl KinesisMessage {
         settlement: Settlement,
     ) -> Self {
         let (mut headers, payload) = decode_envelope(data);
-        headers.insert(PARTITION_KEY_HEADER, partition_key.to_owned());
-        headers.insert(SEQUENCE_HEADER, sequence.to_owned());
-        headers.insert(SHARD_HEADER, settlement.shard.to_string());
+        headers.insert(
+            Str::from_static(PARTITION_KEY_HEADER),
+            partition_key.to_owned(),
+        );
+        headers.insert(Str::from_static(SEQUENCE_HEADER), sequence.to_owned());
+        headers.insert(Str::from_static(SHARD_HEADER), settlement.shard.to_string());
         Self {
             payload,
             headers,
@@ -305,17 +313,39 @@ impl IncomingMessage for KinesisMessage {
 
 #[cfg(test)]
 mod tests {
+    use ruststream::BytesMut;
+
     use super::*;
+
+    /// Content equality cannot tell a hand-over from a copy, so the buffer the framework wrote is
+    /// identified by its address.
+    #[test]
+    fn a_record_without_an_envelope_keeps_the_buffer_the_framework_wrote() {
+        let payload = BytesMut::from(&br#"{"id":1}"#[..]);
+        let written = payload.as_ptr();
+
+        let data = encode_envelope(&HeaderMap::new(), payload);
+
+        assert_eq!(
+            data.as_ptr(),
+            written,
+            "a publish carrying no header is the record's data as it stands, so the buffer is \
+             handed over rather than copied"
+        );
+    }
 
     #[test]
     fn the_envelope_applies_only_when_user_headers_exist() {
         let mut headers = HeaderMap::new();
         headers.insert(PARTITION_KEY_HEADER, "user-42");
         // Only the partition key: no envelope, the payload stays plain.
-        assert_eq!(encode_envelope(&headers, b"raw"), b"raw");
+        assert_eq!(
+            encode_envelope(&headers, BytesMut::from(&b"raw"[..])),
+            b"raw"
+        );
 
         headers.insert("x-tenant", "acme");
-        let enveloped = encode_envelope(&headers, b"raw");
+        let enveloped = encode_envelope(&headers, BytesMut::from(&b"raw"[..]));
         assert_eq!(enveloped[0..4], ENVELOPE_MAGIC);
         let (decoded, payload) = decode_envelope(&enveloped);
         assert_eq!(decoded.get_str("x-tenant"), Some("acme"));

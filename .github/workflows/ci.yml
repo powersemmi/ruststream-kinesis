@@ -3,8 +3,16 @@ name: CI
 on:
   push:
     branches: [main]
+  # No base filter: a pull request stacked on another one has a branch for its base, and a filter
+  # naming `main` leaves it with no checks at all - which reads as a conflicting branch rather
+  # than as a workflow that declined to run.
+  #
+  # A draft runs nothing: every job below declines while `draft` is true, so work can be opened
+  # for reading and the maintainer decides when CI spends its time on it. `ready_for_review` is
+  # what brings the workflow back at that moment, and it has to be listed because naming any type
+  # at all replaces the default set.
   pull_request:
-    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -16,6 +24,7 @@ concurrency:
 jobs:
   rust:
     name: Rust ${{ matrix.toolchain }}
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -58,22 +67,34 @@ jobs:
         if: matrix.toolchain == 'stable'
         run: cargo fmt --all -- --check
 
+      # The benchmark package is left out of every all-features leg on purpose: it is built with
+      # the feature set a service ships, and the framework's harness feature is a compile error
+      # in it. Its own leg follows each of them, so it stays linted and stays compiled.
       - name: cargo clippy
         if: matrix.toolchain == 'stable'
-        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --workspace --exclude ruststream-kinesis-bench --all-targets --all-features -- -D warnings
+
+      - name: cargo clippy (benchmarks)
+        if: matrix.toolchain == 'stable'
+        run: cargo clippy --locked -p ruststream-kinesis-bench --all-targets -- -D warnings
 
       # Advisory, not a gate: surfaces a lint added by the next clippy release six weeks
       # before it turns the build red.
       - name: cargo clippy (beta, advisory)
         if: matrix.toolchain == 'beta'
         continue-on-error: true
-        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+        run: |
+          cargo clippy --locked --workspace --exclude ruststream-kinesis-bench --all-targets --all-features -- -D warnings
+          cargo clippy --locked -p ruststream-kinesis-bench --all-targets -- -D warnings
 
       - name: cargo check (no default features)
         run: cargo check --locked --workspace --no-default-features
 
       - name: cargo check (all features)
-        run: cargo check --locked --workspace --all-targets --all-features
+        run: cargo check --locked --workspace --exclude ruststream-kinesis-bench --all-targets --all-features
+
+      - name: cargo check (benchmarks)
+        run: cargo check --locked -p ruststream-kinesis-bench --all-targets
 
       # --no-fail-fast: a failing target must not hide failures in the targets behind it;
       # the log then lists every red test, not just the first binary's.
@@ -90,6 +111,7 @@ jobs:
 
   features:
     name: Each feature alone
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -117,6 +139,7 @@ jobs:
 
   minimal-versions:
     name: Minimal versions
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -166,7 +189,8 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: ${{ steps.floor.outputs.toolchain }}
         run: |
-          cargo check --locked --workspace --all-targets --all-features
+          cargo check --locked --workspace --exclude ruststream-kinesis-bench --all-targets --all-features
+          cargo check --locked -p ruststream-kinesis-bench --all-targets
           cargo test --locked --workspace --all-features --no-fail-fast
 
       # Everything above still sees dev-dependencies, which raise shared floors before the library
@@ -187,6 +211,7 @@ jobs:
 
   broker-integration:
     name: Broker integration (LocalStack)
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -199,7 +224,7 @@ jobs:
         run: |
           docker run -d --name localstack \
             -p 127.0.0.1:4566:4566 \
-            -e SERVICES=kinesis -e KINESIS_LATENCY=0 \
+            -e SERVICES=kinesis,dynamodb -e KINESIS_LATENCY=0 \
             -e EAGER_SERVICE_LOADING=1 \
             -e SQS_ENDPOINT_STRATEGY=path \
             localstack/localstack:4.14.0
@@ -208,6 +233,8 @@ jobs:
         timeout-minutes: 3
         run: |
           timeout 150 bash -c 'until curl -fsS http://127.0.0.1:4566/_localstack/health | grep -q "\"kinesis\": \"running\""; do sleep 2; done'
+          # DynamoDB backs the lease store, and its suite creates a table before it asserts.
+          timeout 150 bash -c 'until curl -fsS http://127.0.0.1:4566/_localstack/health | grep -q "\"dynamodb\": \"running\""; do sleep 2; done'
           curl -fsS http://127.0.0.1:4566/_localstack/health
 
       - name: Install Rust toolchain
@@ -216,13 +243,18 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Run integration + conformance against LocalStack
+      - name: Run the live suites against LocalStack
         env:
           KINESIS_TEST_ENDPOINT: http://127.0.0.1:4566
+          # This job started a stack, so a suite that skips past it is a defect, not a pass.
+          RUSTSTREAM_REQUIRE_LIVE: "1"
         run: >-
           cargo test --locked -p ruststream-kinesis --all-features
           --test integration_kinesis
           --test conformance_kinesis
+          --test positions_kinesis
+          --test shards_kinesis
+          --test leases_kinesis
           -- --test-threads=1
 
       - name: Cleanup
@@ -231,6 +263,7 @@ jobs:
 
   security:
     name: Security scans
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
