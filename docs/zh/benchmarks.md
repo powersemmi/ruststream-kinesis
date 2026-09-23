@@ -22,9 +22,9 @@
 
 ## 数字
 
-三个交错轮次中的最佳值，括号里是最差的一轮。越大越好。
+三个交错轮次中的最佳值，括号里是中位的一轮。越大越好。
 
-<div id="benchmark-results" data-benchmark-results="../../benchmarks/results.json" data-benchmark-labels='{"loading": "正在加载已发布的结果...", "scenario": "场景", "raw": "裸客户端", "adapter": "本 crate", "framework": "整个服务", "adapterOverhead": "crate 相对客户端", "overhead": "服务相对客户端", "indistinguishable": "无法区分", "brokerBound": "受模拟器限制", "machine": "机器", "os": "操作系统", "broker": "模拟器", "roundTrip": "往返时间", "build": "构建", "versions": "版本", "measured": "测量于", "unavailable": "读不到结果。它们发布在 {url}。", "unknownSchema": "已发布的结果声明的 schema 是 {schema}，这一页不渲染它。"}'></div>
+<div id="benchmark-results" data-benchmark-results="../../benchmarks/results.json" data-benchmark-labels='{"loading": "正在加载已发布的结果...", "scenario": "场景", "raw": "裸客户端", "adapter": "本 crate", "framework": "整个服务", "adapterOverhead": "crate 相对客户端", "overhead": "服务相对客户端", "indistinguishable": "无法区分", "brokerBound": "受模拟器限制", "machine": "机器", "os": "操作系统", "broker": "模拟器", "roundTrip": "往返时间", "build": "构建", "versions": "版本", "measured": "测量于", "instructions": "每条消息的指令数", "allocations": "每条消息的内存分配次数", "cold": "冷启动（指令 / 分配）", "unavailable": "读不到结果。它们发布在 {url}。", "unknownSchema": "已发布的结果声明的 schema 是 {schema}，这一页不渲染它。"}'></div>
 
 表格由你的浏览器从上一次运行写下的文档读取，所以本页没有任何会过期的副本。
 
@@ -58,6 +58,31 @@
 同一次运行的机器可读形式，框架站点用它构建跨 Broker 的汇总表，在
 [`benchmarks/results.json`](https://powersemmi.github.io/ruststream-kinesis/latest/benchmarks/results.json)。
 
+## crate 自身的代码
+
+<div id="benchmark-code"></div>
+
+第二张表是本 crate 自身在每条消息上的开销，是数出来的，不是计时得来的：指令数由 callgrind 统计，
+内存分配次数由 DHAT 统计。每个场景都是用户会写的那种服务：`KinesisBroker` 按服务的写法构建，由运行时
+启动，连的是同一套 LocalStack。服务用本 crate 的分片读取器通过 `GetRecords` 读取只有一个分片的流，
+通过默认的租约存储结算，并用 `PutRecord` 回复。
+
+计入的是服务线程执行的全部内容：框架的分发、本 crate 的代码，以及 AWS SDK 构建、签名和解析请求的工作。
+模拟器是另一个进程，不计入。记录在计数开始之前从第二个线程发布，服务从为这次运行创建的流的最早保留记录
+（`TRIM_HORIZON`）开始读取。
+
+指令数和分配次数都是稳态下每条消息的值：1000 次投递的运行和 2000 次投递的运行之间的斜率。一次分片读取
+由它返回的记录分摊，所以每一行都带着一次读取的份额：前两行一次读取最多返回一千条记录，第三行一次读取返回
+一批。最后一列是启动服务并处理第一次投递一次性付出的开销：连接、打开订阅、列出分片、取得分片的租约和
+迭代器。这些数字是绝对值，框架自身的开销也算在内；框架单独的开销由核心库在它的
+[基准测试页面](https://powersemmi.github.io/ruststream/latest/benchmarks/)上公布。
+
+同一次构建的多次运行之间，指令数的变化不到百分之零点五，最长的几次运行里分配次数会差几个块，因为服务做的是
+真实的 I/O：一次运行结束时可能还有一次读取在途中，租约续期和分片同步也由定时器触发。每个下限都定在见到的
+最大值之上。
+`just bench-code` 在分配次数超过场景声明的下限时失败，加上 `--baseline=main` 时，指令数多出百分之二
+以上也算失败；改变开销的合并请求要附上自己的数字。
+
 ## 机器
 
 <div id="benchmark-environment"></div>
@@ -86,6 +111,14 @@ just bench
 ```
 
 这个配方从 `docker-compose.test.yml` 启动那套服务，跑完两个场景，停掉它，并用测得的结果重写
-`docs/benchmarks/results.json`。它要花将近一小时，并且需要整台机器。每次运行都建立自己的单分片流，带
+`docs/benchmarks/results.json`。它要花几分钟，并且需要整台机器。每次运行都建立自己的单分片流，带
 检查点的场景还建立自己的租约表，所以一次运行绝不会看到上一次留下的东西。记录条数不是固定的：一次探测
 运行把它定下来，使每次被测运行在所在机器上至少持续五秒。
+
+```bash
+just bench-code
+```
+
+这个配方启动同一套服务，在 valgrind 下统计代码表，再把它停掉，并重写同一份文档里的 `code` 部分。它要
+花几分钟；除了那套服务，还需要 valgrind 和基准测试运行器：
+`cargo install --locked gungraun-runner --version =0.19.4`。
