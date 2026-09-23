@@ -1,0 +1,32 @@
+# ruststream-kinesis
+
+> `ruststream-kinesis` is the Amazon Kinesis Data Streams broker crate for RustStream, a Rust framework for services that subscribe to message brokers and publish to them. It runs over the official `aws-sdk-kinesis` client: a subscription discovers the stream's shards across splits and merges, leases each shard with fencing and checkpoints its progress, so an acknowledgement is a checkpoint and delivery is at-least-once.
+
+A subscription is the descriptor `KinesisStream`, which names the stream and carries the pause between reads. A routes file imports `ruststream_kinesis::prelude::*`, which offers `KinesisPublish` as `Publish`; a body that sets the partition key of one record takes the `partition_key` step from `KinesisPublishSteps`. The `dynamodb-lease` feature adds `DynamoLeaseStore`, so several service instances share the shards.
+
+This site holds the entry pages. The crate's guide is its overview on docs.rs, and the framework itself is documented on the RustStream site.
+
+## Site
+
+- [Home](https://powersemmi.github.io/ruststream-kinesis/latest/): what the crate does, its cargo features and a first service
+- [Benchmarks](https://powersemmi.github.io/ruststream-kinesis/latest/benchmarks/): what this crate and the framework's runtime cost over the raw `aws-sdk-kinesis` client on LocalStack, and how to re-measure it with `just bench`
+
+## Guide
+
+- [Overview](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html): the transport and a first service
+- [Subscribing](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#subscribing): the stream descriptor, settling a record and delayed redelivery with its cap
+- [Leases and checkpoints](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#leases-and-checkpoints): how shards are leased and progress is checkpointed, in one process or across instances
+- [Batches](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#batches): batch handlers over a shard's records
+- [Positions and seeking](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#positions-and-seeking): where a subscription starts and how a handler repositions it
+- [Publishing](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#publishing): the publish policy, the partition key, replies and the header envelope
+- [The prelude](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#the-prelude): what a routes file and a handler body import
+- [The generated document](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#the-generated-document): what the `asyncapi` feature reports
+- [Testing](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#testing): the in-process broker behind the `testing` feature, driven by `TestApp`
+- [Operations](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#operations): credentials, a local stack, read budgets and the client's limits
+- [Cargo features](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#cargo-features): `asyncapi`, `dynamodb-lease` and `testing`
+
+## Optional
+
+- [API reference](https://docs.rs/ruststream-kinesis): the full rustdoc of the crate
+- [RustStream llms.txt](https://powersemmi.github.io/ruststream/llms.txt): the index of the framework's own documentation
+- [Source](https://github.com/powersemmi/ruststream-kinesis): the crate's repository
