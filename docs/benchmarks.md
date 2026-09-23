@@ -100,8 +100,8 @@ consumer that catches up with it pays the pause after an empty read. That pause 
 delivery is charged for, and the round-trip arithmetic above is what says how much of the row it
 accounts for.
 
-The numbers are a snapshot of one machine on one day. They are re-measured on demand, never in CI:
-a shared runner's noise is larger than the difference this page is about.
+The numbers are a snapshot of one machine on one day. They are re-measured by hand, on a machine
+given to the run alone: the difference this page is about is smaller than the noise of a shared one.
 
 ## Running it yourself
 
