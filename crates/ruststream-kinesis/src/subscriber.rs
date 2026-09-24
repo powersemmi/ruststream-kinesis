@@ -19,13 +19,17 @@ use aws_sdk_kinesis::operation::get_shard_iterator::builders::GetShardIteratorFl
 use aws_sdk_kinesis::primitives::DateTime;
 use aws_sdk_kinesis::types::{Shard, ShardIteratorType};
 use futures::Stream;
+#[cfg(feature = "testing")]
+use futures::future::Either;
 use ruststream::{BatchSubscriber, BufferedSubscriber, Subscriber};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::broker::Core;
 use crate::error::{KinesisError, sdk_err};
+#[cfg(feature = "testing")]
+use crate::in_process::{LogDeliveries, LogSeeker};
 use crate::lease::{LeaseError, LeaseKey, LeaseStore, SHARD_END};
-use crate::message::{KPL_MAGIC, KinesisMessage, KinesisPosition, Settlement};
+use crate::message::{KPL_MAGIC, KinesisMessage, KinesisPosition, Settle, Settlement};
 use crate::stream::KinesisStream;
 use crate::track::Watermark;
 
@@ -166,7 +170,7 @@ pub struct KinesisSubscriber {
     /// The live `GetRecords` limit, shared with every reader. This is how the mount site's batch
     /// size reaches the wire: [`BatchSubscriber::batches`] stores it before the first batch.
     limit: Arc<AtomicI32>,
-    deliveries: BufferedSubscriber<ShardDeliveries>,
+    deliveries: BufferedSubscriber<Deliveries>,
 }
 
 impl std::fmt::Debug for KinesisSubscriber {
@@ -201,8 +205,68 @@ impl KinesisSubscriber {
         Self {
             stream,
             limit,
-            deliveries: BufferedSubscriber::new(ShardDeliveries { rx, bus })
+            deliveries: BufferedSubscriber::new(Deliveries::Shards(ShardDeliveries { rx, bus }))
                 .max_wait(BATCH_FILL_WINDOW),
+        }
+    }
+
+    /// A subscription on the in-process transport, batching on the client with the same deadline
+    /// the service's subscription uses.
+    #[cfg(feature = "testing")]
+    pub(crate) fn in_process(stream: String, deliveries: LogDeliveries) -> Self {
+        Self {
+            stream,
+            limit: Arc::new(AtomicI32::new(DEFAULT_READ_LIMIT)),
+            deliveries: BufferedSubscriber::new(Deliveries::InProcess(deliveries))
+                .max_wait(BATCH_FILL_WINDOW),
+        }
+    }
+}
+
+/// One delivery at a time, from whichever transport the broker was connected to: everything
+/// above it batches on the client.
+///
+/// Without the `testing` feature the shard readers' channel is the only variant, so the type is
+/// that channel and the `match` in [`stream`](Subscriber::stream) resolves at compile time.
+enum Deliveries {
+    Shards(ShardDeliveries),
+    #[cfg(feature = "testing")]
+    InProcess(LogDeliveries),
+}
+
+#[cfg(not(feature = "testing"))]
+const _: () = assert!(size_of::<Deliveries>() == size_of::<ShardDeliveries>());
+
+impl std::fmt::Debug for Deliveries {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Deliveries").finish_non_exhaustive()
+    }
+}
+
+impl ruststream::Seekable for Deliveries {
+    type Seeker = KinesisSeeker;
+
+    fn seeker(&self) -> KinesisSeeker {
+        match self {
+            Self::Shards(shards) => ruststream::Seekable::seeker(shards),
+            #[cfg(feature = "testing")]
+            Self::InProcess(log) => log.seeker(),
+        }
+    }
+}
+
+impl Subscriber for Deliveries {
+    type Message = KinesisMessage;
+    type Error = KinesisError;
+
+    fn stream(&mut self) -> impl Stream<Item = Result<KinesisMessage, KinesisError>> + Send + '_ {
+        match self {
+            #[cfg(not(feature = "testing"))]
+            Self::Shards(shards) => shards.stream(),
+            #[cfg(feature = "testing")]
+            Self::Shards(shards) => Either::Left(shards.stream()),
+            #[cfg(feature = "testing")]
+            Self::InProcess(log) => Either::Right(log.stream()),
         }
     }
 }
@@ -244,10 +308,9 @@ fn read_limit(size: NonZeroUsize) -> i32 {
 /// the affected shards drop their watermark bookkeeping: acknowledgements of records delivered
 /// before the seek no longer checkpoint.
 ///
-/// The same handle serves the in-process stand-in
-/// ([`KinesisTestBroker`](crate::testing::KinesisTestBroker)), where it re-reads that transport's
+/// On a broker the test harness connected in process, the same handle re-reads that transport's
 /// retained log instead, so a handler that repositions its subscription is the same code in a
-/// unit test and against the service.
+/// test and against the service.
 #[derive(Clone)]
 pub struct KinesisSeeker {
     target: SeekTarget,
@@ -259,10 +322,13 @@ pub struct KinesisSeeker {
 enum SeekTarget {
     /// The service: one command channel per owned shard, behind a shared seek bus.
     Shards(ShardSeeker),
-    /// The in-process stand-in: one retained log per stream.
+    /// The in-process transport: one retained log per stream.
     #[cfg(feature = "testing")]
-    Log(crate::testing::LogSeeker),
+    Log(LogSeeker),
 }
+
+#[cfg(not(feature = "testing"))]
+const _: () = assert!(size_of::<SeekTarget>() == size_of::<ShardSeeker>());
 
 impl std::fmt::Debug for KinesisSeeker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -281,7 +347,7 @@ impl KinesisSeeker {
 
     /// Mints a handle onto one in-process subscription's retained log.
     #[cfg(feature = "testing")]
-    pub(crate) fn in_process(log: crate::testing::LogSeeker) -> Self {
+    pub(crate) fn in_process(log: LogSeeker) -> Self {
         Self {
             target: SeekTarget::Log(log),
         }
@@ -844,7 +910,7 @@ async fn read_shard(
                         }
                         continue;
                     }
-                    let settlement = Settlement {
+                    let settlement = Settle::Checkpoint(Settlement {
                         tracker: Arc::clone(&tracker),
                         index: tracker.deliver(record.sequence_number()),
                         store: Arc::clone(store),
@@ -852,7 +918,7 @@ async fn read_shard(
                         owner: Arc::clone(owner),
                         epoch,
                         gate: Arc::clone(&gate),
-                    };
+                    });
                     let message = KinesisMessage::new(
                         data,
                         record.partition_key(),

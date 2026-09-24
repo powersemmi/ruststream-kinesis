@@ -9,7 +9,7 @@
     "`ack` is a per-shard checkpoint covering every earlier record and delivery is at-least-once; it is written to the lease store, `MemoryLeaseStore` in process by default and `DynamoLeaseStore` behind the `dynamodb-lease` feature when several service instances share the shards.",
     "A lease and a checkpoint belong to a stream and a shard together (`LeaseKey`), so one lease store serves every stream a broker consumes; a `DynamoDB` lease table written by a version that keyed rows by the shard id alone is read through `DynamoLeaseStore::legacy_stream(stream)`, naming the one stream those rows belong to.",
     "Open or move a subscription with `KinesisPosition` only: `start_at(..)` at the mount site and `Ctx<SeekHandle>` in a handler; a stream-wide position moves every shard, and a `sequence` one moves only the shard it names.",
-    "Test a service with `ruststream_kinesis::testing::KinesisTestBroker` under `ruststream::testing::TestApp`, mounting the same `KinesisStream` and `Publish` the service mounts; there is no test-only descriptor and no test-only policy.",
+    "Test the production app: with feature `testing`, hand the builder `main` runs to `ruststream::testing::TestApp::start`, which connects `KinesisBroker` in process, and address it as `tb.broker::<KinesisBroker>()`; `TestApp::start_live` runs the same test against a real stream, which is where shards, leases, checkpoints and resharding are exercised.",
     "Kinesis offers no request/reply and no transactions, and enhanced fan-out and KPL deaggregation are not implemented; a stream's five reads a second per shard is the budget `poll_interval` and the batch size spend."
   ]
 }

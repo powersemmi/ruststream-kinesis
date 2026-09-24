@@ -2,8 +2,8 @@
 //!
 //! This is what the crate adds on top of the SDK and what no in-process transport has: a stream
 //! is cut into shards, the service picks a record's shard from its partition key, and the set
-//! changes under a running subscription when the stream is resharded. The in-process stand-in
-//! routes one shard on purpose, so every claim here needs a stack.
+//! changes under a running subscription when the stream is resharded. A stream connected in process
+//! has one shard, so every claim here needs a stack.
 //!
 //! Start one with `just brokers-up`, then:
 //! `KINESIS_TEST_ENDPOINT=http://127.0.0.1:4566 cargo test --all-features -- --test-threads=1`.

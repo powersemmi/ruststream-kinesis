@@ -1,10 +1,10 @@
-//! Conformance: the framework's contract suites, each run twice - against the in-process
-//! transport, and against a local stack (gated behind `KINESIS_TEST_ENDPOINT`).
+//! Conformance: the framework's contract suites, each run twice over the same production broker -
+//! connected in process, and against a local stack (gated behind `KINESIS_TEST_ENDPOINT`).
 //!
-//! Both legs matter. The in-process leg is what holds the stand-in to the same contract the
-//! service answers to, so an emulation cannot quietly drift into something more convenient than
-//! the product; the live leg is what proves the contract itself is the product's, and not one the
-//! stand-in was written to satisfy.
+//! Both legs matter. The in-process leg, through `harness::InProcessBroker`, is what holds the
+//! in-process mode to the same contract the service answers to, so the transport cannot quietly
+//! drift into something more convenient than the product; the live leg is what proves the contract
+//! itself is the product's, and not one the in-process transport was written to satisfy.
 //!
 //! `just test-brokers` runs them against a stack it starts and removes. Driving them by hand
 //! (`just brokers-up`, then `KINESIS_TEST_ENDPOINT=http://127.0.0.1:4566 cargo test
@@ -18,8 +18,8 @@
 use std::time::Duration;
 
 use ruststream::StartAt;
+use ruststream::conformance::harness::InProcessBroker;
 use ruststream::conformance::{capabilities, harness};
-use ruststream_kinesis::testing::KinesisTestBroker;
 use ruststream_kinesis::{KinesisBroker, KinesisPosition, KinesisStream};
 
 mod live;
@@ -31,23 +31,28 @@ fn test_endpoint() -> Option<String> {
     live::url("KINESIS_TEST_ENDPOINT")
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn kinesis_test_broker_passes_conformance_suite() {
-    harness::run_suite(KinesisTestBroker::new).await;
+/// The production broker, connected in process by the suites that take any broker.
+fn in_process() -> InProcessBroker<KinesisBroker> {
+    InProcessBroker::new(KinesisBroker::new())
 }
 
-/// The lifecycle ladder against the stand-in: synchronous construction, the consuming `connect`,
-/// a subscription opened through the crate's own descriptor, a publish it receives and acks, the
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_in_process_mode_passes_conformance_suite() {
+    harness::run_suite(KinesisBroker::new).await;
+}
+
+/// The lifecycle ladder in process: synchronous construction, the consuming transition, a
+/// subscription opened through the crate's own descriptor, a publish it receives and acks, the
 /// consuming `shutdown`, and - the part only a runtime check can hold - a publisher created
 /// before the shutdown erroring afterwards instead of succeeding against a closed transport.
 ///
-/// The stand-in follows the same ladder as the service, so it owes the same answers; the live leg
-/// below runs this very suite against the product.
+/// The in-process mode follows the same ladder as the service, so it owes the same answers; the
+/// live leg below runs this very suite against the product.
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn kinesis_test_broker_passes_lifecycle() {
+async fn in_process_passes_lifecycle() {
     harness::lifecycle(
-        KinesisTestBroker::new,
+        in_process,
         |name| KinesisStream::new(name),
         |connected| connected.publisher(),
     )
@@ -59,25 +64,25 @@ async fn kinesis_test_broker_passes_lifecycle() {
 /// deferred retry: an address reaching nothing would lose every delayed record silently.
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn kinesis_test_broker_reports_a_reachable_redelivery_address() {
+async fn in_process_reports_a_reachable_redelivery_address() {
     harness::redelivery_address(
-        KinesisTestBroker::new,
+        in_process,
         |name| KinesisStream::new(name),
         |connected| connected.publisher(),
     )
     .await;
 }
 
-/// The stand-in claims `Seekable` and `Positioned` over its retained log, so it owes the same
+/// The in-process mode is `Seekable` and `Positioned` over its retained log, so it owes the same
 /// contract the service does: a captured position redelivers exactly its record and the ordered
 /// suffix after it, and a forward seek skips what was queued. Running the framework's own suite
-/// against it is what keeps that emulation from decaying into a handle that accepts every seek
-/// and moves nothing.
+/// against it is what keeps the transport from decaying into a handle that accepts every seek and
+/// moves nothing.
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn kinesis_test_broker_passes_seeking_suite() {
+async fn in_process_passes_seeking_suite() {
     capabilities::seeking(
-        KinesisTestBroker::new,
+        in_process,
         |name| KinesisStream::new(name),
         |connected| connected.publisher(),
     )
@@ -89,9 +94,9 @@ async fn kinesis_test_broker_passes_seeking_suite() {
 /// smaller than the run it publishes, which is what catches a broker that ignores it.
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn kinesis_test_broker_passes_batch_suite() {
+async fn in_process_passes_batch_suite() {
     capabilities::batches(
-        KinesisTestBroker::new,
+        in_process,
         |name| KinesisStream::new(name),
         |connected| connected.publisher(),
     )

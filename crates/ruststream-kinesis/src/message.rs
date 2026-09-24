@@ -1,10 +1,19 @@
 //! [`KinesisMessage`]: a delivered record whose acknowledgement is a checkpoint.
 
+// Without the `testing` feature a settlement has one variant, so a `match` on it has a single arm;
+// the match stays so that the in-process arm has its place when the feature is on.
+#![cfg_attr(
+    not(feature = "testing"),
+    allow(clippy::infallible_destructuring_match)
+)]
+
 use std::sync::Arc;
 
 use bytes::Bytes;
 use ruststream::{AckError, BytesMut, HeaderMap, IncomingMessage, Partitioned, Positioned, Str};
 
+#[cfg(feature = "testing")]
+use crate::in_process::Replay;
 use crate::lease::{LeaseKey, LeaseStore};
 use crate::subscriber::KinesisSeeker;
 use crate::track::Watermark;
@@ -177,6 +186,33 @@ pub(crate) struct Settlement {
     pub(crate) gate: Arc<std::sync::atomic::AtomicU64>,
 }
 
+/// How a delivery settles: against its shard's watermark and the lease store, or, under the
+/// `testing` feature, against the in-process transport the test harness connected instead.
+///
+/// Without the feature there is one variant, so the type is the checkpoint settlement itself and
+/// every `match` on it resolves at compile time: a production build carries no second settlement
+/// and no branch to it.
+pub(crate) enum Settle {
+    Checkpoint(Settlement),
+    #[cfg(feature = "testing")]
+    InProcess(Replay),
+}
+
+// The zero-cost promise of the in-process mode, held by the compiler: a build without it gives the
+// settlement exactly the size of the checkpoint it wraps.
+#[cfg(not(feature = "testing"))]
+const _: () = assert!(size_of::<Settle>() == size_of::<Settlement>());
+
+impl Settle {
+    fn shard(&self) -> &Arc<str> {
+        match self {
+            Self::Checkpoint(settlement) => settlement.lease.shard_shared(),
+            #[cfg(feature = "testing")]
+            Self::InProcess(replay) => replay.shard(),
+        }
+    }
+}
+
 /// A record delivered by a [`KinesisSubscriber`](crate::KinesisSubscriber).
 ///
 /// Acknowledgement is a per-shard checkpoint, not per-message settlement: `ack` marks this
@@ -190,14 +226,21 @@ pub struct KinesisMessage {
     headers: HeaderMap,
     sequence: Arc<str>,
     seeker: KinesisSeeker,
-    settlement: Settlement,
+    settlement: Settle,
 }
 
 impl std::fmt::Debug for KinesisMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("KinesisMessage")
-            .field("stream", &self.settlement.lease.stream())
-            .field("shard", &self.settlement.lease.shard())
+        let mut debug = f.debug_struct("KinesisMessage");
+        match &self.settlement {
+            Settle::Checkpoint(settlement) => {
+                debug.field("stream", &settlement.lease.stream());
+            }
+            #[cfg(feature = "testing")]
+            Settle::InProcess(_) => {}
+        }
+        debug
+            .field("shard", self.settlement.shard())
             .field("payload_len", &self.payload.len())
             .finish_non_exhaustive()
     }
@@ -209,7 +252,7 @@ impl KinesisMessage {
         partition_key: &str,
         sequence: &str,
         seeker: KinesisSeeker,
-        settlement: Settlement,
+        settlement: Settle,
     ) -> Self {
         let (mut headers, payload) = decode_envelope(data);
         headers.insert(
@@ -219,7 +262,7 @@ impl KinesisMessage {
         headers.insert(Str::from_static(SEQUENCE_HEADER), sequence.to_owned());
         headers.insert(
             Str::from_static(SHARD_HEADER),
-            settlement.lease.shard().to_owned(),
+            settlement.shard().to_string(),
         );
         Self {
             payload,
@@ -232,7 +275,7 @@ impl KinesisMessage {
 
     /// The shard this record arrived on; the per-delivery context borrows it.
     pub(crate) fn shard(&self) -> &Arc<str> {
-        self.settlement.lease.shard_shared()
+        self.settlement.shard()
     }
 
     /// This record's sequence number; the per-delivery context borrows it.
@@ -246,6 +289,12 @@ impl KinesisMessage {
     }
 
     async fn settle(self) -> Result<(), AckError> {
+        let settlement = match self.settlement {
+            Settle::Checkpoint(settlement) => settlement,
+            // Nothing is checkpointed in process: a handled record is simply consumed.
+            #[cfg(feature = "testing")]
+            Settle::InProcess(_) => return Ok(()),
+        };
         let Settlement {
             tracker,
             index,
@@ -254,7 +303,7 @@ impl KinesisMessage {
             owner,
             epoch,
             gate,
-        } = self.settlement;
+        } = settlement;
         if gate.load(std::sync::atomic::Ordering::Acquire) != epoch {
             // The subscription repositioned after this delivery: its watermark was reset,
             // and a stale checkpoint would move the cursor somewhere the seek just left.
@@ -277,7 +326,7 @@ impl Positioned for KinesisMessage {
     type Position = KinesisPosition;
 
     fn position(&self) -> KinesisPosition {
-        KinesisPosition::sequence(self.settlement.lease.shard(), &*self.sequence)
+        KinesisPosition::sequence(&**self.settlement.shard(), &*self.sequence)
     }
 }
 
@@ -304,6 +353,10 @@ impl IncomingMessage for KinesisMessage {
         if requeue {
             // Leaving the record unhandled wedges the watermark: no later checkpoint can
             // pass it, so the shard replays from here when its lease is next taken.
+            #[cfg(feature = "testing")]
+            if let Settle::InProcess(replay) = &self.settlement {
+                replay.rewind();
+            }
             Ok(())
         } else {
             self.settle().await
