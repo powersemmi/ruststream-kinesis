@@ -39,7 +39,8 @@ The crate's rustdoc is its guide, written next to the code it describes:
 - [Subscribing](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#subscribing)
   - the stream descriptor, the pause between reads, and creating a stream for a local stand.
 - [Leases and checkpoints](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#leases-and-checkpoints)
-  - what an acknowledgement writes, and the `DynamoDB` store several service instances share.
+  - what an acknowledgement writes, the `DynamoDB` store several service instances share, and
+  upgrading a lease table an earlier version wrote.
 - [Positions and seeking](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#positions-and-seeking)
   - opening a subscription anywhere the stream still retains, and repositioning it from a handler.
 - [Batches](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#batches)

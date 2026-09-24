@@ -40,7 +40,8 @@ Rustdoc крейта и есть его руководство, написанн
 - [Подписка](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#subscribing)
   - дескриптор потока, пауза между чтениями и создание потока для локального стенда.
 - [Аренда и контрольные точки](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#leases-and-checkpoints)
-  - что пишет подтверждение и какое хранилище `DynamoDB` делят несколько экземпляров сервиса.
+  - что пишет подтверждение, какое хранилище `DynamoDB` делят несколько экземпляров сервиса и как
+  перейти на новую версию с таблицей аренды, которую вела прежняя.
 - [Позиции и перемотка](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#positions-and-seeking)
   - открыть подписку в любом месте, которое поток ещё хранит, и перемотать её из обработчика.
 - [Пакеты](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#batches)
