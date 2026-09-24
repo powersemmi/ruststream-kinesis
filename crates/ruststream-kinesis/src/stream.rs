@@ -68,7 +68,8 @@ pub struct KinesisStream {
 }
 
 impl KinesisStream {
-    /// Names the stream (name or ARN).
+    /// Names the stream by its name, which is also the stream half of every [`LeaseKey`](crate::LeaseKey) the
+    /// subscription's shards are leased under.
     pub fn new(stream: impl Into<String>) -> Self {
         Self {
             stream: stream.into(),

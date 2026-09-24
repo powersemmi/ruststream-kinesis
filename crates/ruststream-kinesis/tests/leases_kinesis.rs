@@ -12,6 +12,7 @@
 
 #![cfg(feature = "dynamodb-lease")]
 
+use std::collections::HashMap;
 use std::pin::pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,6 +23,8 @@ use aws_sdk_dynamodb::types::{
     AttributeDefinition, AttributeValue, BillingMode, KeySchemaElement, KeyType,
     ScalarAttributeType,
 };
+use aws_sdk_kinesis::client::Waiters as _;
+use aws_sdk_kinesis::primitives::Blob;
 use futures::StreamExt;
 
 use ruststream::{
@@ -30,7 +33,7 @@ use ruststream::{
 };
 use ruststream_kinesis::{
     ConnectedKinesisBroker, DynamoLeaseStore, KinesisBroker, KinesisPosition, KinesisStream,
-    LeaseStore, SEQUENCE_HEADER, SHARD_HEADER,
+    LeaseKey, LeaseStore, SEQUENCE_HEADER, SHARD_END, SHARD_HEADER,
 };
 
 mod live;
@@ -96,16 +99,16 @@ async fn provision_table(config: &SdkConfig, table: &str) -> aws_sdk_dynamodb::C
     client
 }
 
-/// The item the store keeps for one shard, read straight out of the table.
+/// The item the store keeps under `key`, read straight out of the table.
 async fn item(
     client: &aws_sdk_dynamodb::Client,
     table: &str,
-    shard: &str,
-) -> std::collections::HashMap<String, AttributeValue> {
+    key: &str,
+) -> HashMap<String, AttributeValue> {
     client
         .get_item()
         .table_name(table)
-        .key("lease_key", AttributeValue::S(shard.to_owned()))
+        .key("lease_key", AttributeValue::S(key.to_owned()))
         .consistent_read(true)
         .send()
         .await
@@ -116,7 +119,7 @@ async fn item(
 }
 
 /// The string attribute `name` of the item, or `None` when the item does not carry it.
-fn text(item: &std::collections::HashMap<String, AttributeValue>, name: &str) -> Option<String> {
+fn text(item: &HashMap<String, AttributeValue>, name: &str) -> Option<String> {
     item.get(name)
         .and_then(|value| value.as_s().ok())
         .map(ToOwned::to_owned)
@@ -134,31 +137,36 @@ async fn a_lease_is_exclusive_while_it_lives_and_stealable_once_it_lapses() {
     let table = unique("exclusive");
     let client = provision_table(&config, &table).await;
     let store = DynamoLeaseStore::new(&config, &table);
+    let shard_a = LeaseKey::new("orders", "shard-a");
+    let shard_b = LeaseKey::new("orders", "shard-b");
 
     assert!(
         store
-            .acquire("shard-a", "owner-a", TTL)
+            .acquire(&shard_a, "owner-a", TTL)
             .await
             .expect("acquire"),
         "an unowned shard is taken",
     );
     assert!(
         !store
-            .acquire("shard-a", "owner-b", TTL)
+            .acquire(&shard_a, "owner-b", TTL)
             .await
             .expect("acquire"),
         "a live lease is refused to a second owner",
     );
     assert!(
-        store.renew("shard-a", "owner-a", TTL).await.expect("renew"),
+        store.renew(&shard_a, "owner-a", TTL).await.expect("renew"),
         "the owner heartbeats its own lease",
     );
     assert!(
-        !store.renew("shard-a", "owner-b", TTL).await.expect("renew"),
+        !store.renew(&shard_a, "owner-b", TTL).await.expect("renew"),
         "a lease that is not yours cannot be heartbeated",
     );
     assert_eq!(
-        text(&item(&client, &table, "shard-a").await, "lease_owner"),
+        text(
+            &item(&client, &table, "orders:shard-a").await,
+            "lease_owner"
+        ),
         Some("owner-a".to_owned()),
         "the table must name the owner that holds the shard",
     );
@@ -166,30 +174,30 @@ async fn a_lease_is_exclusive_while_it_lives_and_stealable_once_it_lapses() {
     // A lease taken for no time at all has lapsed by the time the next call reaches the table.
     assert!(
         store
-            .acquire("shard-b", "owner-a", Duration::ZERO)
+            .acquire(&shard_b, "owner-a", Duration::ZERO)
             .await
             .expect("acquire"),
         "an unowned shard is taken",
     );
     assert!(
         store
-            .acquire("shard-b", "owner-b", TTL)
+            .acquire(&shard_b, "owner-b", TTL)
             .await
             .expect("steal"),
         "a lapsed lease is stealable",
     );
     assert!(
-        !store.renew("shard-b", "owner-a", TTL).await.expect("renew"),
+        !store.renew(&shard_b, "owner-a", TTL).await.expect("renew"),
         "the fenced owner must not be able to heartbeat",
     );
     assert!(
         !store
-            .checkpoint("shard-b", "owner-a", "42")
+            .checkpoint(&shard_b, "owner-a", "42")
             .await
             .expect("checkpoint"),
         "the fenced owner must not be able to record progress",
     );
-    let stolen = item(&client, &table, "shard-b").await;
+    let stolen = item(&client, &table, "orders:shard-b").await;
     assert_eq!(
         text(&stolen, "lease_owner"),
         Some("owner-b".to_owned()),
@@ -212,27 +220,28 @@ async fn a_checkpoint_is_conditional_on_the_lease_and_outlives_the_release() {
     let table = unique("checkpoint");
     let client = provision_table(&config, &table).await;
     let store = DynamoLeaseStore::new(&config, &table);
+    let shard_a = LeaseKey::new("orders", "shard-a");
 
     assert!(
         store
-            .acquire("shard-a", "owner-a", TTL)
+            .acquire(&shard_a, "owner-a", TTL)
             .await
             .expect("acquire"),
         "an unowned shard is taken",
     );
     assert!(
         store
-            .checkpoint("shard-a", "owner-a", "seq-1")
+            .checkpoint(&shard_a, "owner-a", "seq-1")
             .await
             .expect("checkpoint"),
         "the owner records progress",
     );
     store
-        .release("shard-a", "owner-a")
+        .release(&shard_a, "owner-a")
         .await
         .expect("the owner hands the shard back");
 
-    let released = item(&client, &table, "shard-a").await;
+    let released = item(&client, &table, "orders:shard-a").await;
     assert!(
         !released.contains_key("lease_owner"),
         "a released lease leaves no owner in the table",
@@ -244,7 +253,7 @@ async fn a_checkpoint_is_conditional_on_the_lease_and_outlives_the_release() {
     );
     assert_eq!(
         store
-            .read("shard-a")
+            .read(&shard_a)
             .await
             .expect("read")
             .checkpoint
@@ -254,14 +263,14 @@ async fn a_checkpoint_is_conditional_on_the_lease_and_outlives_the_release() {
 
     assert!(
         !store
-            .checkpoint("shard-a", "owner-b", "seq-2")
+            .checkpoint(&shard_a, "owner-b", "seq-2")
             .await
             .expect("checkpoint"),
         "a checkpoint without the lease is refused",
     );
     assert_eq!(
         store
-            .read("shard-a")
+            .read(&shard_a)
             .await
             .expect("read")
             .checkpoint
@@ -272,20 +281,20 @@ async fn a_checkpoint_is_conditional_on_the_lease_and_outlives_the_release() {
 
     assert!(
         store
-            .acquire("shard-a", "owner-b", TTL)
+            .acquire(&shard_a, "owner-b", TTL)
             .await
             .expect("acquire"),
         "a released shard is taken by the next owner",
     );
     assert!(
         store
-            .checkpoint("shard-a", "owner-b", "seq-2")
+            .checkpoint(&shard_a, "owner-b", "seq-2")
             .await
             .expect("checkpoint"),
         "the new owner records progress",
     );
     assert_eq!(
-        text(&item(&client, &table, "shard-a").await, "checkpoint"),
+        text(&item(&client, &table, "orders:shard-a").await, "checkpoint"),
         Some("seq-2".to_owned()),
     );
 }
@@ -347,16 +356,18 @@ async fn a_subscription_records_its_progress_in_the_table() {
         .expect("every delivery names its sequence number")
         .to_owned();
     settled.ack().await.expect("ack succeeds");
+    // One row per stream and shard, keyed `stream:shard`.
+    let row = format!("{stream_name}:{shard}");
 
     // The write is the ack's own, so the table answers as soon as the checkpoint lands.
     let deadline = tokio::time::Instant::now() + RECV_TIMEOUT;
     while tokio::time::Instant::now() < deadline {
-        if text(&item(&client, &table, &shard).await, "checkpoint").as_deref() == Some(&sequence) {
+        if text(&item(&client, &table, &row).await, "checkpoint").as_deref() == Some(&sequence) {
             break;
         }
     }
     assert_eq!(
-        text(&item(&client, &table, &shard).await, "checkpoint"),
+        text(&item(&client, &table, &row).await, "checkpoint"),
         Some(sequence.clone()),
         "the table must hold the sequence number of the record that was acknowledged",
     );
@@ -369,9 +380,258 @@ async fn a_subscription_records_its_progress_in_the_table() {
     assert_eq!(left.payload(), b"left");
     left.nack(true).await.expect("nack succeeds");
     assert_eq!(
-        text(&item(&client, &table, &shard).await, "checkpoint"),
+        text(&item(&client, &table, &row).await, "checkpoint"),
         Some(sequence),
         "a record left unhandled must not move the shard's progress",
+    );
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// Every stream's first shard has the same id, so a table serving two streams must hold two rows
+/// for it: one stream's lease, progress and finished mark never reach the other's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_same_shard_id_on_two_streams_is_two_rows() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    let config = config(&endpoint).await;
+    let table = unique("streams");
+    let client = provision_table(&config, &table).await;
+    let store = DynamoLeaseStore::new(&config, &table);
+    let orders = LeaseKey::new("orders", "shardId-000000000000");
+    let refunds = LeaseKey::new("refunds", "shardId-000000000000");
+
+    assert!(
+        store
+            .acquire(&orders, "owner-a", TTL)
+            .await
+            .expect("acquire")
+    );
+    assert!(
+        store
+            .acquire(&refunds, "owner-b", TTL)
+            .await
+            .expect("acquire"),
+        "a lease on one stream must not hold the same shard id on another",
+    );
+    assert!(
+        store
+            .checkpoint(&orders, "owner-a", "seq-1")
+            .await
+            .expect("checkpoint")
+    );
+    assert!(
+        store
+            .checkpoint(&refunds, "owner-b", SHARD_END)
+            .await
+            .expect("checkpoint")
+    );
+    assert_eq!(
+        store
+            .read(&orders)
+            .await
+            .expect("read")
+            .checkpoint
+            .as_deref(),
+        Some("seq-1"),
+        "a shard finished on one stream must keep the other stream's progress",
+    );
+    assert_eq!(
+        text(
+            &item(&client, &table, "refunds:shardId-000000000000").await,
+            "lease_owner"
+        ),
+        Some("owner-b".to_owned()),
+        "each stream's shard is a row of its own, keyed `stream:shard`",
+    );
+}
+
+/// Writes a row the way earlier versions of the crate did: keyed by the bare shard id, holding a
+/// checkpoint and no lease.
+async fn put_bare_row(client: &aws_sdk_dynamodb::Client, table: &str, shard: &str, seq: &str) {
+    client
+        .put_item()
+        .table_name(table)
+        .item("lease_key", AttributeValue::S(shard.to_owned()))
+        .item("checkpoint", AttributeValue::S(seq.to_owned()))
+        .send()
+        .await
+        .expect("the stack stores the row");
+}
+
+/// A row an earlier version keyed by the bare shard id does not say which stream it belongs to.
+/// The store reads it for the stream the operator names and copies it under that stream's key,
+/// ignores it for every other stream, and refuses it while no stream is named. Progress written
+/// under the new key wins over it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bare_row_serves_only_the_stream_it_is_declared_for() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    let config = config(&endpoint).await;
+    let table = unique("legacy");
+    let client = provision_table(&config, &table).await;
+    put_bare_row(&client, &table, "shard-a", "seq-old").await;
+    let orders = LeaseKey::new("orders", "shard-a");
+    let refunds = LeaseKey::new("refunds", "shard-a");
+
+    let undeclared = DynamoLeaseStore::new(&config, &table);
+    let refused = undeclared
+        .read(&orders)
+        .await
+        .expect_err("a bare row with no stream named for it is refused")
+        .to_string();
+    for name in [table.as_str(), "shard-a", "orders", "legacy_stream"] {
+        assert!(
+            refused.contains(name),
+            "the refusal must name `{name}`: {refused}",
+        );
+    }
+
+    let store = DynamoLeaseStore::new(&config, &table).legacy_stream("orders");
+    assert_eq!(
+        store.read(&refunds).await.expect("read").checkpoint,
+        None,
+        "a bare row declared for one stream must not become another's progress",
+    );
+    assert_eq!(
+        store
+            .read(&orders)
+            .await
+            .expect("read")
+            .checkpoint
+            .as_deref(),
+        Some("seq-old"),
+        "the declared stream resumes from the bare row",
+    );
+    assert_eq!(
+        text(&item(&client, &table, "orders:shard-a").await, "checkpoint"),
+        Some("seq-old".to_owned()),
+        "the first read copies the bare row's progress under the stream's own key",
+    );
+    assert_eq!(
+        undeclared
+            .read(&orders)
+            .await
+            .expect("a copied row needs no declaration")
+            .checkpoint
+            .as_deref(),
+        Some("seq-old"),
+    );
+
+    assert!(
+        store
+            .acquire(&orders, "owner-a", TTL)
+            .await
+            .expect("acquire")
+    );
+    assert!(
+        store
+            .checkpoint(&orders, "owner-a", "seq-new")
+            .await
+            .expect("checkpoint")
+    );
+    assert_eq!(
+        store
+            .read(&orders)
+            .await
+            .expect("read")
+            .checkpoint
+            .as_deref(),
+        Some("seq-new"),
+        "progress under the stream's own key wins over the bare row",
+    );
+    assert_eq!(
+        text(&item(&client, &table, "shard-a").await, "checkpoint"),
+        Some("seq-old".to_owned()),
+        "the bare row is left as it was, for the operator to delete",
+    );
+}
+
+/// The upgrade where it is met: a table an earlier version wrote holds the stream's progress
+/// under the bare shard id, and the upgraded service resumes right after that record instead of
+/// starting over or at the tip.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_table_from_an_earlier_version_resumes_from_its_bare_row() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    let config = config(&endpoint).await;
+    let table = unique("upgrade");
+    let client = provision_table(&config, &table).await;
+    let stream_name = unique("upgrade");
+
+    let kinesis = aws_sdk_kinesis::Client::new(&config);
+    kinesis
+        .create_stream()
+        .stream_name(&stream_name)
+        .shard_count(1)
+        .send()
+        .await
+        .expect("the stack creates the stream");
+    kinesis
+        .wait_until_stream_exists()
+        .stream_name(&stream_name)
+        .wait(Duration::from_secs(60))
+        .await
+        .expect("the stream becomes usable");
+    let mut written = Vec::new();
+    for payload in ["handled", "pending"] {
+        let output = kinesis
+            .put_record()
+            .stream_name(&stream_name)
+            .partition_key("key")
+            .data(Blob::new(payload.as_bytes()))
+            .send()
+            .await
+            .expect("the stack stores the record");
+        written.push((
+            output.shard_id().to_owned(),
+            output.sequence_number().to_owned(),
+        ));
+    }
+    let (shard, handled) = written[0].clone();
+    // The earlier version checkpointed the first record under the bare shard id.
+    put_bare_row(&client, &table, &shard, &handled).await;
+
+    let store =
+        Arc::new(DynamoLeaseStore::new(&config, &table).legacy_stream(stream_name.as_str()));
+    let connected: ConnectedKinesisBroker = KinesisBroker::from_config(config.clone())
+        .lease_store(store as Arc<dyn LeaseStore>)
+        .owner_id("instance-a")
+        .connect()
+        .await
+        .expect("broker connects");
+    let mut subscriber = KinesisStream::new(stream_name.as_str())
+        .poll_interval(Duration::from_millis(200))
+        .subscribe(&connected)
+        .await
+        .expect("subscription opens");
+    let mut stream = pin!(subscriber.stream());
+    let resumed = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+        .await
+        .expect("delivery arrives")
+        .expect("stream is open")
+        .expect("delivery is ok");
+    assert_eq!(
+        resumed.payload(),
+        b"pending",
+        "the upgraded service resumes right after the record the earlier version checkpointed",
+    );
+    let sequence = resumed
+        .headers()
+        .get_str(SEQUENCE_HEADER)
+        .expect("every delivery names its sequence number")
+        .to_owned();
+    resumed.ack().await.expect("ack succeeds");
+    assert_eq!(
+        text(
+            &item(&client, &table, &format!("{stream_name}:{shard}")).await,
+            "checkpoint"
+        ),
+        Some(sequence),
+        "progress after the upgrade is written under the stream's own key",
     );
 
     connected.shutdown().await.expect("shutdown succeeds");

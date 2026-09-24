@@ -5,7 +5,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use ruststream::{AckError, BytesMut, HeaderMap, IncomingMessage, Partitioned, Positioned, Str};
 
-use crate::lease::LeaseStore;
+use crate::lease::{LeaseKey, LeaseStore};
 use crate::subscriber::KinesisSeeker;
 use crate::track::Watermark;
 
@@ -166,10 +166,10 @@ pub(crate) struct Settlement {
     pub(crate) tracker: Arc<Watermark>,
     pub(crate) index: u64,
     pub(crate) store: Arc<dyn LeaseStore>,
-    // Shard and owner are per-reader constants stamped onto every record it forwards, and the
-    // per-delivery context reads the shard back: sharing them keeps both paths to
-    // reference-count bumps instead of a string copy per record.
-    pub(crate) shard: Arc<str>,
+    // The lease key and the owner are per-reader constants stamped onto every record it
+    // forwards, and the per-delivery context reads the shard back: sharing them keeps both paths
+    // to reference-count bumps instead of a string copy per record.
+    pub(crate) lease: Arc<LeaseKey>,
     pub(crate) owner: Arc<str>,
     /// The reader's delivery generation at delivery time; a seek bumps the shared gate, and
     /// stale settlements skip checkpointing (the watermark was reset).
@@ -196,7 +196,8 @@ pub struct KinesisMessage {
 impl std::fmt::Debug for KinesisMessage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KinesisMessage")
-            .field("shard", &self.settlement.shard)
+            .field("stream", &self.settlement.lease.stream())
+            .field("shard", &self.settlement.lease.shard())
             .field("payload_len", &self.payload.len())
             .finish_non_exhaustive()
     }
@@ -216,7 +217,10 @@ impl KinesisMessage {
             partition_key.to_owned(),
         );
         headers.insert(Str::from_static(SEQUENCE_HEADER), sequence.to_owned());
-        headers.insert(Str::from_static(SHARD_HEADER), settlement.shard.to_string());
+        headers.insert(
+            Str::from_static(SHARD_HEADER),
+            settlement.lease.shard().to_owned(),
+        );
         Self {
             payload,
             headers,
@@ -228,7 +232,7 @@ impl KinesisMessage {
 
     /// The shard this record arrived on; the per-delivery context borrows it.
     pub(crate) fn shard(&self) -> &Arc<str> {
-        &self.settlement.shard
+        self.settlement.lease.shard_shared()
     }
 
     /// This record's sequence number; the per-delivery context borrows it.
@@ -246,7 +250,7 @@ impl KinesisMessage {
             tracker,
             index,
             store,
-            shard,
+            lease,
             owner,
             epoch,
             gate,
@@ -259,7 +263,7 @@ impl KinesisMessage {
         let Some(sequence) = tracker.settle(index) else {
             return Ok(()); // handled, but the watermark waits on an earlier record
         };
-        match store.checkpoint(&shard, &owner, &sequence).await {
+        match store.checkpoint(&lease, &owner, &sequence).await {
             // A fenced checkpoint (another owner took the shard) is fine: the record was
             // handled, and the new owner replays from its checkpoint, which at-least-once
             // permits.
@@ -273,7 +277,7 @@ impl Positioned for KinesisMessage {
     type Position = KinesisPosition;
 
     fn position(&self) -> KinesisPosition {
-        KinesisPosition::sequence(&*self.settlement.shard, &*self.sequence)
+        KinesisPosition::sequence(self.settlement.lease.shard(), &*self.sequence)
     }
 }
 

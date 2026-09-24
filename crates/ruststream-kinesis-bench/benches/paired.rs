@@ -603,7 +603,8 @@ enum Checkpoint {
     Dynamo {
         client: DynamoClient,
         table: String,
-        shard: String,
+        /// The row the crate keeps for the shard, `stream:shard`.
+        row: String,
         owner: String,
     },
 }
@@ -614,7 +615,7 @@ impl Checkpoint {
         let Self::Dynamo {
             client,
             table,
-            shard,
+            row,
             owner,
         } = self
         else {
@@ -625,7 +626,7 @@ impl Checkpoint {
         client
             .update_item()
             .table_name(table)
-            .key("lease_key", AttributeValue::S(shard.clone()))
+            .key("lease_key", AttributeValue::S(row.clone()))
             .update_expression(
                 "SET lease_owner = :me, lease_expiry = :expiry ADD lease_counter :one",
             )
@@ -646,7 +647,7 @@ impl Checkpoint {
         let Self::Dynamo {
             client,
             table,
-            shard,
+            row,
             owner,
         } = self
         else {
@@ -656,7 +657,7 @@ impl Checkpoint {
         client
             .update_item()
             .table_name(table)
-            .key("lease_key", AttributeValue::S(shard.clone()))
+            .key("lease_key", AttributeValue::S(row.clone()))
             .update_expression("SET lease_expiry = :expiry ADD lease_counter :one")
             .condition_expression("lease_owner = :me")
             .expression_attribute_values(":me", AttributeValue::S(owner.clone()))
@@ -677,13 +678,13 @@ impl Checkpoint {
             Self::Dynamo {
                 client,
                 table,
-                shard,
+                row,
                 owner,
             } => {
                 client
                     .update_item()
                     .table_name(table)
-                    .key("lease_key", AttributeValue::S(shard.clone()))
+                    .key("lease_key", AttributeValue::S(row.clone()))
                     .update_expression("SET checkpoint = :seq ADD lease_counter :one")
                     .condition_expression("lease_owner = :me")
                     .expression_attribute_values(":me", AttributeValue::S(owner.clone()))
@@ -831,7 +832,7 @@ impl Stack {
             Checkpoint::Dynamo {
                 client: self.dynamo.clone(),
                 table: self.names.table.clone(),
-                shard: self.shard.clone(),
+                row: format!("{}:{}", self.names.stream, self.shard),
                 owner: self.names.owner.clone(),
             }
         } else {

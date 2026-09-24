@@ -25,8 +25,8 @@ use ruststream::{
 };
 use ruststream_kinesis::{
     ConnectedKinesisBroker, KinesisBroker, KinesisError, KinesisPosition, KinesisPublish,
-    KinesisPublishSteps, KinesisStream, LeaseError, LeaseState, LeaseStore, MemoryLeaseStore,
-    PARTITION_KEY_HEADER, SEQUENCE_HEADER,
+    KinesisPublishSteps, KinesisStream, LeaseError, LeaseKey, LeaseState, LeaseStore,
+    MemoryLeaseStore, PARTITION_KEY_HEADER, SEQUENCE_HEADER,
 };
 
 mod live;
@@ -63,42 +63,42 @@ impl ReleaseWatch {
 impl LeaseStore for ReleaseWatch {
     fn acquire<'a>(
         &'a self,
-        shard: &'a str,
+        key: &'a LeaseKey,
         owner: &'a str,
         ttl: Duration,
     ) -> BoxFuture<'a, Result<bool, LeaseError>> {
-        self.inner.acquire(shard, owner, ttl)
+        self.inner.acquire(key, owner, ttl)
     }
 
     fn renew<'a>(
         &'a self,
-        shard: &'a str,
+        key: &'a LeaseKey,
         owner: &'a str,
         ttl: Duration,
     ) -> BoxFuture<'a, Result<bool, LeaseError>> {
-        self.inner.renew(shard, owner, ttl)
+        self.inner.renew(key, owner, ttl)
     }
 
     fn checkpoint<'a>(
         &'a self,
-        shard: &'a str,
+        key: &'a LeaseKey,
         owner: &'a str,
         sequence: &'a str,
     ) -> BoxFuture<'a, Result<bool, LeaseError>> {
-        self.inner.checkpoint(shard, owner, sequence)
+        self.inner.checkpoint(key, owner, sequence)
     }
 
-    fn read<'a>(&'a self, shard: &'a str) -> BoxFuture<'a, Result<LeaseState, LeaseError>> {
-        self.inner.read(shard)
+    fn read<'a>(&'a self, key: &'a LeaseKey) -> BoxFuture<'a, Result<LeaseState, LeaseError>> {
+        self.inner.read(key)
     }
 
     fn release<'a>(
         &'a self,
-        shard: &'a str,
+        key: &'a LeaseKey,
         owner: &'a str,
     ) -> BoxFuture<'a, Result<(), LeaseError>> {
         Box::pin(async move {
-            let outcome = self.inner.release(shard, owner).await;
+            let outcome = self.inner.release(key, owner).await;
             self.released.notify_one();
             outcome
         })
