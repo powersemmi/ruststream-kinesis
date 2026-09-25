@@ -93,14 +93,22 @@ impl SeekControl {
         self.generation.load(Ordering::Acquire)
     }
 
-    /// Takes the reposition left for the subscription, if any. A replay starts a new read of the
-    /// shard, so taking one moves the generation on.
-    pub(crate) fn take_pending(&self) -> Option<Plan> {
-        let pending = self.lock().take()?;
-        if pending.cause == Cause::Replay {
+    /// Takes the reposition left for the subscription, if any, and answers the generation what
+    /// the subscription hands out next belongs to. A replay starts a new read of the shard, so
+    /// taking one moves the generation on.
+    ///
+    /// Both are read under the lock a seek installs under, so a record the subscription still
+    /// held from before a seek it has not applied carries the generation before that seek: left
+    /// unhandled, it cannot rewind the subscription behind the seek.
+    pub(crate) fn take_pending(&self) -> (Option<Plan>, u64) {
+        let mut slot = self.lock();
+        let pending = slot.take();
+        if pending.is_some_and(|pending| pending.cause == Cause::Replay) {
             self.generation.fetch_add(1, Ordering::AcqRel);
         }
-        Some(pending.plan)
+        let generation = self.generation();
+        drop(slot);
+        (pending.map(|pending| pending.plan), generation)
     }
 
     /// Records a seek and wakes the subscription; it replaces any reposition not yet applied.
@@ -114,11 +122,15 @@ impl SeekControl {
     /// releasing the displaced one keeps the total off zero in between.
     fn install_seek(&self, plan: Plan, coordinator: Option<&Coordinator>) {
         count(coordinator, plan.count);
+        // Moved on under the lock the subscription reads it under, together with the plan it
+        // stands for.
+        let mut slot = self.lock();
         self.generation.fetch_add(1, Ordering::AcqRel);
-        let displaced = self.lock().replace(Pending {
+        let displaced = slot.replace(Pending {
             plan,
             cause: Cause::Seek,
         });
+        drop(slot);
         // Derived from the swap rather than from a separate read: the swap is what decides which
         // of two concurrent seeks displaced the other, so exactly one of them releases a count.
         release(

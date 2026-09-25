@@ -77,9 +77,11 @@ impl LogDeliveries {
 
     /// Applies a reposition left for this subscription, if one is pending: everything queued
     /// before it is dropped, and the retained suffix from the target on is enqueued in its place.
-    fn apply_pending(&mut self) {
-        let Some(plan) = self.control().take_pending() else {
-            return;
+    /// Answers the generation of what the subscription hands out next.
+    fn apply_pending(&mut self) -> u64 {
+        let (plan, generation) = self.control().take_pending();
+        let Some(plan) = plan else {
+            return generation;
         };
         self.bus.log().reposition(
             &self.stream,
@@ -88,10 +90,15 @@ impl LogDeliveries {
             &self.replay,
             self.coordinator.as_ref(),
         );
+        generation
     }
 
     /// The delivery a queued record makes, decoded the way the service's reader decodes one.
-    fn deliver(&self, delivery: &Delivery) -> Result<KinesisMessage, KinesisError> {
+    fn deliver(
+        &self,
+        delivery: &Delivery,
+        generation: u64,
+    ) -> Result<KinesisMessage, KinesisError> {
         let data = delivery.record.data.as_ref();
         if data.len() > 4 && data[0..4] == KPL_MAGIC {
             // The service's reader refuses such a record and reads on, so nothing settles it.
@@ -105,7 +112,7 @@ impl LogDeliveries {
         let replay = Replay {
             shard: Arc::clone(&self.shard),
             index: delivery.index,
-            generation: self.control().generation(),
+            generation,
             log: self.log.clone(),
             coordinator: self.coordinator.clone(),
         };
@@ -128,9 +135,11 @@ impl LogDeliveries {
             // Register, then apply a pending reposition: one installed between the two still
             // arrives, because installing it wakes this task again.
             self.control().waker.register(cx.waker());
-            self.apply_pending();
+            let generation = self.apply_pending();
             match self.rx.poll_recv(cx) {
-                Poll::Ready(Some(delivery)) => Poll::Ready(Some(self.deliver(&delivery))),
+                Poll::Ready(Some(delivery)) => {
+                    Poll::Ready(Some(self.deliver(&delivery, generation)))
+                }
                 Poll::Ready(None) => Poll::Ready(None),
                 Poll::Pending => Poll::Pending,
             }
