@@ -119,7 +119,9 @@ impl DynamoLeaseStore {
 
     /// Copies a checkpoint from the shard's bare row under its own key, unless one is already
     /// there: a checkpoint written in between by the owner is newer, and it stays.
-    async fn adopt(&self, key: &LeaseKey, checkpoint: &str) -> Result<(), LeaseError> {
+    /// Copies a bare row's checkpoint onto the stream's own row, unless that row has one already.
+    /// Answers whether this copy wrote it: `false` when another owner saved progress first.
+    async fn adopt(&self, key: &LeaseKey, checkpoint: &str) -> Result<bool, LeaseError> {
         let outcome = self
             .client
             .update_item()
@@ -132,13 +134,13 @@ impl DynamoLeaseStore {
             .send()
             .await;
         match outcome {
-            Ok(_) => Ok(()),
+            Ok(_) => Ok(true),
             Err(err)
                 if err
                     .as_service_error()
                     .is_some_and(UpdateItemError::is_conditional_check_failed_exception) =>
             {
-                Ok(())
+                Ok(false)
             }
             Err(err) => Err(boxed(err)),
         }
@@ -309,19 +311,32 @@ impl LeaseStore for DynamoLeaseStore {
                     checkpoint: Some(checkpoint),
                 });
             }
+            // The bare rows are another stream's progress: nothing read there could apply.
+            if self
+                .legacy_stream
+                .as_deref()
+                .is_some_and(|stream| stream != key.stream())
+            {
+                return Ok(LeaseState::default());
+            }
             let legacy = self.item(AttributeValue::S(key.shard().to_owned())).await?;
             let Some(checkpoint) = checkpoint_of(legacy.as_ref()) else {
                 return Ok(LeaseState::default());
             };
             match self.legacy_stream.as_deref() {
-                Some(stream) if stream == key.stream() => {
-                    self.adopt(key, &checkpoint).await?;
+                Some(_) => {
+                    if self.adopt(key, &checkpoint).await? {
+                        return Ok(LeaseState {
+                            checkpoint: Some(checkpoint),
+                        });
+                    }
+                    // Another owner saved progress on the stream's row meanwhile: that is the
+                    // position, not the older bare row's.
+                    let own = self.item(row_key(key)).await?;
                     Ok(LeaseState {
-                        checkpoint: Some(checkpoint),
+                        checkpoint: checkpoint_of(own.as_ref()).or(Some(checkpoint)),
                     })
                 }
-                // The bare rows are another stream's progress.
-                Some(_) => Ok(LeaseState::default()),
                 None => Err(boxed(UnattributedLegacyRow {
                     table: self.table.clone(),
                     shard: key.shard().to_owned(),
