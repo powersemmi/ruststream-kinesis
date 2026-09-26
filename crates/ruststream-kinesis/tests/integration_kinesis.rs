@@ -12,10 +12,12 @@
 
 use std::pin::pin;
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
 use futures::StreamExt;
 use futures::future::BoxFuture;
+use tokio::runtime;
 use tokio::sync::Notify;
 
 use ruststream::runtime::PublishExt;
@@ -186,6 +188,58 @@ async fn roundtrip_preserves_payload_headers_and_partition_key() {
     assert_eq!(message.headers().get_str("x-tenant"), Some("acme"));
     assert_eq!(message.partition_key(), Some(b"user-42".as_slice()));
     assert!(message.headers().get_str(SEQUENCE_HEADER).is_some());
+    message.ack().await.expect("ack succeeds");
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// A subscription opened from another runtime keeps reading after that runtime stops.
+///
+/// A handler on a dedicated thread runs on a runtime of its own, and the shard coordinator and
+/// readers a subscription starts belong to the runtime the broker connected on: started on the
+/// caller's runtime they would die with it, and the subscription would end with no error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_subscription_opened_from_another_runtime_outlives_it() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    let connected = connect(&endpoint).await;
+    let stream_name = unique("foreign-runtime");
+    let opening = from_horizon(&stream_name);
+
+    let mut subscriber = thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let runtime = runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("the caller's runtime builds");
+                let subscriber = runtime
+                    .block_on(opening.subscribe(&connected))
+                    .expect("subscription opens");
+                drop(runtime);
+                subscriber
+            })
+            .join()
+            .expect("the caller's thread finishes")
+    });
+
+    connected
+        .publisher()
+        .publish(
+            OutgoingMessage::new(&stream_name, b"after".as_slice()),
+            None,
+        )
+        .await
+        .expect("publish succeeds");
+
+    let mut stream = pin!(subscriber.stream());
+    let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+        .await
+        .expect("delivery arrives")
+        .expect("the subscription is still reading after the runtime it was opened on stopped")
+        .expect("delivery is ok");
+    assert_eq!(message.payload(), b"after");
     message.ack().await.expect("ack succeeds");
 
     connected.shutdown().await.expect("shutdown succeeds");
