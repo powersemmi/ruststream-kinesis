@@ -26,6 +26,7 @@ use ruststream::{
 };
 #[cfg(feature = "testing")]
 use ruststream::{OutgoingMessage, RawMessage};
+use tokio::runtime::Handle;
 use tokio::sync::OnceCell;
 
 use crate::error::{KinesisError, sdk_err};
@@ -47,6 +48,10 @@ pub(crate) struct Core {
     pub(crate) store: Arc<dyn LeaseStore>,
     pub(crate) owner: String,
     pub(crate) closed: AtomicBool,
+    /// The runtime `connect` ran on, which every task the broker starts runs on: a subscription
+    /// opened from a handler's own thread would otherwise read on that thread's runtime, behind
+    /// its computation, and stop reading when that runtime stops.
+    pub(crate) runtime: Handle,
 }
 
 impl Core {
@@ -222,6 +227,7 @@ impl Broker for KinesisBroker {
                         .unwrap_or_else(|| Arc::new(MemoryLeaseStore::new())),
                     owner: self.owner.clone().unwrap_or_else(default_owner),
                     closed: AtomicBool::new(false),
+                    runtime: Handle::current(),
                 })))
             })
             .await?

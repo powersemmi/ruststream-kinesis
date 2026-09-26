@@ -22,6 +22,7 @@ use futures::Stream;
 #[cfg(feature = "testing")]
 use futures::future::Either;
 use ruststream::{BatchSubscriber, BufferedSubscriber, Subscriber};
+use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::broker::Core;
@@ -193,7 +194,8 @@ impl KinesisSubscriber {
         let stream = descriptor.stream().to_owned();
         let bus: SeekBus = Arc::new(SeekState::default());
         let limit = Arc::new(AtomicI32::new(DEFAULT_READ_LIMIT));
-        tokio::spawn(coordinate(Arc::new(Subscription {
+        core.runtime.spawn(coordinate(Arc::new(Subscription {
+            runtime: core.runtime.clone(),
             client: core.client.clone(),
             store: Arc::clone(&core.store),
             owner: Arc::from(core.owner.as_str()),
@@ -562,6 +564,8 @@ fn is_closed(shard: &Shard) -> bool {
 /// What one subscription's coordinator and every reader it spawns work from: one allocation per
 /// subscription, one reference-count bump per reader.
 struct Subscription {
+    /// The runtime the broker connected on, where the coordinator starts every reader.
+    runtime: Handle,
     client: aws_sdk_kinesis::Client,
     store: Arc<dyn LeaseStore>,
     /// This instance's lease-owner id, shared with every record a reader forwards.
@@ -574,6 +578,7 @@ struct Subscription {
 
 async fn coordinate(subscription: Arc<Subscription>) {
     let Subscription {
+        runtime,
         client,
         store,
         owner,
@@ -622,7 +627,7 @@ async fn coordinate(subscription: Arc<Subscription>) {
                             bus.register(id.clone(), handle.clone());
                             readers.insert(
                                 id,
-                                tokio::spawn(read_shard(
+                                runtime.spawn(read_shard(
                                     Arc::clone(&subscription),
                                     Arc::new(key),
                                     handle.gate,
@@ -837,6 +842,7 @@ async fn read_shard(
         out,
         bus,
         limit,
+        ..
     } = subscription.as_ref();
     let shard = lease.shard_shared();
     let _bus_guard = BusGuard {
