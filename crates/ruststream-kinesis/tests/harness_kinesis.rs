@@ -1,30 +1,32 @@
 //! Service-level tests on the framework's `TestApp` harness: real handlers, real dispatch, real
-//! delivery contexts, no server.
+//! delivery contexts, the production `KinesisBroker` connected in process.
 //!
 //! Every handler here is written exactly as a service would write it - the crate's own
-//! descriptor in `#[subscriber(..)]`, the delivery context read by key - and mounts unchanged on
-//! [`KinesisTestBroker`], whose retained log makes repositioning a real re-read rather than a
-//! handle that accepts every seek.
+//! descriptor in `#[subscriber(..)]`, the delivery context read by key - and every app is built on
+//! the broker a service builds on. The in-process transport keeps a retained log per stream, so
+//! repositioning is a real re-read rather than a handle that accepts every seek. The last test
+//! runs one body both in process and against a local stack.
 #![cfg(feature = "testing")]
 
 use std::convert::Infallible;
 use std::future::{Future, ready};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ruststream::codec::CborCodec;
 use ruststream::runtime::{
     ContextKind, ForReply, Outgoing, PublishContext, PublishTransform, RETRY_COUNT_HEADER, Reads,
 };
-use ruststream::testing::{TestApp, TestError};
+use ruststream::testing::{InProcess, TestApp, TestError};
 use ruststream_kinesis::prelude::*;
-use ruststream_kinesis::testing::KinesisTestBroker;
 use ruststream_kinesis::{PARTITION_KEY_HEADER, SEQUENCE_HEADER, SHARD_HEADER};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Barrier;
 use tokio::time::timeout;
+
+mod live;
 
 /// The id a producer uses to ask a consumer to abandon the rest of the retained backlog.
 const MARKER: u64 = 999;
@@ -144,8 +146,8 @@ async fn since(_job: &Job) -> HandlerOutcome {
     HandlerOutcome::ack()
 }
 
-/// A descriptor that names no stream. Nothing can subscribe to it, on the stand-in or against
-/// the service.
+/// A descriptor that names no stream. Nothing can subscribe to it, in process or against the
+/// service.
 #[subscriber(KinesisStream::new(""))]
 async fn unnamed(_job: &Job) -> HandlerOutcome {
     HandlerOutcome::ack()
@@ -326,9 +328,19 @@ async fn lanes(
     HandlerOutcome::ack()
 }
 
-/// Seeds a stream's retained log before the service exists, the way an external producer would.
-async fn seed(broker: &KinesisTestBroker, stream: &str, ids: impl IntoIterator<Item = u64>) {
-    let ingress = broker.publisher();
+/// The broker of a service whose stream already holds `ids` when it starts: another producer
+/// wrote them first.
+///
+/// A clone of a broker shares its connection, so the producer's in-process connection is the one
+/// the harness connects the app through, and the app reads the stream the producer wrote.
+async fn seeded(stream: &str, ids: impl IntoIterator<Item = u64>) -> KinesisBroker {
+    let broker = KinesisBroker::new();
+    let producer = broker
+        .clone()
+        .connect_in_process()
+        .await
+        .expect("the producer connects in process");
+    let ingress = producer.publisher();
     for id in ids {
         ingress
             .message(&Job { id })
@@ -337,15 +349,15 @@ async fn seed(broker: &KinesisTestBroker, stream: &str, ids: impl IntoIterator<I
             .await
             .expect("the in-process publish succeeds");
     }
+    broker
 }
 
 // --8<-- [start:seek_test]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_handler_repositions_its_own_subscription_through_the_seek_handle() {
-    let broker = KinesisTestBroker::new();
     // Published before the service exists, so the whole run is retained and the subscription's
     // start position is what decides whether it sees any of it.
-    seed(&broker, "jobs", [1, MARKER, 2, 3]).await;
+    let broker = seeded("jobs", [1, MARKER, 2, 3]).await;
 
     let app = RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(broker, |b| {
         b.include(work.start_at(KinesisPosition::horizon()));
@@ -354,14 +366,14 @@ async fn a_handler_repositions_its_own_subscription_through_the_seek_handle() {
     tb.settle().await.expect("the replay settles");
 
     // Published after the seek, so it is ahead of the tip the marker jumped to.
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .message(&Job { id: 4 })
         .to("jobs")
         .publish()
         .await
         .expect("the publish succeeds");
 
-    let handler = tb.broker::<KinesisTestBroker>();
+    let handler = tb.broker::<KinesisBroker>();
     assert_eq!(
         handler.subscriber("jobs").received::<Job>(),
         vec![Job { id: 1 }, Job { id: MARKER }, Job { id: 4 }],
@@ -383,17 +395,15 @@ async fn a_handler_repositions_its_own_subscription_through_the_seek_handle() {
 /// the mount the service ships, character for character.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_mount_site_names_the_partition_key_of_a_reply() {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        KinesisTestBroker::new(),
-        |b| {
+    let app =
+        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
             b.include(confirm)
                 .out_reply(Publish::default())
                 .partition_key("tenant-acme");
-        },
-    );
+        });
     let tb = TestApp::start(app).await.expect("the harness starts");
 
-    let broker = tb.broker::<KinesisTestBroker>();
+    let broker = tb.broker::<KinesisBroker>();
     broker
         .message(&Job { id: 1 })
         .to("orders")
@@ -414,17 +424,15 @@ async fn a_mount_site_names_the_partition_key_of_a_reply() {
 /// the record carries the partition key that policy was given.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reply_type_lands_on_the_stream_it_declares() {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        KinesisTestBroker::new(),
-        |b| {
+    let app =
+        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
             b.include(issue)
                 .out_reply(Publish::default())
                 .partition_key("tenant-acme");
-        },
-    );
+        });
     let tb = TestApp::start(app).await.expect("the harness starts");
 
-    let broker = tb.broker::<KinesisTestBroker>();
+    let broker = tb.broker::<KinesisBroker>();
     broker
         .message(&Job { id: 1 })
         .to("orders")
@@ -446,15 +454,13 @@ async fn a_reply_type_lands_on_the_stream_it_declares() {
 /// the stream is written on this path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reply_type_without_a_stream_takes_the_mount_site_name() {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        KinesisTestBroker::new(),
-        |b| {
+    let app =
+        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
             b.include(confirm).out_reply(Publish::default());
-        },
-    );
+        });
     let tb = TestApp::start(app).await.expect("the harness starts");
 
-    let broker = tb.broker::<KinesisTestBroker>();
+    let broker = tb.broker::<KinesisBroker>();
     broker
         .message(&Job { id: 7 })
         .to("orders")
@@ -471,20 +477,18 @@ async fn a_reply_type_without_a_stream_takes_the_mount_site_name() {
     tb.shutdown().await.expect("the harness shuts down");
 }
 
-/// A mount that names no publisher replies through the broker's default policy, and the
-/// stand-in's default is the crate's own: the reply still comes out on the stream the handler
-/// named, carrying the spread key a policy without one gives every record.
+/// A mount that names no publisher replies through the broker's default policy, which is the
+/// crate's own: the reply still comes out on the stream the handler named, carrying the spread key
+/// a policy without one gives every record.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reply_without_a_named_publisher_goes_through_the_default_policy() {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        KinesisTestBroker::new(),
-        |b| {
+    let app =
+        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
             b.include(confirm);
-        },
-    );
+        });
     let tb = TestApp::start(app).await.expect("the harness starts");
 
-    let broker = tb.broker::<KinesisTestBroker>();
+    let broker = tb.broker::<KinesisBroker>();
     broker
         .message(&Job { id: 8 })
         .to("orders")
@@ -505,15 +509,13 @@ async fn a_reply_without_a_named_publisher_goes_through_the_default_policy() {
 /// gets the same subscription the attribute would have mounted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_descriptor_names_a_stream_on_the_manual_path() {
-    let app = RustStream::new(AppInfo::new("ledger", "0.1.0")).with_broker(
-        KinesisTestBroker::new(),
-        |b| {
+    let app =
+        RustStream::new(AppInfo::new("ledger", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
             b.include(subscriber(KinesisStream::new("ledger"), Ledger).build());
-        },
-    );
+        });
     let tb = TestApp::start(app).await.expect("the harness starts");
 
-    let broker = tb.broker::<KinesisTestBroker>();
+    let broker = tb.broker::<KinesisBroker>();
     broker
         .message(&Job { id: 1 })
         .to("ledger")
@@ -529,15 +531,14 @@ async fn the_descriptor_names_a_stream_on_the_manual_path() {
     tb.shutdown().await.expect("the harness shuts down");
 }
 
-/// The settings on the descriptor are the service's, and a unit test must not have to strip
-/// them out to mount it: the stand-in has no read to price and no stream to create, so it
-/// ignores them and delivers all the same. Both spellings mount - the attribute carrying the
-/// settings on the descriptor, and the chain naming them at the mount site.
+/// The settings on the descriptor are the service's, and a test must not have to strip them out
+/// to mount it: in process there is no read to price and every stream a service names is there,
+/// so they change nothing and the records are delivered all the same. Both spellings mount - the
+/// attribute carrying the settings on the descriptor, and the chain naming them at the mount site.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_descriptor_carrying_its_own_settings_mounts_on_the_stand_in() {
-    let app = RustStream::new(AppInfo::new("settings", "0.1.0")).with_broker(
-        KinesisTestBroker::new(),
-        |b| {
+async fn a_descriptor_carrying_its_own_settings_mounts_in_process() {
+    let app =
+        RustStream::new(AppInfo::new("settings", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
             b.include(priced);
             // The framework's own step comes first and this crate's chain after it, which is the
             // order a mount site writes them in.
@@ -547,11 +548,10 @@ async fn a_descriptor_carrying_its_own_settings_mounts_on_the_stand_in() {
                     .poll_interval(Duration::from_millis(250))
                     .create_if_missing(2),
             );
-        },
-    );
+        });
     let tb = TestApp::start(app).await.expect("the harness starts");
 
-    let broker = tb.broker::<KinesisTestBroker>();
+    let broker = tb.broker::<KinesisBroker>();
     for stream in ["priced", "chained"] {
         broker
             .message(&Job { id: 1 })
@@ -575,8 +575,7 @@ async fn a_descriptor_carrying_its_own_settings_mounts_on_the_stand_in() {
 /// a handler can observe here is the start the descriptor defaults to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_mount_without_a_start_position_opens_at_the_tip() {
-    let broker = KinesisTestBroker::new();
-    seed(&broker, "tip", [1, 2]).await;
+    let broker = seeded("tip", [1, 2]).await;
 
     let app = RustStream::new(AppInfo::new("tip", "0.1.0")).with_broker(broker, |b| {
         b.include(from_the_tip);
@@ -584,7 +583,7 @@ async fn a_mount_without_a_start_position_opens_at_the_tip() {
     let tb = TestApp::start(app).await.expect("the harness starts");
     tb.settle().await.expect("there is nothing to replay");
 
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .message(&Job { id: 3 })
         .to("tip")
         .publish()
@@ -592,7 +591,7 @@ async fn a_mount_without_a_start_position_opens_at_the_tip() {
         .expect("the publish succeeds");
 
     assert_eq!(
-        tb.broker::<KinesisTestBroker>()
+        tb.broker::<KinesisBroker>()
             .subscriber("tip")
             .received::<Job>(),
         vec![Job { id: 3 }],
@@ -606,8 +605,7 @@ async fn a_mount_without_a_start_position_opens_at_the_tip() {
 /// that instant, and the epoch is before every record the log retains.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_timestamp_position_opens_the_subscription_over_the_retained_log() {
-    let broker = KinesisTestBroker::new();
-    seed(&broker, "since", [1, 2]).await;
+    let broker = seeded("since", [1, 2]).await;
 
     let app = RustStream::new(AppInfo::new("since", "0.1.0")).with_broker(broker, |b| {
         b.include(since.start_at(KinesisPosition::timestamp(0)));
@@ -616,7 +614,7 @@ async fn a_timestamp_position_opens_the_subscription_over_the_retained_log() {
     tb.settle().await.expect("the replay settles");
 
     assert_eq!(
-        tb.broker::<KinesisTestBroker>()
+        tb.broker::<KinesisBroker>()
             .subscriber("since")
             .received::<Job>(),
         vec![Job { id: 1 }, Job { id: 2 }],
@@ -626,16 +624,14 @@ async fn a_timestamp_position_opens_the_subscription_over_the_retained_log() {
     tb.shutdown().await.expect("the harness shuts down");
 }
 
-/// A descriptor the service would reject is rejected here too, at the same point: the mount
+/// A descriptor the service would reject is rejected in process too, at the same point: the mount
 /// fails when the subscription opens, rather than mounting something that can never deliver.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_invalid_descriptor_fails_the_mount_on_the_stand_in() {
-    let app = RustStream::new(AppInfo::new("unnamed", "0.1.0")).with_broker(
-        KinesisTestBroker::new(),
-        |b| {
+async fn an_invalid_descriptor_fails_the_mount_in_process() {
+    let app =
+        RustStream::new(AppInfo::new("unnamed", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
             b.include(unnamed);
-        },
-    );
+        });
 
     let Err(err) = TestApp::start(app).await else {
         panic!("a descriptor that names no stream must not mount");
@@ -645,15 +641,13 @@ async fn an_invalid_descriptor_fails_the_mount_on_the_stand_in() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_position_key_names_the_record_the_delivery_headers_name() {
-    let app = RustStream::new(AppInfo::new("audit", "0.1.0")).with_broker(
-        KinesisTestBroker::new(),
-        |b| {
+    let app =
+        RustStream::new(AppInfo::new("audit", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
             b.include(audit);
-        },
-    );
+        });
     let tb = TestApp::start(app).await.expect("the harness starts");
 
-    let broker = tb.broker::<KinesisTestBroker>();
+    let broker = tb.broker::<KinesisBroker>();
     for id in [1, 2, 3] {
         broker
             .message(&Job { id })
@@ -675,13 +669,12 @@ async fn the_position_key_names_the_record_the_delivery_headers_name() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_batch_repositions_the_subscription_through_the_batch_context() {
-    let broker = KinesisTestBroker::new();
-    seed(&broker, "batches", [1, 2, MARKER, 3, 4]).await;
+    let broker = seeded("batches", [1, 2, MARKER, 3, 4]).await;
 
     let app = RustStream::new(AppInfo::new("batches", "0.1.0")).with_broker(broker, |b| {
         // The batch size is the one parameter the framework carries down to the broker; against
-        // the service it becomes the `GetRecords` limit, and here the stand-in groups its
-        // retained log by it.
+        // the service it becomes the `GetRecords` limit, and in process the retained log is
+        // grouped by it.
         b.include(
             batches
                 .start_at(KinesisPosition::horizon())
@@ -691,14 +684,14 @@ async fn a_batch_repositions_the_subscription_through_the_batch_context() {
     let tb = TestApp::start(app).await.expect("the harness starts");
     tb.settle().await.expect("the replay settles");
 
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .message(&Job { id: 5 })
         .to("batches")
         .publish()
         .await
         .expect("the publish succeeds");
 
-    let handler = tb.broker::<KinesisTestBroker>();
+    let handler = tb.broker::<KinesisBroker>();
     assert_eq!(
         handler.subscriber("batches").received::<Job>(),
         vec![
@@ -725,8 +718,7 @@ async fn a_batch_repositions_the_subscription_through_the_batch_context() {
 /// those deliveries, and the harness would wait for a quiescence that cannot arrive.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reposition_replaced_before_it_is_applied_leaves_nothing_in_flight() {
-    let broker = KinesisTestBroker::new();
-    seed(&broker, "lanes", [1, 2, 3, 4, 5, 6]).await;
+    let broker = seeded("lanes", [1, 2, 3, 4, 5, 6]).await;
 
     let app = RustStream::new(AppInfo::new("lanes", "0.1.0"))
         .on_startup(async move |()| {
@@ -754,7 +746,7 @@ async fn a_reposition_replaced_before_it_is_applied_leaves_nothing_in_flight() {
         .expect("the replay settles");
 
     // The rewinding pair, then the whole retained log once the surviving reposition is applied.
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .subscriber("lanes")
         .assert_called(8)
         .settled(HandlerOutcome::ack());
@@ -772,21 +764,19 @@ async fn a_reposition_replaced_before_it_is_applied_leaves_nothing_in_flight() {
 /// only there to replace it.
 #[tokio::test(start_paused = true)]
 async fn a_deferred_retry_comes_back_through_the_address_the_descriptor_reports() {
-    let app = RustStream::new(AppInfo::new("deferred", "0.1.0")).with_broker(
-        KinesisTestBroker::new(),
-        |b| {
+    let app =
+        RustStream::new(AppInfo::new("deferred", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
             b.include(deferring);
-        },
-    );
+        });
     let tb = TestApp::start(app).await.expect("the harness starts");
 
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .message(&Job { id: 1 })
         .to("deferred")
         .publish()
         .await
         .expect("the publish succeeds");
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .subscriber("deferred")
         .assert_called_once()
         .settled(HandlerOutcome::retry_after(RETRY_DELAY));
@@ -795,7 +785,7 @@ async fn a_deferred_retry_comes_back_through_the_address_the_descriptor_reports(
     tb.advance(RETRY_DELAY.saturating_sub(Duration::from_millis(1)))
         .await
         .expect("the reaction settles");
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .subscriber("deferred")
         .assert_called_once();
 
@@ -803,7 +793,7 @@ async fn a_deferred_retry_comes_back_through_the_address_the_descriptor_reports(
         .await
         .expect("the reaction settles");
     assert_eq!(
-        tb.broker::<KinesisTestBroker>()
+        tb.broker::<KinesisBroker>()
             .subscriber("deferred")
             .received::<Job>(),
         vec![Job { id: 1 }, Job { id: 1 }],
@@ -819,17 +809,15 @@ async fn a_deferred_retry_comes_back_through_the_address_the_descriptor_reports(
 /// under the header count.
 #[tokio::test(start_paused = true)]
 async fn a_capped_registration_carries_a_spent_record_to_the_dead_letter_stream() {
-    let app = RustStream::new(AppInfo::new("capped", "0.1.0")).with_broker(
-        KinesisTestBroker::new(),
-        |b| {
+    let app =
+        RustStream::new(AppInfo::new("capped", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
             b.include(stubborn)
                 .max_attempts(nonzero!(3))
                 .dead_letter("capped.dead");
-        },
-    );
+        });
     let tb = TestApp::start(app).await.expect("the harness starts");
 
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .message(&Job { id: 1 })
         .to("capped")
         .publish()
@@ -841,10 +829,10 @@ async fn a_capped_registration_carries_a_spent_record_to_the_dead_letter_stream(
     tb.advance(RETRY_DELAY).await.expect("the reaction settles");
     tb.advance(RETRY_DELAY).await.expect("the reaction settles");
 
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .subscriber("capped")
         .assert_called(3);
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .published::<Job>("capped.dead")
         .assert_called_once()
         .with(&Job { id: 1 });
@@ -859,7 +847,7 @@ async fn a_capped_registration_carries_a_spent_record_to_the_dead_letter_stream(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_immediate_retry_under_a_cap_travels_as_a_counted_copy() {
     let app = RustStream::new(AppInfo::new("insistent", "0.1.0")).with_broker(
-        KinesisTestBroker::new(),
+        KinesisBroker::new(),
         |b| {
             b.include(insistent)
                 .max_attempts(nonzero!(2))
@@ -868,7 +856,7 @@ async fn an_immediate_retry_under_a_cap_travels_as_a_counted_copy() {
     );
     let tb = TestApp::start(app).await.expect("the harness starts");
 
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .message(&Job { id: 1 })
         .to("insistent")
         .publish()
@@ -879,16 +867,16 @@ async fn an_immediate_retry_under_a_cap_travels_as_a_counted_copy() {
         .expect("the reaction reaches quiescence")
         .expect("the copies settle");
 
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .subscriber("insistent")
         .assert_called(2);
     // The copy the requeue became carries the count, which is the only reason the second
     // delivery is the last one.
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .published::<Job>("insistent")
         .assert_called(2)
         .with_header(RETRY_COUNT_HEADER, "1");
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .published::<Job>("insistent.dead")
         .assert_called_once()
         .with(&Job { id: 1 });
@@ -925,23 +913,21 @@ impl<Context, Options> PublishTransform<ForReply<Context>, Options> for Deferred
 /// does.
 #[tokio::test(start_paused = true)]
 async fn a_transform_on_the_retry_position_stamps_the_deferred_copy() {
-    let app = RustStream::new(AppInfo::new("stamped", "0.1.0")).with_broker(
-        KinesisTestBroker::new(),
-        |b| {
+    let app =
+        RustStream::new(AppInfo::new("stamped", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
             b.include(deferring)
                 .out_retry(Publish::default())
                 .transform(DeferredStamp);
-        },
-    );
+        });
     let tb = TestApp::start(app).await.expect("the harness starts");
 
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .message(&Job { id: 1 })
         .to("deferred")
         .publish()
         .await
         .expect("the publish succeeds");
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .subscriber("deferred")
         .assert_called_once()
         .settled(HandlerOutcome::retry_after(RETRY_DELAY));
@@ -949,7 +935,7 @@ async fn a_transform_on_the_retry_position_stamps_the_deferred_copy() {
     tb.advance(RETRY_DELAY).await.expect("the reaction settles");
 
     // The record the test published carries no stamp, the copy the retry position sent does.
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .published::<Job>("deferred")
         .assert_called(2)
         .with(&Job { id: 1 })
@@ -984,7 +970,7 @@ impl<K: ContextKind> PublishTransform<K, KinesisPublishOptions> for KeyByTenant 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_transform_names_the_partition_key_a_reply_has_no_call_site_for() {
     let app = RustStream::new(AppInfo::new("keyed-reply", "0.1.0")).with_broker(
-        KinesisTestBroker::new(),
+        KinesisBroker::new(),
         |b| {
             b.include(confirm)
                 .out_reply(Publish::default())
@@ -993,14 +979,14 @@ async fn a_transform_names_the_partition_key_a_reply_has_no_call_site_for() {
     );
     let tb = TestApp::start(app).await.expect("the harness starts");
 
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .message(&Job { id: 1 })
         .to("orders")
         .publish()
         .await
         .expect("the publish succeeds");
 
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .published::<Job>("receipts")
         .assert_called_once()
         .with_options(&KinesisPublishOptions {
@@ -1015,16 +1001,14 @@ async fn a_transform_names_the_partition_key_a_reply_has_no_call_site_for() {
 /// slot the publish left through, and arriving as the key the consumer is delivered under.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_step_on_the_publish_names_the_records_partition_key() {
-    let app = RustStream::new(AppInfo::new("keyed", "0.1.0")).with_broker(
-        KinesisTestBroker::new(),
-        |b| {
+    let app =
+        RustStream::new(AppInfo::new("keyed", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
             b.include(keyed).out(Journal, Publish::default()).build();
             b.include(keyed_reader);
-        },
-    );
+        });
     let tb = TestApp::start(app).await.expect("the harness starts");
 
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .message(&Job { id: 1 })
         .to("keyed.in")
         .publish()
@@ -1036,7 +1020,7 @@ async fn a_step_on_the_publish_names_the_records_partition_key() {
         .with_options(&KinesisPublishOptions {
             partition_key: Some(TENANT.to_owned()),
         });
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .subscriber("keyed.out")
         .assert_called_once()
         .settled(HandlerOutcome::ack());
@@ -1048,15 +1032,13 @@ async fn a_step_on_the_publish_names_the_records_partition_key() {
 /// still leaves under a key, because Kinesis has no record without one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_publish_with_no_step_keeps_the_policy_defaults_and_still_gets_a_key() {
-    let app = RustStream::new(AppInfo::new("plain", "0.1.0")).with_broker(
-        KinesisTestBroker::new(),
-        |b| {
+    let app =
+        RustStream::new(AppInfo::new("plain", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
             b.include(plain).out(Journal, Publish::default()).build();
-        },
-    );
+        });
     let tb = TestApp::start(app).await.expect("the harness starts");
 
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .message(&Job { id: 1 })
         .to("plain.in")
         .publish()
@@ -1067,9 +1049,7 @@ async fn a_publish_with_no_step_keeps_the_policy_defaults_and_still_gets_a_key()
         .assert_called_once()
         .assert_options_default();
 
-    let published = tb
-        .broker::<KinesisTestBroker>()
-        .published::<Job>("plain.out");
+    let published = tb.broker::<KinesisBroker>().published::<Job>("plain.out");
     let key = published.messages()[0]
         .headers()
         .get_str(PARTITION_KEY_HEADER)
@@ -1086,16 +1066,14 @@ async fn a_publish_with_no_step_keeps_the_policy_defaults_and_still_gets_a_key()
 /// particular broker keeps working here.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_key_written_as_a_header_still_reaches_the_consumer() {
-    let app = RustStream::new(AppInfo::new("by-hand", "0.1.0")).with_broker(
-        KinesisTestBroker::new(),
-        |b| {
+    let app =
+        RustStream::new(AppInfo::new("by-hand", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
             b.include(by_hand).out(Journal, Publish::default()).build();
             b.include(keyed_reader);
-        },
-    );
+        });
     let tb = TestApp::start(app).await.expect("the harness starts");
 
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .message(&Job { id: 1 })
         .to("hand.in")
         .publish()
@@ -1105,7 +1083,7 @@ async fn a_key_written_as_a_header_still_reaches_the_consumer() {
     tb.out::<Journal>()
         .assert_called_once()
         .assert_options_default();
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .subscriber("keyed.out")
         .assert_called_once()
         .settled(HandlerOutcome::ack());
@@ -1119,7 +1097,7 @@ async fn a_key_written_as_a_header_still_reaches_the_consumer() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_keyed_publish_keeps_the_codec_the_mount_site_named() {
     let app = RustStream::new(AppInfo::new("keyed-cbor", "0.1.0")).with_broker(
-        KinesisTestBroker::new(),
+        KinesisBroker::new(),
         |b| {
             b.include(keyed)
                 .out(Journal, Publish::default())
@@ -1129,7 +1107,7 @@ async fn a_keyed_publish_keeps_the_codec_the_mount_site_named() {
     );
     let tb = TestApp::start(app).await.expect("the harness starts");
 
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .message(&Job { id: 1 })
         .to("keyed.in")
         .publish()
@@ -1143,11 +1121,104 @@ async fn a_keyed_publish_keeps_the_codec_the_mount_site_named() {
         })
         .decoded_as::<Job>()
         .with_codec(&CborCodec, &Job { id: 1 });
-    tb.broker::<KinesisTestBroker>()
+    tb.broker::<KinesisBroker>()
         .published::<Job>("keyed.out")
         .assert_called_once()
         .with_codec(&CborCodec, &Job { id: 1 })
         .with_header(PARTITION_KEY_HEADER, TENANT);
 
     tb.shutdown().await.expect("the harness shuts down");
+}
+
+// --- One test body, in process and against a live stack. ---
+
+/// Long enough to tell a deferred copy from the first delivery, short enough for a live run.
+const DEFERRED: Duration = Duration::from_secs(1);
+
+/// The stream both modes read. The subscription creates it on the live stand.
+const DUAL: &str = "orders.dual";
+
+/// Defers its first delivery and acknowledges the copy that comes back, which carries the
+/// framework's retry count.
+#[subscriber(
+    KinesisStream::new(DUAL)
+        .create_if_missing(1)
+        .poll_interval(Duration::from_millis(200))
+)]
+async fn defer_once(_job: &Job, ctx: &mut Context<'_, KinesisContext>) -> HandlerOutcome {
+    if ctx.headers().get_str(RETRY_COUNT_HEADER).is_none() {
+        return HandlerOutcome::retry_after(DEFERRED);
+    }
+    HandlerOutcome::ack()
+}
+
+/// The app `main` runs, on the broker it is handed: the production builder, unchanged in either
+/// mode.
+///
+/// The subscription opens at the instant the app is built. A live stand keeps what an earlier run
+/// wrote to the stream, and the instant leaves it behind; unlike the tip, it also keeps the
+/// records written while the reader is still starting.
+fn dual_app(broker: KinesisBroker) -> RustStream {
+    let opened = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the clock is past the epoch");
+    let opened = u64::try_from(opened.as_millis()).expect("the instant fits in milliseconds");
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+        b.include(defer_once.start_at(KinesisPosition::timestamp(opened)));
+    })
+}
+
+/// The body both modes run: the first delivery asks to come back later, the framework publishes
+/// the copy to the stream once the delay is over, and the copy is handled and acknowledged.
+async fn a_deferred_record_comes_back(tb: TestApp<()>) {
+    tb.broker::<KinesisBroker>()
+        .message(&Job { id: 42 })
+        .to(DUAL)
+        .publish()
+        .await
+        .expect("publish drives the first delivery to its settlement");
+    tb.broker::<KinesisBroker>()
+        .subscriber(DUAL)
+        .assert_called_once()
+        .settled(HandlerOutcome::retry_after(DEFERRED));
+
+    tb.advance(DEFERRED)
+        .await
+        .expect("the deferred copy is published and handled");
+
+    tb.broker::<KinesisBroker>()
+        .subscriber(DUAL)
+        .assert_called(2)
+        .with(&Job { id: 42 })
+        .settled(HandlerOutcome::ack());
+    // The test's record and the copy the framework published.
+    tb.broker::<KinesisBroker>()
+        .published::<Job>(DUAL)
+        .assert_called(2)
+        .with(&Job { id: 42 });
+
+    tb.shutdown().await.expect("the harness shuts down");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_deferred_record_comes_back_in_process() {
+    let tb = TestApp::start(dual_app(KinesisBroker::new()))
+        .await
+        .expect("the harness starts");
+    a_deferred_record_comes_back(tb).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deferred_record_comes_back_live() {
+    let Some(endpoint) = live::url("KINESIS_TEST_ENDPOINT") else {
+        return;
+    };
+    let broker = KinesisBroker::new()
+        .endpoint(endpoint)
+        .test_credentials()
+        .region("us-east-1");
+    let tb = TestApp::start_live(dual_app(broker))
+        .await
+        .expect("the harness starts against the stand");
+    a_deferred_record_comes_back(tb).await;
 }

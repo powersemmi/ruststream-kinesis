@@ -1,5 +1,12 @@
 //! [`KinesisPublisher`], its [`KinesisPublish`] policy, and the crate's publish steps.
 
+// Without the `testing` feature a connection link has one variant, so a `match` on it has a
+// single arm; the match stays so that the in-process arm has its place when the feature is on.
+#![cfg_attr(
+    not(feature = "testing"),
+    allow(clippy::infallible_destructuring_match)
+)]
+
 use std::future::{Future, ready};
 use std::sync::Arc;
 
@@ -14,11 +21,9 @@ use serde::Serialize;
 #[cfg(feature = "asyncapi")]
 use crate::stream::BINDING_KEY;
 
-use crate::broker::{ConnectedKinesisBroker, Core, CoreCell};
+use crate::broker::{ConnectedKinesisBroker, CoreCell, Link};
 use crate::error::{KinesisError, sdk_err};
 use crate::message::{PARTITION_KEY_HEADER, encode_envelope};
-#[cfg(feature = "testing")]
-use crate::testing::{ConnectedKinesisTestBroker, KinesisTestPublisher};
 
 /// The per-message publish settings of this broker: what one call varies, against what the mount
 /// site fixed on the policy.
@@ -86,10 +91,9 @@ impl KinesisPublisher {
         }
     }
 
-    fn core(&self) -> Result<&Core, KinesisError> {
-        let core = self.cell.get().ok_or(KinesisError::NotConnected)?;
-        core.ensure_open()?;
-        Ok(core)
+    /// What this publisher speaks over, once `connect` (or the harness) has filled the cell.
+    fn link(&self) -> Result<&Link, KinesisError> {
+        self.cell.get().ok_or(KinesisError::NotConnected)
     }
 }
 
@@ -100,8 +104,8 @@ impl KinesisPublisher {
 /// named on the policy - the only place a reply and an injected slot can be given one - and last a
 /// process-unique key, because a record cannot go out without one.
 ///
-/// One function for both transports: the in-process stand-in answers the key the service would,
-/// never one of its own.
+/// One function for both transports: the in-process mode answers the key the service would, never
+/// one of its own.
 pub(crate) fn resolve_partition_key(
     options: Option<&KinesisPublishOptions>,
     headers: &HeaderMap,
@@ -141,7 +145,14 @@ impl Publisher for KinesisPublisher {
         msg: OutgoingFor<'_, Take>,
         options: Option<&Self::Options>,
     ) -> Result<(), Self::Error> {
-        let core = self.core()?;
+        let core = match self.link()? {
+            Link::Aws(core) => core,
+            #[cfg(feature = "testing")]
+            Link::InProcess(bus) => {
+                return bus.put(msg, options, self.partition_key.as_deref());
+            }
+        };
+        core.ensure_open()?;
         let partition_key =
             resolve_partition_key(options, msg.headers(), self.partition_key.as_deref());
         // The resolved key rides the record's own field, which is this transport's wire for it:
@@ -299,34 +310,6 @@ impl PublishPolicy<ConnectedKinesisBroker> for KinesisPublish {
     }
 }
 
-/// The same policy pairs with the in-process stand-in, so a routes file mounts unchanged in a
-/// unit test: `.out_reply(Publish::default())` names one type whichever broker it runs against,
-/// and the key it carries reaches the record here too - the stand-in carries the partition key in
-/// the header its deliveries read.
-#[cfg(feature = "testing")]
-impl PublishPolicy<ConnectedKinesisTestBroker> for KinesisPublish {
-    type Live = KinesisTestPublisher;
-
-    fn pair(
-        self,
-        connected: &ConnectedKinesisTestBroker,
-    ) -> impl Future<Output = Result<Self::Live, PairError>> {
-        ready(Ok(connected.publisher_keyed(self.key())))
-    }
-
-    /// The same bindings the policy writes against the service, so a document built in a unit
-    /// test is the document the service publishes.
-    #[cfg(feature = "asyncapi")]
-    fn channel_bindings(&self, channel: &str) -> Bindings {
-        channel_binding(channel)
-    }
-
-    #[cfg(feature = "asyncapi")]
-    fn message_bindings(&self, _channel: &str) -> Bindings {
-        self.message_binding()
-    }
-}
-
 /// The Kinesis publish settings, chained on a mount site after the position that named the
 /// policy: `.out_reply(policy)`, `.out_retry(policy)` or `.out(marker, policy)`.
 ///
@@ -399,17 +382,15 @@ where
 /// # Examples
 ///
 /// ```
-/// # #[cfg(feature = "testing")]
 /// # async fn demo() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 /// use ruststream_kinesis::prelude::*;
-/// use ruststream_kinesis::testing::KinesisTestBroker;
 ///
 /// // The record is already encoded, so it declares itself serialized: no codec runs on it,
 /// // and the name still puts it in the generated document.
 /// #[derive(Outgoing, Serialized)]
 /// struct Job(Vec<u8>);
 ///
-/// KinesisTestBroker::new()
+/// KinesisBroker::new()
 ///     .publisher()
 ///     .message(&Job(br#"{"id":1}"#.to_vec()))
 ///     .to("jobs")
@@ -445,11 +426,11 @@ where
 #[cfg(all(test, feature = "testing"))]
 mod tests {
     use ruststream::runtime::PublishExt;
-    use ruststream::testing::TestableBroker;
-    use ruststream::{Broker, HeaderMap, Outgoing, OutgoingMessage, Serialized};
+    use ruststream::testing::{InProcess, TestableBroker};
+    use ruststream::{HeaderMap, Outgoing, OutgoingMessage, Serialized};
 
     use super::*;
-    use crate::testing::KinesisTestBroker;
+    use crate::KinesisBroker;
 
     /// Bytes the test already holds encoded: a serialized type publishes them as they are, so
     /// these checks stay about the headers rather than about a codec.
@@ -460,11 +441,11 @@ mod tests {
         Payload(b"payload".to_vec())
     }
 
-    async fn connected() -> ConnectedKinesisTestBroker {
-        KinesisTestBroker::new()
-            .connect()
+    async fn connected() -> ConnectedKinesisBroker {
+        KinesisBroker::new()
+            .connect_in_process()
             .await
-            .expect("the in-process broker connects")
+            .expect("the broker connects in process")
     }
 
     #[tokio::test]
@@ -582,7 +563,7 @@ mod tests {
 
     /// The mount site's key is a default, not an override: it applies to every record that names
     /// none, and steps aside for one that does. The policy is the production one, paired against
-    /// the stand-in - the same type a routes file names.
+    /// the broker connected in process - the same type a routes file names.
     #[tokio::test]
     async fn the_mount_sites_key_applies_until_a_publish_names_its_own() {
         let broker = connected().await;

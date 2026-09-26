@@ -20,8 +20,6 @@ use serde::Serialize;
 use crate::broker::ConnectedKinesisBroker;
 use crate::error::KinesisError;
 use crate::subscriber::KinesisSubscriber;
-#[cfg(feature = "testing")]
-use crate::testing::{ConnectedKinesisTestBroker, KinesisTestSubscriber};
 
 /// A subscription descriptor for one Kinesis stream.
 ///
@@ -271,52 +269,6 @@ impl RedeliveryAddressed<ConnectedKinesisBroker> for KinesisStream {
         _connected: &ConnectedKinesisBroker,
     ) -> impl Future<Output = Result<RedeliveryAddress, KinesisError>> + Send {
         // The stream name is the answer, so nothing is asked of the broker and nothing is awaited.
-        ready(Ok(RedeliveryAddress::new(self.stream().to_owned())))
-    }
-}
-
-/// The same descriptor opens a subscription on the in-process stand-in, so a service keeps its
-/// own mount - `#[subscriber(KinesisStream::new("orders"))]` - in its unit tests.
-///
-/// The setting that prices a real read (`poll_interval`) has nothing to bill in process, and
-/// `create_if_missing` has no stream to create: a name is a log as soon as something is
-/// published to it. The descriptor is still validated, so a mount the service would reject
-/// fails here too.
-#[cfg(feature = "testing")]
-impl SubscriptionSource<ConnectedKinesisTestBroker> for KinesisStream {
-    type Subscriber = KinesisTestSubscriber;
-    /// The same copy path the descriptor declares against the service, so a registration that
-    /// caps its retries or names a dead-letter stream is driven in a unit test exactly as it
-    /// runs in production.
-    type Copies = AddressedCopies;
-
-    fn name(&self) -> &str {
-        self.stream()
-    }
-
-    fn subscribe(
-        self,
-        connected: &ConnectedKinesisTestBroker,
-    ) -> impl Future<Output = Result<Self::Subscriber, KinesisError>> + Send {
-        ready(self.validate().map(|()| connected.open(self.stream())))
-    }
-
-    /// The same binding the descriptor writes against the service, so a document built in a
-    /// unit test is the document the service publishes.
-    #[cfg(feature = "asyncapi")]
-    fn channel_bindings(&self) -> Bindings {
-        self.binding()
-    }
-}
-
-#[cfg(feature = "testing")]
-impl RedeliveryAddressed<ConnectedKinesisTestBroker> for KinesisStream {
-    /// The same answer the descriptor gives against the service, so a copy the framework
-    /// publishes in a unit test lands where it lands in production.
-    fn redelivery_address(
-        &self,
-        _connected: &ConnectedKinesisTestBroker,
-    ) -> impl Future<Output = Result<RedeliveryAddress, KinesisError>> + Send {
         ready(Ok(RedeliveryAddress::new(self.stream().to_owned())))
     }
 }

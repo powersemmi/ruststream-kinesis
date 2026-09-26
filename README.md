@@ -36,7 +36,7 @@
 - **Deferred retry with a stated destination, capped at the mount site.** Kinesis holds no redelivery timer, so `HandlerOutcome::retry_after(delay)` is served by the framework re-publishing the record after the delay. The subscription reports where that copy goes - a stream is both what it reads and what a publish reaches - so the registration owes no destination and needs no publisher named: `.out_retry(policy)` replaces the one it already has, and the position is an ordinary `Out` slot taking `.codec(..)`, `.transform(..)` and this crate's `.partition_key(..)`. How many deliveries a record gets, and the stream a spent one leaves for, are declared with `b.include(reconcile).max_attempts(nonzero!(4)).dead_letter("orders.unsettled")`, the same two steps as on every other broker. A delivered record does not say how many times it has been read, so the count is the framework's header, and that is why `HandlerOutcome::retry()` under a declaration is a published copy rather than a held shard. The copy lands at the tip rather than in place, so an undeclared `retry()` remains the way to hold a shard in order.
 - **Server coordinate, not configuration.** `DescribeServer` reports the host and port clients dial: the scheme and any credentials come off a configured endpoint URL, and without one the regional Kinesis host is named. The generated AsyncAPI document is published and shared, so nothing secret reaches it.
 - **This broker's own vocabulary in the document** (feature `asyncapi`). A subscription describes its channel with the stream it reads, the pause between reads and the shards it provisions; a publishing position describes its channel with the stream the records land in, and a policy that fixed a partition key describes the records leaving through it. The specification has no Kinesis binding and its protocol keys are a closed list, so all three objects travel under `x-ruststream-kinesis`. Only what the descriptor and the policy hold is reported: the document is built before anything connects, so an existing stream's shard count and its ARN are not in it.
-- **In-process test broker** (feature `testing`). `KinesisTestBroker` routes over a retained log with no server, so `start_at(..)` and a handler's seek handle really re-read it and a service that repositions is unit-testable on the `TestApp` harness. The descriptor and the publish policy a service ships mount on it unchanged - there is no test-only spelling of either - and it implements `ruststream::testing::TestableBroker` and answers every contract suite the framework ships for this broker: routing, the lifecycle ladder, `Seekable` and batches, all in process as well as against LocalStack.
+- **Tests on the production app** (feature `testing`). The framework's `TestApp` runs the app `main` runs with `KinesisBroker` connected in process - no server, no docker - and the same test runs against LocalStack with `TestApp::start_live`. The in-process transport keeps a retained log per stream, so `start_at(..)` and a handler's seek handle really re-read it; it writes and reads a record exactly as the service's client does and refuses what the service refuses. The framework's contract suites run over it as well as against LocalStack: routing, the lifecycle ladder, `Seekable` and batches.
 
 Out of scope for this release: enhanced fan-out (a different resume machine on an HTTP/2 push stream, with no local emulator support) and KPL-aggregated records (rejected with an error rather than delivered as opaque protobuf). Kinesis has neither transactions nor request/reply, so this crate ships no policy for either: `Publish` is the whole publish vocabulary, and `partition_key` its whole per-message vocabulary, because a record is a partition key and a payload. A handler body that names the key imports this crate's prelude for the step and bounds its slot as `Out<impl Publisher<Options = KinesisPublishOptions>, _>`; a body that does not keeps the framework's prelude and a plain `Out<impl Publisher, _>`.
 
@@ -49,7 +49,7 @@ ruststream-kinesis = "0.7"
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
-# Enables ruststream/testing along with it, so `TestApp` comes with the in-process broker.
+# Enables ruststream/testing along with it: `TestApp` connects `KinesisBroker` in process.
 ruststream-kinesis = { version = "0.7", features = ["testing"] }
 ```
 
@@ -63,12 +63,14 @@ One glob, and it belongs to the file that mounts: `ruststream_kinesis::prelude` 
 use ruststream_kinesis::prelude::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
+// `Outgoing`, `PartialEq` and `Serialize` on the order, and `Deserialize` and `PartialEq` on the
+// receipt, are here for the test below, which publishes an order and reads the receipt back.
+#[derive(Debug, Deserialize, Outgoing, PartialEq, Serialize)]
 struct Order {
     id: u64,
 }
 
-#[derive(Debug, Outgoing, Serialize)]
+#[derive(Debug, Deserialize, Outgoing, PartialEq, Serialize)]
 struct Receipt {
     order: u64,
 }
@@ -126,36 +128,35 @@ A table that served more than one stream before the upgrade holds, in each bare 
 
 ## Test it
 
-The `testing` feature runs your real handlers against an in-process Kinesis stand-in on the framework's `TestApp` harness - no server, no docker. It keeps a retained log per stream, so `start_at(..)` and a handler's `SeekHandle` really re-read it, and deliveries carry the same context as a record from the service: a service that seeks mounts unchanged.
-
-The mount is the one you ship: `KinesisStream` opens a subscription on the stand-in - the settings it carries included - and `Publish` pairs with it, so a routes file changes its broker and nothing else.
+The app `main` runs, handed to the harness unchanged: `TestApp::start` connects `KinesisBroker` in process, with no server, and the test addresses it by that type.
 
 ```rust
 use ruststream::testing::TestApp;
-use ruststream_kinesis::prelude::*;
-use ruststream_kinesis::testing::KinesisTestBroker;
 
-let app = RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(KinesisTestBroker::new(), |b| {
-    b.include(work);
-    b.include(confirm).out_reply(Publish::default().partition_key("tenant-acme"));
-});
-let tb = TestApp::start(app).await?;
+let tb = TestApp::start(app()).await?;
 
-tb.broker::<KinesisTestBroker>()
-    .message(&Job { id: 1 })
-    .to("jobs")
+// `publish` returns once the handlers it woke have settled.
+tb.broker::<KinesisBroker>()
+    .message(&Order { id: 42 })
+    .to("orders")
     .publish()
     .await?;
 
-tb.broker::<KinesisTestBroker>()
-    .subscriber("jobs")
+tb.broker::<KinesisBroker>()
+    .subscriber("orders")
     .assert_called_once()
+    .with(&Order { id: 42 })
     .settled(HandlerOutcome::ack());
+
+tb.broker::<KinesisBroker>()
+    .published::<Receipt>("receipts")
+    .assert_called_once()
+    .with(&Receipt { order: 42 });
 ```
 
 Full compiling examples, including a handler that repositions its own subscription mid-run: `crates/ruststream-kinesis/tests/harness_kinesis.rs`.
 
-The framework's contract suites run against the stand-in, not only against the server: routing, the lifecycle ladder (down to a publisher created before `shutdown` erroring afterwards), `Seekable`, and batches. The emulation therefore cannot decay into a handle that accepts every seek, a batch longer than the size a mount site named, or a transport that keeps accepting records after it closed. The same suites run live, which is what proves the contract is the product's: `just test-brokers` starts LocalStack and runs the wire and lease checks plus the framework's lifecycle, `Seekable` and batch suites against it. What only a server owns - shard leases, checkpoint durability, replay of unacknowledged records, resharding - stays in that live suite.
+The in-process mode has no settings of its own: the descriptors and the publish policy are the production ones, a record is written and read back exactly as the service's client writes and reads it, and a stream name, a partition key or a record size the service refuses is refused. A record left unhandled is read again at once, together with every record after it. `TestApp::start_live(app())` runs the same test against LocalStack, which is where a stream's shards, leases, checkpoints and resharding are exercised (`just test-brokers`).
 
 ## Layout
 
@@ -174,7 +175,7 @@ ruststream-kinesis/
 
 ```bash
 just check          # fmt, clippy, feature checks
-just test           # handler-stub tests, no server
+just test           # the in-process tests, no server
 just test-brokers   # live integration + conformance against LocalStack
 just ci             # check, test, codespell, cargo-deny, zizmor
 ```
