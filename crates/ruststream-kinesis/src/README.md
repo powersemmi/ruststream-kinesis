@@ -122,11 +122,17 @@ and steals a lease that has expired, [`renew`](LeaseStore::renew) heartbeats it,
 renewal means another owner has taken the shard, and that reader stops at once. A fully consumed
 shard is checkpointed as [`SHARD_END`], which is the signal its children may start.
 
+Every call names the shard by a [`LeaseKey`]: the stream, as its [`KinesisStream`] names it, and the
+shard id. Shard ids repeat across streams (every stream's first shard is `shardId-000000000000`), so
+a lease, a checkpoint and a finished mark belong to one stream's shard, and one store serves every
+stream a broker consumes.
+
 The default store is [`MemoryLeaseStore`]: in process, correct for a single service instance, and
 empty again after a restart. The `dynamodb-lease` feature adds [`DynamoLeaseStore`], and several
 instances of a service then share the shards. The table needs a string partition key named
-`lease_key` and nothing else; on-demand billing is enough. Every write is conditional and bumps a
-fencing counter, so two instances cannot both hold one shard.
+`lease_key` and nothing else; on-demand billing is enough. A row holds one stream's shard under the
+key `stream:shard`. Every write is conditional and bumps a fencing counter, so two instances cannot
+both hold one shard.
 
 ```
 # #[cfg(feature = "dynamodb-lease")]
@@ -170,6 +176,40 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
 # }
 # fn main() {}
 ```
+
+### Upgrading a lease table
+
+Versions of this crate before the per-stream key wrote a row per shard id alone, and a table they
+wrote still holds those bare rows. A bare row names no stream, so the store reads it only for the
+stream named by [`DynamoLeaseStore::legacy_stream`]:
+
+```
+# #[cfg(feature = "dynamodb-lease")]
+# mod demo {
+use aws_config::SdkConfig;
+use ruststream_kinesis::DynamoLeaseStore;
+
+// The table was written for the `orders` stream only.
+pub fn store(config: &SdkConfig) -> DynamoLeaseStore {
+    DynamoLeaseStore::new(config, "orders-leases").legacy_stream("orders")
+}
+# }
+# fn main() {}
+```
+
+- A shard of the named stream with no checkpoint under its own key resumes from its bare row, and
+  the first read copies that checkpoint under `stream:shard`. Other streams ignore the bare rows.
+- With no stream named, a shard whose bare row holds a checkpoint is refused with a lease error
+  naming the table, the shard and the stream, and it is not read until the operator names the
+  stream or deletes the row.
+- Once the upgraded service has started a subscription on every stream it consumes, each bare row
+  that held progress has its copy. The rows whose `lease_key` holds no `:` can then be deleted, and
+  `legacy_stream` dropped.
+- A table that served several streams before the upgrade holds, in each bare row, whichever stream
+  checkpointed last. No stream can resume from it: delete the bare rows and open each stream with
+  `start_at(..)` at the position it should read from.
+- The two versions lease different rows, so an instance of each can read the same shard at once.
+  Stop the old instances before starting the new ones, or accept the duplicates.
 
 ## Delayed redelivery and its cap
 

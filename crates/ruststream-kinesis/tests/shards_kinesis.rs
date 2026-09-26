@@ -24,7 +24,7 @@ use ruststream::{
 };
 use ruststream_kinesis::{
     ConnectedKinesisBroker, KinesisBroker, KinesisPosition, KinesisPublisher, KinesisStream,
-    LeaseStore, MemoryLeaseStore, PARTITION_KEY_HEADER, SHARD_END, SHARD_HEADER,
+    LeaseKey, LeaseStore, MemoryLeaseStore, PARTITION_KEY_HEADER, SHARD_END, SHARD_HEADER,
 };
 
 mod live;
@@ -385,7 +385,7 @@ async fn a_split_hands_the_stream_to_the_children_once_the_parent_is_consumed() 
     // The parent is finished for good: that checkpoint is the signal its children were allowed to
     // start, and it is what keeps a restarted service from reading the parent again.
     let state = leases
-        .read(&parent)
+        .read(&LeaseKey::new(stream_name.as_str(), parent.as_str()))
         .await
         .expect("the store answers the parent's state");
     assert_eq!(
@@ -559,7 +559,7 @@ async fn a_merge_gates_the_child_on_both_of_its_parents() {
 
     for parent in &ordered {
         let state = leases
-            .read(parent)
+            .read(&LeaseKey::new(stream_name.as_str(), parent.as_str()))
             .await
             .expect("the store answers the parent's state");
         assert_eq!(

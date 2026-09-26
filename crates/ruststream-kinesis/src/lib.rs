@@ -43,7 +43,7 @@ pub use context::{KinesisBatchContext, KinesisContext, Position, SeekHandle};
 #[cfg(feature = "dynamodb-lease")]
 pub use dynamo::DynamoLeaseStore;
 pub use error::KinesisError;
-pub use lease::{LeaseError, LeaseState, LeaseStore, MemoryLeaseStore, SHARD_END};
+pub use lease::{LeaseError, LeaseKey, LeaseState, LeaseStore, MemoryLeaseStore, SHARD_END};
 pub use message::{
     KinesisMessage, KinesisPosition, PARTITION_KEY_HEADER, SEQUENCE_HEADER, SHARD_HEADER,
 };

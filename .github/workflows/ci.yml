@@ -364,6 +364,7 @@ jobs:
           --test positions_kinesis
           --test shards_kinesis
           --test leases_kinesis
+          --test streams_kinesis
           -- --test-threads=1
 
       - name: Cleanup

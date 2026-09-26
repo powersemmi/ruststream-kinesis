@@ -24,7 +24,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::broker::Core;
 use crate::error::{KinesisError, sdk_err};
-use crate::lease::{LeaseStore, SHARD_END};
+use crate::lease::{LeaseError, LeaseKey, LeaseStore, SHARD_END};
 use crate::message::{KPL_MAGIC, KinesisMessage, KinesisPosition, Settlement};
 use crate::stream::KinesisStream;
 use crate::track::Watermark;
@@ -517,6 +517,8 @@ async fn coordinate(subscription: Arc<Subscription>) {
         ..
     } = subscription.as_ref();
     let stream = descriptor.stream();
+    // Leases are the stream's and the shard's together: shard ids repeat across streams.
+    let stream_key: Arc<str> = Arc::from(stream);
     let mut readers: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
     loop {
         readers.retain(|_, handle| !handle.is_finished());
@@ -530,23 +532,21 @@ async fn coordinate(subscription: Arc<Subscription>) {
                     if readers.contains_key(&id) {
                         continue;
                     }
-                    if !parents_done(bus, shard, &by_id, store.as_ref()).await {
+                    if !parents_done(bus, &stream_key, shard, &by_id, store.as_ref()).await {
                         continue;
                     }
-                    match store.read(&id).await {
+                    let key = LeaseKey::new(Arc::clone(&stream_key), id.as_str());
+                    match store.read(&key).await {
                         Ok(state) if state.checkpoint.as_deref() == Some(SHARD_END) => continue,
                         Ok(_) => {}
                         Err(err) => {
                             let _ = out
-                                .send(Stamped::unstamped(Err(KinesisError::Lease {
-                                    shard: id.clone(),
-                                    source: err,
-                                })))
+                                .send(Stamped::unstamped(Err(lease_error(&key, err))))
                                 .await;
                             continue;
                         }
                     }
-                    match store.acquire(&id, owner, LEASE_TTL).await {
+                    match store.acquire(&key, owner, LEASE_TTL).await {
                         Ok(true) => {
                             let (seek_tx, seek_rx) = mpsc::unbounded_channel();
                             let handle = ShardHandle {
@@ -554,12 +554,11 @@ async fn coordinate(subscription: Arc<Subscription>) {
                                 tx: seek_tx,
                             };
                             bus.register(id.clone(), handle.clone());
-                            let shard_id: Arc<str> = Arc::from(id.as_str());
                             readers.insert(
                                 id,
                                 tokio::spawn(read_shard(
                                     Arc::clone(&subscription),
-                                    shard_id,
+                                    Arc::new(key),
                                     handle.gate,
                                     seek_rx,
                                 )),
@@ -568,10 +567,7 @@ async fn coordinate(subscription: Arc<Subscription>) {
                         Ok(false) => {} // another instance owns it
                         Err(err) => {
                             let _ = out
-                                .send(Stamped::unstamped(Err(KinesisError::Lease {
-                                    shard: id.clone(),
-                                    source: err,
-                                })))
+                                .send(Stamped::unstamped(Err(lease_error(&key, err))))
                                 .await;
                         }
                     }
@@ -598,6 +594,7 @@ async fn coordinate(subscription: Arc<Subscription>) {
 /// at the tip (its history is being skipped by request).
 async fn parents_done(
     bus: &SeekState,
+    stream: &Arc<str>,
     shard: &Shard,
     by_id: &HashMap<&str, &Shard>,
     store: &dyn LeaseStore,
@@ -607,7 +604,7 @@ async fn parents_done(
         let Some(parent_shard) = by_id.get(parent) else {
             continue; // trimmed past retention
         };
-        let Ok(state) = store.read(parent).await else {
+        let Ok(state) = store.read(&LeaseKey::new(Arc::clone(stream), parent)).await else {
             return false;
         };
         match state.checkpoint.as_deref() {
@@ -660,21 +657,27 @@ enum Reopen {
     Recover,
 }
 
+/// The crate's error for a lease store failure on `key`, naming the stream and the shard.
+fn lease_error(key: &LeaseKey, source: LeaseError) -> KinesisError {
+    KinesisError::Lease {
+        stream: key.stream().to_owned(),
+        shard: key.shard().to_owned(),
+        source,
+    }
+}
+
 async fn initial_iterator(
     client: &aws_sdk_kinesis::Client,
-    stream: &str,
-    shard: &str,
+    key: &LeaseKey,
     bus: &SeekState,
     store: &dyn LeaseStore,
     why: Reopen,
 ) -> Result<Option<String>, KinesisError> {
+    let (stream, shard) = (key.stream(), key.shard());
     let checkpoint = store
-        .read(shard)
+        .read(key)
         .await
-        .map_err(|e| KinesisError::Lease {
-            shard: shard.to_owned(),
-            source: e,
-        })?
+        .map_err(|e| lease_error(key, e))?
         .checkpoint;
     if checkpoint.as_deref() == Some(SHARD_END) {
         return Ok(None);
@@ -746,7 +749,7 @@ async fn apply_shard_seek(
 #[allow(clippy::too_many_lines)]
 async fn read_shard(
     subscription: Arc<Subscription>,
-    shard: Arc<str>,
+    lease: Arc<LeaseKey>,
     gate: Arc<AtomicU64>,
     mut seek_rx: mpsc::UnboundedReceiver<ShardSeek>,
 ) {
@@ -769,9 +772,10 @@ async fn read_shard(
         bus,
         limit,
     } = subscription.as_ref();
+    let shard = lease.shard_shared();
     let _bus_guard = BusGuard {
         bus: Arc::clone(bus),
-        shard: Arc::clone(&shard),
+        shard: Arc::clone(shard),
     };
     // Minted once, before the first delivery: every record carries a clone so a handler can
     // reposition the subscription from its per-delivery context.
@@ -779,7 +783,7 @@ async fn read_shard(
     let stream = descriptor.stream();
     let mut tracker = Arc::new(Watermark::default());
     let mut iterator =
-        match initial_iterator(client, stream, &shard, bus, store.as_ref(), Reopen::Start).await {
+        match initial_iterator(client, &lease, bus, store.as_ref(), Reopen::Start).await {
             Ok(Some(iterator)) => iterator,
             Ok(None) => return, // already at SHARD_END
             Err(err) => {
@@ -792,17 +796,17 @@ async fn read_shard(
 
     loop {
         if out.is_closed() {
-            let _ = store.release(&shard, owner).await;
+            let _ = store.release(&lease, owner).await;
             return;
         }
         // A reposition replaces the iterator and resets the watermark; deliveries stamped
         // under the previous generation are discarded by their settlements and were already
         // filtered from checkpointing by the gate bump at enqueue.
         while let Ok(seek) = seek_rx.try_recv() {
-            apply_shard_seek(client, stream, &shard, seek, &mut iterator, &mut tracker).await;
+            apply_shard_seek(client, stream, shard, seek, &mut iterator, &mut tracker).await;
         }
         if last_renew.elapsed() >= RENEW_EVERY {
-            match store.renew(&shard, owner, LEASE_TTL).await {
+            match store.renew(&lease, owner, LEASE_TTL).await {
                 Ok(true) => last_renew = tokio::time::Instant::now(),
                 // Fenced: stop immediately, without checkpointing - the new owner replays
                 // from the last checkpoint, which at-least-once permits.
@@ -844,7 +848,7 @@ async fn read_shard(
                         tracker: Arc::clone(&tracker),
                         index: tracker.deliver(record.sequence_number()),
                         store: Arc::clone(store),
-                        shard: Arc::clone(&shard),
+                        lease: Arc::clone(&lease),
                         owner: Arc::clone(owner),
                         epoch,
                         gate: Arc::clone(&gate),
@@ -861,7 +865,7 @@ async fn read_shard(
                         .await
                         .is_err()
                     {
-                        let _ = store.release(&shard, owner).await;
+                        let _ = store.release(&lease, owner).await;
                         return;
                     }
                 }
@@ -873,9 +877,9 @@ async fn read_shard(
                         tokio::time::sleep(Duration::from_millis(100)).await;
                     }
                     if tracker.drained() {
-                        let _ = store.checkpoint(&shard, owner, SHARD_END).await;
+                        let _ = store.checkpoint(&lease, owner, SHARD_END).await;
                     }
-                    let _ = store.release(&shard, owner).await;
+                    let _ = store.release(&lease, owner).await;
                     return;
                 };
                 iterator = next.to_owned();
@@ -885,7 +889,7 @@ async fn read_shard(
                         seek = seek_rx.recv() => {
                             if let Some(seek) = seek {
                                 apply_shard_seek(
-                                    client, stream, &shard, seek, &mut iterator, &mut tracker,
+                                    client, stream, shard, seek, &mut iterator, &mut tracker,
                                 )
                                 .await;
                             }
@@ -927,20 +931,18 @@ async fn read_shard(
                     return;
                 }
                 if fatal {
-                    let _ = store.release(&shard, owner).await;
+                    let _ = store.release(&lease, owner).await;
                     return;
                 }
                 failures += 1;
                 if failures > 10 {
-                    let _ = store.release(&shard, owner).await;
+                    let _ = store.release(&lease, owner).await;
                     return;
                 }
                 // Expired iterators are refetched from the checkpoint (never Latest, which
                 // would silently skip data); everything else backs off and retries.
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                match initial_iterator(client, stream, &shard, bus, store.as_ref(), Reopen::Recover)
-                    .await
-                {
+                match initial_iterator(client, &lease, bus, store.as_ref(), Reopen::Recover).await {
                     Ok(Some(fresh)) => iterator = fresh,
                     Ok(None) => return,
                     Err(_) => {}

@@ -55,8 +55,10 @@ pub enum KinesisError {
     },
 
     /// The lease store failed.
-    #[error("kinesis lease store error for shard '{shard}': {source}")]
+    #[error("kinesis lease store error for stream '{stream}' shard '{shard}': {source}")]
     Lease {
+        /// The stream the shard belongs to.
+        stream: String,
         /// The shard whose lease was involved.
         shard: String,
         /// The store's failure.
