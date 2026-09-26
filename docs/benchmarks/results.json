@@ -3,7 +3,7 @@
   "crate": "ruststream-kinesis",
   "crate_version": "0.7.0",
   "core_version": "0.7.0-rc.9",
-  "measured_at": "2026-09-21",
+  "measured_at": "2026-09-23",
   "environment": {
     "cpu": "AMD Ryzen 9 7900X 12-Core Processor",
     "architecture": "x86_64",
@@ -13,11 +13,12 @@
     "memory_speed": "unknown",
     "os": "Linux 7.2.6-x64v3-xanmod1-1",
     "broker": "localstack/localstack:4.14.0 (Kinesis and DynamoDB emulator) in Docker on localhost, not AWS",
-    "round_trip": "4.359 ms (DescribeStreamSummary, 2295 calls on one client)",
+    "round_trip": "4.456 ms (DescribeStreamSummary, 2244 calls on one client)",
     "rustc": "1.98.1",
     "profile": "bench, inheriting release (opt-level = 3, lto = false, codegen-units = 16)",
     "features": "ruststream-kinesis dynamodb-lease, ruststream macros,json",
-    "rustflags": "none (the recipe clears RUSTFLAGS, so the numbers are not tied to this CPU)"
+    "rustflags": "none (the recipe clears RUSTFLAGS, so the numbers are not tied to this CPU)",
+    "valgrind": "3.25.1"
   },
   "scenarios": [
     {
@@ -26,45 +27,94 @@
       "messages": 5000,
       "pairs": 3,
       "raw": {
-        "best": 381,
-        "worst": 367
+        "best": 380,
+        "median": 355,
+        "worst": 354
       },
       "adapter": {
-        "best": 377,
-        "worst": 362
+        "best": 362,
+        "median": 359,
+        "worst": 359
       },
       "framework": {
-        "best": 377,
-        "worst": 367
+        "best": 359,
+        "median": 354,
+        "worst": 350
       },
-      "adapter_overhead_percent": 1.2,
-      "overhead_percent": 1.0,
+      "adapter_overhead_percent": 4.5,
+      "adapter_verdict": "indistinguishable",
+      "overhead_percent": 5.4,
       "verdict": "indistinguishable",
       "broker_bound": false,
-      "round_trips_per_message": 0.0625
+      "round_trips_per_message": 0.0623
     },
     {
       "name": "one shard, 512 B JSON, DynamoDB checkpoints",
       "unit": "msg/s",
-      "messages": 500,
+      "messages": 503,
       "pairs": 3,
       "raw": {
-        "best": 83,
-        "worst": 74
+        "best": 86,
+        "median": 85,
+        "worst": 85
       },
       "adapter": {
-        "best": 83,
-        "worst": 69
+        "best": 86,
+        "median": 84,
+        "worst": 82
       },
       "framework": {
-        "best": 85,
-        "worst": 58
+        "best": 87,
+        "median": 85,
+        "worst": 84
       },
-      "adapter_overhead_percent": -0.2,
-      "overhead_percent": -2.4,
+      "adapter_overhead_percent": -0.8,
+      "adapter_verdict": "indistinguishable",
+      "overhead_percent": -1.5,
       "verdict": "indistinguishable",
       "broker_bound": false,
-      "round_trips_per_message": 1.0047
+      "round_trips_per_message": 1.004
+    }
+  ],
+  "code": [
+    {
+      "name": "one shard, JSON decode into a small struct, ack each",
+      "messages": 1000,
+      "framework": {
+        "instructions": 18259.1,
+        "allocations": 13.6
+      },
+      "cold": {
+        "instructions": 3294471,
+        "allocations": 3204
+      },
+      "gated": true
+    },
+    {
+      "name": "one shard, reply with PutRecord through this crate's default policy",
+      "messages": 1000,
+      "framework": {
+        "instructions": 410457.7,
+        "allocations": 418.0
+      },
+      "cold": {
+        "instructions": 3662811,
+        "allocations": 3549
+      },
+      "gated": true
+    },
+    {
+      "name": "one shard, batches of 64, one read per batch",
+      "messages": 1000,
+      "framework": {
+        "instructions": 23800.5,
+        "allocations": 19.6
+      },
+      "cold": {
+        "instructions": 3375275,
+        "allocations": 3270
+      },
+      "gated": true
     }
   ]
 }
