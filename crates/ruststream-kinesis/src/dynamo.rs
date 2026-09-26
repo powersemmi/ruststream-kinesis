@@ -7,13 +7,16 @@
 //! two instances cannot both believe they own a shard.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aws_config::SdkConfig;
+use aws_sdk_dynamodb::Client;
 use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
 use aws_sdk_dynamodb::types::AttributeValue;
 use futures::future::BoxFuture;
 
+use crate::clients::RuntimeClients;
 use crate::lease::{LeaseError, LeaseKey, LeaseState, LeaseStore};
 
 /// The table's partition key attribute.
@@ -40,7 +43,9 @@ const CHECKPOINT: &str = "checkpoint";
 /// operator names the stream or deletes the row.
 #[derive(Debug, Clone)]
 pub struct DynamoLeaseStore {
-    client: aws_sdk_dynamodb::Client,
+    /// The client of whichever runtime a request runs on: a checkpoint is written from the thread
+    /// that acknowledges, which may be a handler's dedicated thread.
+    clients: Arc<RuntimeClients<Client>>,
     table: String,
     legacy_stream: Option<String>,
 }
@@ -63,7 +68,7 @@ impl DynamoLeaseStore {
     #[must_use]
     pub fn new(config: &SdkConfig, table: impl Into<String>) -> Self {
         Self {
-            client: aws_sdk_dynamodb::Client::new(config),
+            clients: Arc::new(RuntimeClients::new(config.clone())),
             table: table.into(),
             legacy_stream: None,
         }
@@ -106,8 +111,8 @@ impl DynamoLeaseStore {
         key: AttributeValue,
     ) -> Result<Option<HashMap<String, AttributeValue>>, LeaseError> {
         let output = self
-            .client
-            .get_item()
+            .clients
+            .with(Client::get_item)
             .table_name(&self.table)
             .key(KEY, key)
             .consistent_read(true)
@@ -123,8 +128,8 @@ impl DynamoLeaseStore {
     /// Answers whether this copy wrote it: `false` when another owner saved progress first.
     async fn adopt(&self, key: &LeaseKey, checkpoint: &str) -> Result<bool, LeaseError> {
         let outcome = self
-            .client
-            .update_item()
+            .clients
+            .with(Client::update_item)
             .table_name(&self.table)
             .key(KEY, row_key(key))
             .update_expression("SET checkpoint = :seq ADD lease_counter :one")
@@ -198,8 +203,8 @@ impl LeaseStore for DynamoLeaseStore {
             let now = Self::now_millis();
             let expiry = now + u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX);
             let outcome = self
-                .client
-                .update_item()
+                .clients
+                .with(Client::update_item)
                 .table_name(&self.table)
                 .key(KEY, row_key(key))
                 .update_expression(
@@ -241,8 +246,8 @@ impl LeaseStore for DynamoLeaseStore {
         Box::pin(async move {
             let expiry = Self::now_millis() + u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX);
             let outcome = self
-                .client
-                .update_item()
+                .clients
+                .with(Client::update_item)
                 .table_name(&self.table)
                 .key(KEY, row_key(key))
                 .update_expression("SET lease_expiry = :expiry ADD lease_counter :one")
@@ -276,8 +281,8 @@ impl LeaseStore for DynamoLeaseStore {
     ) -> BoxFuture<'a, Result<bool, LeaseError>> {
         Box::pin(async move {
             let outcome = self
-                .client
-                .update_item()
+                .clients
+                .with(Client::update_item)
                 .table_name(&self.table)
                 .key(KEY, row_key(key))
                 .update_expression("SET checkpoint = :seq ADD lease_counter :one")
@@ -353,8 +358,8 @@ impl LeaseStore for DynamoLeaseStore {
     ) -> BoxFuture<'a, Result<(), LeaseError>> {
         Box::pin(async move {
             let outcome = self
-                .client
-                .update_item()
+                .clients
+                .with(Client::update_item)
                 .table_name(&self.table)
                 .key(KEY, row_key(key))
                 .update_expression("REMOVE lease_owner, lease_expiry ADD lease_counter :one")
