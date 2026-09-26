@@ -196,7 +196,9 @@ impl KinesisSubscriber {
         let limit = Arc::new(AtomicI32::new(DEFAULT_READ_LIMIT));
         core.runtime.spawn(coordinate(Arc::new(Subscription {
             runtime: core.runtime.clone(),
-            client: core.client.clone(),
+            // The coordinator and its readers run on the runtime `connect` ran on, whose client
+            // this is.
+            client: core.client.home().clone(),
             store: Arc::clone(&core.store),
             owner: Arc::from(core.owner.as_str()),
             descriptor,

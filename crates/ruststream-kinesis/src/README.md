@@ -726,6 +726,10 @@ crate's live suites run against the stack in `docker-compose.test.yml` (`just te
 - TLS comes from the SDK's default HTTPS client; the crate adds no transport configuration of its
   own. [`test_credentials`](KinesisBroker::test_credentials) supplies dummy static credentials for
   a local stack that wants them present and ignores their values.
+- Each runtime keeps its own connections. Requests from the runtime the broker connected on share
+  the client built at connect; a handler on a dedicated thread publishes and checkpoints through a
+  client built for that thread from the same config, so a connection it opens never serves the
+  broker's runtime and a busy thread never holds up another's request.
 - A local stack is three settings: `endpoint`, `test_credentials` and `region`. `just brokers-up`
   starts the one this repository's compose file defines, and `just test-brokers` runs the live
   suites against it.

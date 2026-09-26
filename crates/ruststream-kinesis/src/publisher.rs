@@ -10,6 +10,7 @@
 use std::future::{Future, ready};
 use std::sync::Arc;
 
+use aws_sdk_kinesis::Client;
 use aws_sdk_kinesis::primitives::Blob;
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::{Binding, Bindings};
@@ -165,7 +166,7 @@ impl Publisher for KinesisPublisher {
         let (stream, payload, headers) = msg.into_parts();
         let data = encode_envelope(&headers, payload);
         core.client
-            .put_record()
+            .with(Client::put_record)
             .stream_name(stream)
             .partition_key(partition_key)
             .data(Blob::new(data))

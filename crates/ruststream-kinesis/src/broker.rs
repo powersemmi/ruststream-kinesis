@@ -29,6 +29,7 @@ use ruststream::{OutgoingMessage, RawMessage};
 use tokio::runtime::Handle;
 use tokio::sync::OnceCell;
 
+use crate::clients::RuntimeClients;
 use crate::error::{KinesisError, sdk_err};
 #[cfg(feature = "testing")]
 use crate::in_process::Bus;
@@ -44,7 +45,9 @@ use crate::subscriber::KinesisSubscriber;
 /// (aliasing) - so the closed state is an explicit flag a stale handle trips over instead of
 /// silently succeeding.
 pub(crate) struct Core {
-    pub(crate) client: aws_sdk_kinesis::Client,
+    /// The client of whichever runtime a request runs on: the one built at connect on the runtime
+    /// `connect` ran on, a thread's own anywhere else.
+    pub(crate) client: RuntimeClients<aws_sdk_kinesis::Client>,
     pub(crate) store: Arc<dyn LeaseStore>,
     pub(crate) owner: String,
     pub(crate) closed: AtomicBool,
@@ -219,15 +222,16 @@ impl Broker for KinesisBroker {
                     }
                     loader.load().await
                 };
+                let runtime = Handle::current();
                 Ok::<_, KinesisError>(Link::Aws(Arc::new(Core {
-                    client: aws_sdk_kinesis::Client::new(&config),
+                    client: RuntimeClients::homed(config, &runtime),
                     store: self
                         .store
                         .clone()
                         .unwrap_or_else(|| Arc::new(MemoryLeaseStore::new())),
                     owner: self.owner.clone().unwrap_or_else(default_owner),
                     closed: AtomicBool::new(false),
-                    runtime: Handle::current(),
+                    runtime,
                 })))
             })
             .await?
@@ -341,8 +345,7 @@ impl ConnectedKinesisBroker {
     /// that into a failure the caller sees.
     async fn require_stream(core: &Core, stream: &str) -> Result<(), KinesisError> {
         core.client
-            .describe_stream_summary()
-            .stream_name(stream)
+            .with(|client| client.describe_stream_summary().stream_name(stream))
             .send()
             .await
             .map(|_| ())
@@ -356,17 +359,19 @@ impl ConnectedKinesisBroker {
     async fn ensure_stream(core: &Core, stream: &str, shards: i32) -> Result<(), KinesisError> {
         let exists = core
             .client
-            .describe_stream_summary()
-            .stream_name(stream)
+            .with(|client| client.describe_stream_summary().stream_name(stream))
             .send()
             .await
             .is_ok();
         if !exists {
             let created = core
                 .client
-                .create_stream()
-                .stream_name(stream)
-                .shard_count(shards)
+                .with(|client| {
+                    client
+                        .create_stream()
+                        .stream_name(stream)
+                        .shard_count(shards)
+                })
                 .send()
                 .await;
             if let Err(err) = created {
@@ -383,8 +388,7 @@ impl ConnectedKinesisBroker {
             }
         }
         core.client
-            .wait_until_stream_exists()
-            .stream_name(stream)
+            .with(|client| client.wait_until_stream_exists().stream_name(stream))
             .wait(Duration::from_mins(1))
             .await
             .map_err(|e| KinesisError::Stream {
