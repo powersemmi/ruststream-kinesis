@@ -176,8 +176,8 @@ async fn a_sequence_number_is_as_wide_as_the_services() {
 }
 
 // A record carries a data blob and a partition key, so the headers travel in the envelope the
-// publisher writes, and a delivery reads them back out of it: a value that is not text arrives as
-// the text the envelope made of it.
+// publisher writes, and a delivery reads them back out of it: a value that is not text arrives
+// byte for byte.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_header_arrives_as_the_envelope_carries_it() {
     let broker = connected().await;
@@ -199,10 +199,7 @@ async fn a_header_arrives_as_the_envelope_carries_it() {
         .expect("the record is delivered");
 
     assert_eq!(delivery.payload(), b"one");
-    assert_eq!(
-        delivery.headers().get_str("x-raw"),
-        Some("\u{fffd}\u{fffd}")
-    );
+    assert_eq!(delivery.headers().get("x-raw"), Some(&[0xff, 0xfe][..]));
 }
 
 // A record the producer aggregated is refused, as the service's reader refuses it, and the stream

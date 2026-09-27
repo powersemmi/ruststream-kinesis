@@ -547,8 +547,10 @@ A Kinesis record carries a data blob and a partition key and nothing else, so us
 the partition key are written into a small envelope around the payload, and only when such headers
 exist. A record published with no user headers is the plain payload, which any Kinesis consumer
 reads, and a record written by another producer is read back as headerless. Otherwise the blob is
-the four-byte magic `RSK1`, a big-endian `u32` header-block length, the header block, and the
-payload.
+the four-byte magic `RSK2`, a big-endian `u32` header-block length, the header block, and the
+payload. The block holds each header as a big-endian `u32` name length, the name, a big-endian
+`u32` value length and the value, so a value comes back byte for byte, whatever bytes it holds.
+Records written in the earlier `RSK1` text envelope still read back with their headers.
 
 # The prelude
 

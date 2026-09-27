@@ -37,52 +37,116 @@ pub(crate) const KPL_MAGIC: [u8; 4] = [0xF3, 0x89, 0x9A, 0xC2];
 /// The conditional header-envelope magic: Kinesis records carry only a data blob and a
 /// partition key, so user headers (beyond the partition key, which travels natively) ride a
 /// small prefix - applied only when such headers are present, so plain payloads stay readable
-/// by any consumer.
-pub(crate) const ENVELOPE_MAGIC: [u8; 4] = *b"RSK1";
+/// by any consumer. Each header is a length-prefixed name and a length-prefixed value, so a
+/// value is carried byte for byte whatever it holds.
+pub(crate) const ENVELOPE_MAGIC: [u8; 4] = *b"RSK2";
+
+/// The magic of the envelope earlier releases wrote, one `name: value` text line per header.
+/// Records keep their bytes for as long as the stream retains them, so it is still read.
+const TEXT_ENVELOPE_MAGIC: [u8; 4] = *b"RSK1";
+
+/// The magic and the header-block length in front of the header block.
+const ENVELOPE_PREFIX: usize = 8;
+
+/// The length prefix of a header name or value.
+const FIELD_LEN: usize = 4;
 
 /// Encodes a payload with its user headers (partition key excluded - it travels natively).
 pub(crate) fn encode_envelope(headers: &HeaderMap, payload: BytesMut) -> Vec<u8> {
-    let mut lines = String::new();
-    for (name, value) in headers.iter() {
-        if name == PARTITION_KEY_HEADER {
-            continue;
-        }
-        lines.push_str(name);
-        lines.push_str(": ");
-        lines.push_str(&String::from_utf8_lossy(value));
-        lines.push('\n');
-    }
-    if lines.is_empty() {
+    let user = || {
+        headers
+            .iter()
+            .filter(|(name, _)| *name != PARTITION_KEY_HEADER)
+    };
+    let block: usize = user()
+        .map(|(name, value)| 2 * FIELD_LEN + name.len() + value.len())
+        .sum();
+    if block == 0 {
         // `Vec::from` reclaims the buffer the framework wrote: a record with nothing in front of
         // its payload is that buffer.
         return Vec::from(payload);
     }
-    let header_bytes = lines.as_bytes();
-    let mut out = Vec::with_capacity(8 + header_bytes.len() + payload.len());
+    let mut out = Vec::with_capacity(ENVELOPE_PREFIX + block + payload.len());
     out.extend_from_slice(&ENVELOPE_MAGIC);
-    out.extend_from_slice(&u32::try_from(header_bytes.len()).unwrap_or(0).to_be_bytes());
-    out.extend_from_slice(header_bytes);
+    out.extend_from_slice(&field_len(block));
+    for (name, value) in user() {
+        out.extend_from_slice(&field_len(name.len()));
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(&field_len(value.len()));
+        out.extend_from_slice(value);
+    }
     out.extend_from_slice(&payload);
     out
 }
 
+/// A length as the envelope writes it. A record is at most 1 MiB, so every length fits; one
+/// that does not writes zero, and the service refuses the record for its size anyway.
+fn field_len(len: usize) -> [u8; FIELD_LEN] {
+    u32::try_from(len).unwrap_or(0).to_be_bytes()
+}
+
 /// Splits an enveloped payload back into headers and raw payload; a payload without the
-/// magic reads as headerless.
+/// magic, or whose header block does not parse, reads as headerless.
 pub(crate) fn decode_envelope(data: &[u8]) -> (HeaderMap, Bytes) {
-    if data.len() >= 8 && data[0..4] == ENVELOPE_MAGIC {
-        let len = u32::from_be_bytes([data[4], data[5], data[6], data[7]]) as usize;
-        if data.len() >= 8 + len {
-            let mut headers = HeaderMap::new();
-            let text = String::from_utf8_lossy(&data[8..8 + len]);
-            for line in text.lines() {
-                if let Some((name, value)) = line.split_once(':') {
-                    headers.insert(name.trim().to_owned(), value.trim().to_owned());
-                }
-            }
-            return (headers, Bytes::copy_from_slice(&data[8 + len..]));
+    let parsed = match data.get(..4) {
+        Some(magic) if magic == ENVELOPE_MAGIC => envelope_parts(data, decode_fields),
+        Some(magic) if magic == TEXT_ENVELOPE_MAGIC => {
+            envelope_parts(data, |block| Some(decode_text(block)))
+        }
+        _ => None,
+    };
+    parsed.map_or_else(
+        || (HeaderMap::new(), Bytes::copy_from_slice(data)),
+        |(headers, payload)| (headers, Bytes::copy_from_slice(payload)),
+    )
+}
+
+/// The headers and the payload of an enveloped record, the header block read by `decode`.
+fn envelope_parts(
+    data: &[u8],
+    decode: fn(&[u8]) -> Option<HeaderMap>,
+) -> Option<(HeaderMap, &[u8])> {
+    let (len, rest) = read_len(data.get(4..)?)?;
+    let block = rest.get(..len)?;
+    Some((decode(block)?, &rest[len..]))
+}
+
+/// Reads one length prefix off the front of `data`.
+fn read_len(data: &[u8]) -> Option<(usize, &[u8])> {
+    let (len, rest) = data.split_first_chunk::<FIELD_LEN>()?;
+    Some((usize::try_from(u32::from_be_bytes(*len)).ok()?, rest))
+}
+
+/// Reads one length-prefixed field off the front of `data`.
+fn read_field(data: &[u8]) -> Option<(&[u8], &[u8])> {
+    let (len, rest) = read_len(data)?;
+    rest.split_at_checked(len)
+}
+
+/// The header block of an envelope: length-prefixed names and values.
+fn decode_fields(mut block: &[u8]) -> Option<HeaderMap> {
+    let mut headers = HeaderMap::new();
+    while !block.is_empty() {
+        let (name, rest) = read_field(block)?;
+        let (value, rest) = read_field(rest)?;
+        headers.insert(
+            String::from_utf8(name.to_vec()).ok()?,
+            Bytes::copy_from_slice(value),
+        );
+        block = rest;
+    }
+    Some(headers)
+}
+
+/// The header block of the text envelope earlier releases wrote.
+fn decode_text(block: &[u8]) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    for line in String::from_utf8_lossy(block).lines() {
+        if let Some((name, value)) = line.split_once(':') {
+            headers.insert(name.trim().to_owned(), value.trim().to_owned());
         }
     }
-    (HeaderMap::new(), Bytes::copy_from_slice(data))
+    headers
 }
 
 /// A position in the stream's retained log: the whole start vocabulary of this broker,
@@ -408,6 +472,59 @@ mod tests {
         assert_eq!(decoded.get_str("x-tenant"), Some("acme"));
         assert!(decoded.get(PARTITION_KEY_HEADER).is_none());
         assert_eq!(payload.as_ref(), b"raw");
+    }
+
+    /// A header value is bytes, not text: whatever it holds - a byte that is not UTF-8, a line
+    /// break, a colon, surrounding spaces - comes back exactly as it was written.
+    #[test]
+    fn a_header_value_travels_byte_for_byte() {
+        let binary: &[u8] = &[0x00, 0x80, b'\r', b'\n', 0xfe, 0xff, 0xc3];
+        let mut headers = HeaderMap::new();
+        headers.insert("x-binary", Bytes::from_static(binary));
+        headers.insert("x-text", " a: b\nc ");
+        headers.insert("x-empty", "");
+
+        let enveloped = encode_envelope(&headers, BytesMut::from(&b"raw"[..]));
+        let (decoded, payload) = decode_envelope(&enveloped);
+
+        assert_eq!(decoded.get("x-binary"), Some(binary));
+        assert_eq!(decoded.get_str("x-text"), Some(" a: b\nc "));
+        assert_eq!(decoded.get("x-empty"), Some(&b""[..]));
+        assert_eq!(decoded.iter().count(), 3);
+        assert_eq!(payload.as_ref(), b"raw");
+    }
+
+    /// A record an earlier release wrote keeps its text envelope for as long as the stream
+    /// retains it, and still reads back with its headers.
+    #[test]
+    fn a_record_in_the_earlier_text_envelope_reads_back() {
+        let block = b"x-tenant: acme\n";
+        let mut data = b"RSK1".to_vec();
+        data.extend_from_slice(&u32::try_from(block.len()).unwrap().to_be_bytes());
+        data.extend_from_slice(block);
+        data.extend_from_slice(b"raw");
+
+        let (decoded, payload) = decode_envelope(&data);
+
+        assert_eq!(decoded.get_str("x-tenant"), Some("acme"));
+        assert_eq!(payload.as_ref(), b"raw");
+    }
+
+    /// A blob that starts like an envelope and does not parse as one is somebody else's payload,
+    /// handed over whole rather than cut at a guessed boundary.
+    #[test]
+    fn a_blob_that_does_not_parse_as_an_envelope_reads_as_headerless() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-tenant", "acme");
+        let enveloped = encode_envelope(&headers, BytesMut::new());
+        for cut in [6, enveloped.len() - 1] {
+            let (decoded, payload) = decode_envelope(&enveloped[..cut]);
+            assert!(decoded.is_empty(), "cut at {cut}");
+            assert_eq!(payload.as_ref(), &enveloped[..cut]);
+        }
+        let mut not_utf8_name = enveloped;
+        not_utf8_name[12] = 0xff;
+        assert!(decode_envelope(&not_utf8_name).0.is_empty());
     }
 
     #[test]
