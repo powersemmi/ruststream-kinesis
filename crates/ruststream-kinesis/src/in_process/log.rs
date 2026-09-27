@@ -237,17 +237,6 @@ impl StreamLog {
         plan
     }
 
-    /// The plan that replays from the record at `index` on: what a shard does when it is read
-    /// again from its first unhandled record.
-    pub(crate) fn plan_from(&self, stream: &str, index: usize) -> Plan {
-        let len = self.lock().records.get(stream).map_or(0, Vec::len);
-        let target = index.min(len);
-        Plan {
-            target,
-            count: len - target,
-        }
-    }
-
     /// Resolves a position over one stream's retained records.
     fn plan_over(log: &[Record], stream: &str, to: &KinesisPosition) -> Result<Plan, KinesisError> {
         let target = match to {

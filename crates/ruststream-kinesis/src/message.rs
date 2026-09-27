@@ -13,7 +13,7 @@ use bytes::Bytes;
 use ruststream::{AckError, BytesMut, HeaderMap, IncomingMessage, Partitioned, Positioned, Str};
 
 #[cfg(feature = "testing")]
-use crate::in_process::Replay;
+use crate::in_process::Release;
 use crate::lease::{LeaseKey, LeaseStore};
 use crate::subscriber::KinesisSeeker;
 use crate::track::Watermark;
@@ -259,7 +259,7 @@ pub(crate) struct Settlement {
 pub(crate) enum Settle {
     Checkpoint(Settlement),
     #[cfg(feature = "testing")]
-    InProcess(Replay),
+    InProcess(Release),
 }
 
 // The zero-cost promise of the in-process mode, held by the compiler: a build without it gives the
@@ -272,7 +272,7 @@ impl Settle {
         match self {
             Self::Checkpoint(settlement) => settlement.lease.shard_shared(),
             #[cfg(feature = "testing")]
-            Self::InProcess(replay) => replay.shard(),
+            Self::InProcess(release) => release.shard(),
         }
     }
 }
@@ -281,10 +281,11 @@ impl Settle {
 ///
 /// Acknowledgement is a per-shard checkpoint, not per-message settlement: `ack` marks this
 /// record handled, and when every earlier record on the shard is handled too, the watermark
-/// advances and is persisted to the lease store. `nack(requeue = true)` leaves the record
-/// unhandled - the watermark stops advancing, and the records from it onward redeliver when
-/// the shard's lease is next taken (a sharded log repositions; it cannot requeue one
-/// message). `nack(requeue = false)` skips the record (checkpoints past it).
+/// advances and is persisted to the lease store. `nack(requeue = true)` answers
+/// [`AckError::Unsupported`]: a sharded log repositions, it cannot requeue one message. The record
+/// stays unhandled, so the watermark stops advancing, and the records from it onward are delivered
+/// again when the shard's lease is next taken. `nack(requeue = false)` skips the record
+/// (checkpoints past it).
 pub struct KinesisMessage {
     payload: Bytes,
     headers: HeaderMap,
@@ -415,13 +416,10 @@ impl IncomingMessage for KinesisMessage {
 
     async fn nack(self, requeue: bool) -> Result<(), AckError> {
         if requeue {
-            // Leaving the record unhandled wedges the watermark: no later checkpoint can
-            // pass it, so the shard replays from here when its lease is next taken.
-            #[cfg(feature = "testing")]
-            if let Settle::InProcess(replay) = &self.settlement {
-                replay.rewind();
-            }
-            Ok(())
+            // A shard is read in order and the service holds no redelivery of its own, so there
+            // is nothing to requeue one record into. The record stays unhandled: the watermark
+            // stops at it, and the shard is read again from it when its lease is next taken.
+            Err(AckError::Unsupported)
         } else {
             self.settle().await
         }

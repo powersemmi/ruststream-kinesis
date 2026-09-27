@@ -100,6 +100,22 @@ async fn the_in_process_mode_passes_conformance_suite() {
     harness::run_suite(KinesisBroker::new).await;
 }
 
+/// The lifecycle ladder in process: synchronous construction, the consuming transition, a
+/// subscription opened through the crate's own descriptor, publishes it receives and settles from
+/// other runtimes, the consuming `shutdown`, and - the part only a runtime check can hold - every
+/// handle created before the shutdown erroring afterwards instead of succeeding against a closed
+/// transport. Ahead of the ladder, every header shape a service writes must come back byte for
+/// byte.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_passes_lifecycle() {
+    harness::lifecycle(
+        in_process,
+        |name| KinesisStream::new(name),
+        |connected| connected.publisher(),
+    )
+    .await;
+}
+
 /// A Kinesis stream addresses its own retry copies, so the descriptor promises that a publish to
 /// the address it reports arrives at the subscription that reported it. That promise is the whole
 /// deferred retry: an address reaching nothing would lose every delayed record silently.
@@ -147,6 +163,19 @@ async fn in_process_refuses_a_seek_to_an_unknown_position() {
         |name| KinesisStream::new(name),
         |connected| connected.publisher(),
         |_subject| KinesisPosition::sequence("shardId-000000000099", "1"),
+    )
+    .await;
+}
+
+/// The batch size is the one subscription parameter the framework carries down, so the size a
+/// mount site names has to be the size a batch comes back at, and the elements of one batch settle
+/// one by one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_passes_batch_suite() {
+    capabilities::batches(
+        in_process,
+        |name| KinesisStream::new(name),
+        |connected| connected.publisher(),
     )
     .await;
 }
@@ -205,6 +234,20 @@ fn describes_without_credentials() {
     );
 }
 
+/// The same ladder against the service, where the headers ride the record's data blob.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kinesis_broker_passes_lifecycle() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    Box::pin(harness::lifecycle(
+        move || live_broker(&endpoint),
+        from_horizon,
+        |connected| connected.publisher(),
+    ))
+    .await;
+}
+
 /// A shutdown finishes the publish handed to it right before, seen from a consumer of its own
 /// that was already reading the stream.
 ///
@@ -236,6 +279,38 @@ async fn kinesis_broker_refuses_a_seek_to_an_unknown_position() {
         from_horizon,
         |connected| connected.publisher(),
         |_subject| KinesisPosition::sequence("shardId-000000000099", "1"),
+    ))
+    .await;
+}
+
+/// The same promise against the service, where the address is a real stream name and the publish
+/// is a real `PutRecord`: only a server shows that a copy published under the reported name is
+/// picked up by the shard reader the descriptor opened.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kinesis_broker_reports_a_reachable_redelivery_address() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    Box::pin(retry::redelivery_address(
+        move || live_broker(&endpoint),
+        from_horizon,
+        |connected| connected.publisher(),
+    ))
+    .await;
+}
+
+/// The same batch contract against the service, where the size is a `GetRecords` limit rather
+/// than a client-side cap: only a server can show that the reader asks for it and that a read
+/// answering with fewer records still yields a batch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kinesis_broker_passes_batch_suite() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    Box::pin(capabilities::batches(
+        move || live_broker(&endpoint),
+        from_horizon,
+        |connected| connected.publisher(),
     ))
     .await;
 }
