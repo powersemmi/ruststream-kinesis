@@ -304,6 +304,21 @@ async fn kinesis_broker_settles_like_the_in_process_mode() {
     .await;
 }
 
+/// The seeking contract against the service: a seek right after subscribing, from a runtime that
+/// stops right after, and through a seeker that outlived the shutdown.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kinesis_broker_passes_seeking_suite() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    Box::pin(capabilities::seeking(
+        move || live_broker(&endpoint),
+        from_horizon,
+        |connected| connected.publisher(),
+    ))
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn kinesis_broker_refuses_a_seek_to_an_unknown_position() {
     let Some(endpoint) = test_endpoint() else {

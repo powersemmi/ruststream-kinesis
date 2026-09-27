@@ -88,8 +88,11 @@ pub(crate) struct ShardHandle {
 }
 
 /// The subscription's seek surface, shared by the seeker, the coordinator, and every reader.
-#[derive(Default)]
 pub(crate) struct SeekState {
+    /// The connection the subscription reads over. A seeker outlives its broker's `shutdown`,
+    /// and a seek through it then must fail rather than reposition readers on a closed
+    /// connection.
+    core: Arc<Core>,
     /// The readers that can be repositioned right now, by shard id.
     shards: Mutex<HashMap<String, ShardHandle>>,
     /// The stream-wide position a seek installed, if any. Readers consult it when they fetch
@@ -102,6 +105,14 @@ pub(crate) struct SeekState {
 pub(crate) type SeekBus = Arc<SeekState>;
 
 impl SeekState {
+    fn new(core: Arc<Core>) -> Self {
+        Self {
+            core,
+            shards: Mutex::default(),
+            start: Mutex::default(),
+        }
+    }
+
     fn register(&self, shard: String, handle: ShardHandle) {
         self.lock_shards().insert(shard, handle);
     }
@@ -194,10 +205,10 @@ impl KinesisSubscriber {
     /// coordinator's first pass has a reader with its starting cursor, so a record published
     /// after this returns is one the subscription reads, and a seek made now reaches the reader
     /// of the shard it names.
-    pub(crate) async fn open(core: &Core, descriptor: KinesisStream) -> Self {
+    pub(crate) async fn open(core: &Arc<Core>, descriptor: KinesisStream) -> Self {
         let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
         let stream = descriptor.stream().to_owned();
-        let bus: SeekBus = Arc::new(SeekState::default());
+        let bus: SeekBus = Arc::new(SeekState::new(Arc::clone(core)));
         let limit = Arc::new(AtomicI32::new(DEFAULT_READ_LIMIT));
         let (reading, first_pass) = oneshot::channel();
         let coordinator = coordinate(
@@ -325,6 +336,8 @@ fn read_limit(size: NonZeroUsize) -> i32 {
 /// the affected shards drop their watermark bookkeeping: acknowledgements of records delivered
 /// before the seek no longer checkpoint.
 ///
+/// After the broker's `shutdown` every seek returns [`KinesisError::NotConnected`].
+///
 /// On a broker the test harness connected in process, the same handle re-reads that transport's
 /// retained log instead, so a handler that repositions its subscription is the same code in a
 /// test and against the service.
@@ -446,6 +459,7 @@ impl ShardSeeker {
 
 impl ShardSeeker {
     async fn seek(&self, to: KinesisPosition) -> Result<(), KinesisError> {
+        self.bus.core.ensure_open()?;
         match to {
             KinesisPosition::Horizon => self.seek_stream(StreamStart::Horizon).await,
             KinesisPosition::Latest => self.seek_stream(StreamStart::Latest).await,
