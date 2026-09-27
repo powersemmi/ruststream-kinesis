@@ -17,17 +17,18 @@
 // would not type-check.
 #![allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use ruststream::conformance::harness::{self, InProcessBroker};
 use ruststream::conformance::helpers::unique_subject;
 use ruststream::conformance::message_shape::{self, OptionCases};
-use ruststream::conformance::{capabilities, lifecycle, retry};
+use ruststream::conformance::{capabilities, lifecycle, retry, settlement};
 use ruststream::testing::Backlog;
 use ruststream::{IncomingMessage, Name, StartAt};
 use ruststream_kinesis::{
     ConnectedKinesisBroker, KinesisBroker, KinesisMessage, KinesisPosition, KinesisPublish,
-    KinesisPublishOptions, KinesisStream,
+    KinesisPublishOptions, KinesisStream, LeaseStore, MemoryLeaseStore,
 };
 
 mod live;
@@ -53,6 +54,21 @@ fn live_broker(endpoint: &str) -> KinesisBroker {
         .endpoint(endpoint)
         .test_credentials()
         .region("us-east-1")
+}
+
+/// Brokers for the local stack that share one lease store, the way replicas of a service share a
+/// `DynamoDB` table: a second connection resumes from the checkpoints the first one left.
+fn live_replicas(endpoint: String) -> impl Fn() -> KinesisBroker {
+    let store: Arc<dyn LeaseStore> = Arc::new(MemoryLeaseStore::new());
+    move || live_broker(&endpoint).lease_store(Arc::clone(&store))
+}
+
+/// The crate's descriptor with no start position: a subscription resumes from its checkpoint,
+/// and a new one opens at the tip.
+fn at_checkpoint(name: &str) -> KinesisStream {
+    KinesisStream::new(name)
+        .create_if_missing(1)
+        .poll_interval(Duration::from_millis(200))
 }
 
 /// The crate's descriptor, creating the stream the suite names and reading it from its oldest
@@ -265,6 +281,25 @@ async fn kinesis_broker_flushes_on_shutdown() {
         from_horizon,
         |connected| connected.publisher(),
         Backlog::Missed,
+    ))
+    .await;
+}
+
+/// What `ack` and `nack(false)` mean against the service, seen from a replica that resumes the
+/// subscription, and that the in-process mode answers every settlement the same way. A requeue
+/// answers unsupported on both, so the checks that wait for a redelivery end there. A new
+/// subscription opens at the tip, so the record each check publishes right after subscribing is
+/// the first one it reads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kinesis_broker_settles_like_the_in_process_mode() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    Box::pin(settlement::matches_in_process(
+        live_replicas(endpoint),
+        at_checkpoint,
+        |connected| connected.publisher(),
+        Duration::ZERO,
     ))
     .await;
 }
