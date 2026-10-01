@@ -997,7 +997,9 @@ async fn read_shard(
                     });
                     let message = KinesisMessage::new(
                         data,
-                        record.partition_key(),
+                        // The service stamps every record with the key it was put under; the
+                        // SDK's model only types the field as optional.
+                        record.partition_key().unwrap_or_default(),
                         record.sequence_number(),
                         seeker.clone(),
                         settlement,
