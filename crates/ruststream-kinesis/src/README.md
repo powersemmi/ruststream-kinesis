@@ -330,7 +330,9 @@ reads again from where it stopped, so a handler sees a pause rather than an erro
 ## Positions and seeking
 
 [`KinesisPosition`] is the whole vocabulary for where a subscription reads from. By default each
-shard resumes from its stored checkpoint, and a shard without one opens at the tip.
+shard resumes from its stored checkpoint, and a shard without one opens at the tip. Opening a
+subscription returns once every shard it took has its reader and its starting cursor, so the tip
+is the moment the subscription opened: a record published after that is read.
 
 | Position | Scope | Meaning |
 | --- | --- | --- |
