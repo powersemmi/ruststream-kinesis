@@ -59,7 +59,7 @@ ruststream-kinesis = { version = "0.7", features = ["testing"] }
 use ruststream_kinesis::prelude::*;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize, Outgoing, Serialize)]
+#[derive(Debug, Deserialize, Outgoing, PartialEq, Serialize)]
 struct Order {
     id: u64,
 }
@@ -92,29 +92,29 @@ fn app() -> impl App {
 
 ## Test it
 
-`TestApp` runs the handlers against an in-process Kinesis, with no AWS account.
+`TestApp` runs the service's own app with `KinesisBroker` in process, with no AWS account.
 
 ```rust
 use ruststream::testing::TestApp;
-use ruststream_kinesis::testing::KinesisTestBroker;
 
-let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisTestBroker::new(), |b| {
-    b.include(confirm)
-        .out_reply(Publish::default())
-        .partition_key("receipts-v1");
-});
-let tb = TestApp::start(app).await?;
+let tb = TestApp::start(app()).await?;
 
-tb.broker::<KinesisTestBroker>()
-    .message(&Order { id: 1 })
+tb.broker::<KinesisBroker>()
+    .message(&Order { id: 42 })
     .to("orders")
     .publish()
     .await?;
 
-tb.broker::<KinesisTestBroker>()
+tb.broker::<KinesisBroker>()
+    .subscriber("orders")
+    .assert_called_once()
+    .with(&Order { id: 42 })
+    .settled(HandlerOutcome::ack());
+
+tb.broker::<KinesisBroker>()
     .published::<Receipt>("receipts")
     .assert_called_once()
-    .with(&Receipt { order: 1 });
+    .with(&Receipt { order: 42 });
 ```
 
 ## Documentation
