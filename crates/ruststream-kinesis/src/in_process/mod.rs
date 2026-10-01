@@ -13,12 +13,11 @@
 //!
 //! What it models: one retained log per stream, read by every subscription on that stream; a
 //! subscription opening at the tip; the stream-wide and shard-scoped positions of `start_at(..)`
-//! and the seek handle; and the replay of a record left unhandled, which reads the stream again
-//! from that record on. What belongs to the service and is left to the live mode: a stream's
-//! shards (a stream here has one, so every record is ordered against every other), leases and
-//! checkpoints, retention, resharding, and the existence of a stream (every stream a service names
-//! is there). A record left unhandled is read again at once here; the service reads it again when
-//! the shard's lease is next taken.
+//! and the seek handle; and the answers of every settlement, `AckError::Unsupported` for a requeue
+//! included. What belongs to the service and is left to the live mode: a stream's shards (a stream
+//! here has one, so every record is ordered against every other), leases and checkpoints, and so
+//! the replay of a record left unhandled when the shard's lease is next taken, retention,
+//! resharding, and the existence of a stream (every stream a service names is there).
 
 mod deliveries;
 mod log;
@@ -31,7 +30,7 @@ use bytes::Bytes;
 use ruststream::testing::Coordinator;
 use ruststream::{BytesMut, OutgoingFor, OutgoingMessage, RawMessage, Str, Take};
 
-pub(crate) use deliveries::{LogDeliveries, Replay};
+pub(crate) use deliveries::{LogDeliveries, Release};
 pub(crate) use seek::LogSeeker;
 
 use crate::error::KinesisError;
