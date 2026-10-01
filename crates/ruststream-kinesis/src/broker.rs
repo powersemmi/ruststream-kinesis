@@ -311,7 +311,9 @@ impl ConnectedKinesisBroker {
         KinesisPublisher::keyed(Arc::clone(&self.cell), partition_key)
     }
 
-    /// Opens the subscription described by `descriptor`.
+    /// Opens the subscription described by `descriptor`, returning once it reads: every shard it
+    /// took has its reader and its starting cursor, so a record published after this returns is
+    /// read, and a seek reaches the reader of the shard it names.
     ///
     /// # Errors
     ///
@@ -334,7 +336,7 @@ impl ConnectedKinesisBroker {
         } else {
             Self::require_stream(core, descriptor.stream()).await?;
         }
-        Ok(KinesisSubscriber::open(core, descriptor))
+        Ok(KinesisSubscriber::open(core, descriptor).await)
     }
 
     /// Refuses a stream the service does not have, before the subscription exists.
