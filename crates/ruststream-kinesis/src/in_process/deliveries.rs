@@ -77,11 +77,9 @@ impl LogDeliveries {
 
     /// Applies a reposition left for this subscription, if one is pending: everything queued
     /// before it is dropped, and the retained suffix from the target on is enqueued in its place.
-    /// Answers the generation of what the subscription hands out next.
-    fn apply_pending(&mut self) -> u64 {
-        let (plan, generation) = self.control().take_pending();
-        let Some(plan) = plan else {
-            return generation;
+    fn apply_pending(&mut self) {
+        let Some(plan) = self.control().take_pending() else {
+            return;
         };
         self.bus.log().reposition(
             &self.stream,
@@ -90,15 +88,10 @@ impl LogDeliveries {
             &self.replay,
             self.coordinator.as_ref(),
         );
-        generation
     }
 
     /// The delivery a queued record makes, decoded the way the service's reader decodes one.
-    fn deliver(
-        &self,
-        delivery: &Delivery,
-        generation: u64,
-    ) -> Result<KinesisMessage, KinesisError> {
+    fn deliver(&self, delivery: &Delivery) -> Result<KinesisMessage, KinesisError> {
         let data = delivery.record.data.as_ref();
         if data.len() > 4 && data[0..4] == KPL_MAGIC {
             // The service's reader refuses such a record and reads on, so nothing settles it.
@@ -109,11 +102,8 @@ impl LogDeliveries {
                 shard: self.shard.to_string(),
             });
         }
-        let replay = Replay {
+        let release = Release {
             shard: Arc::clone(&self.shard),
-            index: delivery.index,
-            generation,
-            log: self.log.clone(),
             coordinator: self.coordinator.clone(),
         };
         Ok(KinesisMessage::new(
@@ -121,7 +111,7 @@ impl LogDeliveries {
             &delivery.record.partition_key,
             &sequence_of(delivery.index),
             self.seeker.clone(),
-            Settle::InProcess(replay),
+            Settle::InProcess(release),
         ))
     }
 
@@ -135,11 +125,9 @@ impl LogDeliveries {
             // Register, then apply a pending reposition: one installed between the two still
             // arrives, because installing it wakes this task again.
             self.control().waker.register(cx.waker());
-            let generation = self.apply_pending();
+            self.apply_pending();
             match self.rx.poll_recv(cx) {
-                Poll::Ready(Some(delivery)) => {
-                    Poll::Ready(Some(self.deliver(&delivery, generation)))
-                }
+                Poll::Ready(Some(delivery)) => Poll::Ready(Some(self.deliver(&delivery))),
                 Poll::Ready(None) => Poll::Ready(None),
                 Poll::Pending => Poll::Pending,
             }
@@ -155,30 +143,21 @@ impl Drop for LogDeliveries {
 
 /// How a delivery of the in-process transport settles.
 ///
-/// Acknowledging it or skipping it consumes it. Leaving it unhandled reads the stream again from
-/// it on, which is what the service does with a shard whose watermark stopped at a record: the
-/// record and everything after it are delivered again. Either way the delivery is released to the
-/// harness once, when this is dropped.
-pub(crate) struct Replay {
+/// Acknowledging it or skipping it consumes it, and so does leaving it unhandled: the service reads
+/// an unhandled record again only when the shard's lease is next taken, and the in-process mode
+/// has no leases. Either way the delivery is released to the harness once, when this is dropped.
+pub(crate) struct Release {
     shard: Arc<str>,
-    index: usize,
-    generation: u64,
-    log: LogSeeker,
     coordinator: Option<Coordinator>,
 }
 
-impl Replay {
+impl Release {
     pub(crate) fn shard(&self) -> &Arc<str> {
         &self.shard
     }
-
-    /// Reads the stream again from this record on.
-    pub(crate) fn rewind(&self) {
-        self.log.replay_from(self.index, self.generation);
-    }
 }
 
-impl Drop for Replay {
+impl Drop for Release {
     fn drop(&mut self) {
         if let Some(coordinator) = &self.coordinator {
             coordinator.consumed();

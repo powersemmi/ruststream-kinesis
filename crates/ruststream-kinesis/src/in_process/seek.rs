@@ -7,12 +7,8 @@
 //! subscription swaps its queue inside its own poll, where the mutable borrow of the receiver is
 //! available.
 //!
-//! Two things reposition a subscription. A seek, from `start_at(..)` or a handler's seek handle,
-//! is the capability. A replay is what the service does with an unhandled record: the shard is
-//! read again from its first unhandled record on, so a delivery left unhandled comes back with
-//! everything after it.
+//! A seek, from `start_at(..)` or a handler's seek handle, is what repositions a subscription.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use futures::task::AtomicWaker;
@@ -50,65 +46,26 @@ pub(crate) fn index_of(sequence: &str) -> Option<usize> {
     digits.parse().ok()
 }
 
-/// What a pending reposition came from, which decides how a second one combines with it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Cause {
-    /// A seek: the latest one wins.
-    Seek,
-    /// A replay from an unhandled record: the earliest unhandled record wins, because the shard
-    /// is read again from its first unhandled record.
-    Replay,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct Pending {
-    plan: Plan,
-    cause: Cause,
-}
-
-/// Shared between one subscription's polling side, the seekers minted off it and its deliveries.
+/// Shared between one subscription's polling side and the seekers minted off it.
 #[derive(Default)]
 pub(crate) struct SeekControl {
     /// The reposition resolved and not yet applied, taken by the subscription inside its next
     /// poll.
-    pending: Mutex<Option<Pending>>,
-    /// Bumped by every seek and by every replay the subscription applies. A delivery handed out
-    /// under an older generation belongs to a read the subscription has since abandoned, so
-    /// leaving it unhandled moves nothing - as a settlement of the service's reader goes to a
-    /// watermark the reposition already reset.
-    generation: AtomicU64,
+    pending: Mutex<Option<Plan>>,
     /// Wakes the subscription's stream task after `pending` is set.
     pub(crate) waker: AtomicWaker,
 }
 
 impl SeekControl {
-    fn lock(&self) -> MutexGuard<'_, Option<Pending>> {
+    fn lock(&self) -> MutexGuard<'_, Option<Plan>> {
         self.pending
             .lock()
             .expect("kinesis in-process seek mutex poisoned")
     }
 
-    /// The generation a delivery handed out now belongs to.
-    pub(crate) fn generation(&self) -> u64 {
-        self.generation.load(Ordering::Acquire)
-    }
-
-    /// Takes the reposition left for the subscription, if any, and answers the generation what
-    /// the subscription hands out next belongs to. A replay starts a new read of the shard, so
-    /// taking one moves the generation on.
-    ///
-    /// Both are read under the lock a seek installs under, so a record the subscription still
-    /// held from before a seek it has not applied carries the generation before that seek: left
-    /// unhandled, it cannot rewind the subscription behind the seek.
-    pub(crate) fn take_pending(&self) -> (Option<Plan>, u64) {
-        let mut slot = self.lock();
-        let pending = slot.take();
-        if pending.is_some_and(|pending| pending.cause == Cause::Replay) {
-            self.generation.fetch_add(1, Ordering::AcqRel);
-        }
-        let generation = self.generation();
-        drop(slot);
-        (pending.map(|pending| pending.plan), generation)
+    /// Takes the reposition left for the subscription, if any.
+    pub(crate) fn take_pending(&self) -> Option<Plan> {
+        self.lock().take()
     }
 
     /// Records a seek and wakes the subscription; it replaces any reposition not yet applied.
@@ -122,46 +79,12 @@ impl SeekControl {
     /// releasing the displaced one keeps the total off zero in between.
     fn install_seek(&self, plan: Plan, coordinator: Option<&Coordinator>) {
         count(coordinator, plan.count);
-        // Moved on under the lock the subscription reads it under, together with the plan it
-        // stands for.
-        let mut slot = self.lock();
-        self.generation.fetch_add(1, Ordering::AcqRel);
-        let displaced = slot.replace(Pending {
-            plan,
-            cause: Cause::Seek,
-        });
-        drop(slot);
+        let displaced = self.lock().replace(plan);
         // Derived from the swap rather than from a separate read: the swap is what decides which
         // of two concurrent seeks displaced the other, so exactly one of them releases a count.
         release(
             coordinator,
-            displaced.map_or(0, |displaced| displaced.plan.count),
-        );
-        self.waker.wake();
-    }
-
-    /// Records a replay from an unhandled record and wakes the subscription, unless one from an
-    /// earlier record is already waiting: the shard is read again from its first unhandled record,
-    /// so the earliest wins.
-    fn install_replay(&self, plan: Plan, generation: u64, coordinator: Option<&Coordinator>) {
-        let mut pending = self.lock();
-        // Checked under the lock a seek takes to install, so a seek either lands before this
-        // check, and the record is stale, or after it, and replaces this replay.
-        if self.generation() != generation {
-            return;
-        }
-        if pending.is_some_and(|waiting| waiting.plan.target <= plan.target) {
-            return;
-        }
-        count(coordinator, plan.count);
-        let displaced = pending.replace(Pending {
-            plan,
-            cause: Cause::Replay,
-        });
-        drop(pending);
-        release(
-            coordinator,
-            displaced.map_or(0, |displaced| displaced.plan.count),
+            displaced.map_or(0, |displaced| displaced.count),
         );
         self.waker.wake();
     }
@@ -185,9 +108,7 @@ fn release(coordinator: Option<&Coordinator>, deliveries: usize) {
 
 impl std::fmt::Debug for SeekControl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SeekControl")
-            .field("generation", &self.generation())
-            .finish_non_exhaustive()
+        f.debug_struct("SeekControl").finish_non_exhaustive()
     }
 }
 
@@ -239,18 +160,6 @@ impl LogSeeker {
         let plan = self.bus.log().plan(&self.stream, to)?;
         self.control.install_seek(plan, self.bus.coordinator());
         Ok(())
-    }
-
-    /// Reads the stream again from the record at `index`, left unhandled by a delivery handed out
-    /// under `generation`. A delivery from a read the subscription has since abandoned moves
-    /// nothing, and neither does one after `shutdown`, when nothing reads the stream any more.
-    pub(crate) fn replay_from(&self, index: usize, generation: u64) {
-        if self.bus.ensure_open().is_err() {
-            return;
-        }
-        let plan = self.bus.log().plan_from(&self.stream, index);
-        self.control
-            .install_replay(plan, generation, self.bus.coordinator());
     }
 }
 

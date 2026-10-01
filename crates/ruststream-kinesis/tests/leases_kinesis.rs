@@ -28,8 +28,8 @@ use aws_sdk_kinesis::primitives::Blob;
 use futures::StreamExt;
 
 use ruststream::{
-    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, StartAt, Subscriber,
-    SubscriptionSource,
+    AckError, Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, StartAt,
+    Subscriber, SubscriptionSource,
 };
 use ruststream_kinesis::{
     ConnectedKinesisBroker, DynamoLeaseStore, KinesisBroker, KinesisPosition, KinesisStream,
@@ -378,7 +378,10 @@ async fn a_subscription_records_its_progress_in_the_table() {
         .expect("stream is open")
         .expect("delivery is ok");
     assert_eq!(left.payload(), b"left");
-    left.nack(true).await.expect("nack succeeds");
+    assert!(
+        matches!(left.nack(true).await, Err(AckError::Unsupported)),
+        "a shard cannot requeue one record",
+    );
     assert_eq!(
         text(&item(&client, &table, &row).await, "checkpoint"),
         Some(sequence),
