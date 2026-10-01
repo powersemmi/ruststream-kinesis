@@ -104,9 +104,11 @@ advances - and is written to the lease store - only when no earlier record on th
 unhandled.
 
 - `HandlerOutcome::ack()` marks the record handled.
-- `HandlerOutcome::retry()` leaves it unhandled. The watermark stops there, so the shard replays
-  from that record when its lease is next taken. A sharded log repositions; it cannot requeue one
-  record.
+- `HandlerOutcome::retry()` on a registration that declares `max_attempts(..)` or a dead-letter
+  stream publishes a counted copy of the record back to its stream. Without a declaration it asks
+  for a requeue, which a shard cannot perform: a sharded log repositions, it cannot requeue one
+  record. `nack(requeue = true)` answers `AckError::Unsupported`, and the record stays unhandled.
+  The watermark stops there, so the shard replays from that record when its lease is next taken.
 - `HandlerOutcome::drop()` checkpoints past the record, which is how a poison one is retired.
 
 Delivery is at-least-once: an unacknowledged record holds the watermark where it is, and everything
@@ -328,7 +330,9 @@ reads again from where it stopped, so a handler sees a pause rather than an erro
 ## Positions and seeking
 
 [`KinesisPosition`] is the whole vocabulary for where a subscription reads from. By default each
-shard resumes from its stored checkpoint, and a shard without one opens at the tip.
+shard resumes from its stored checkpoint, and a shard without one opens at the tip. Opening a
+subscription returns once every shard it took has its reader and its starting cursor, so the tip
+is the moment the subscription opened: a record published after that is read.
 
 | Position | Scope | Meaning |
 | --- | --- | --- |
@@ -547,8 +551,10 @@ A Kinesis record carries a data blob and a partition key and nothing else, so us
 the partition key are written into a small envelope around the payload, and only when such headers
 exist. A record published with no user headers is the plain payload, which any Kinesis consumer
 reads, and a record written by another producer is read back as headerless. Otherwise the blob is
-the four-byte magic `RSK1`, a big-endian `u32` header-block length, the header block, and the
-payload.
+the four-byte magic `RSK2`, a big-endian `u32` header-block length, the header block, and the
+payload. The block holds each header as a big-endian `u32` name length, the name, a big-endian
+`u32` value length and the value, so a value comes back byte for byte, whatever bytes it holds.
+Records written in the earlier `RSK1` text envelope still read back with their headers.
 
 # The prelude
 
@@ -635,24 +641,22 @@ named on a single publish call. There is no reply address either, because this b
 
 # Testing
 
-The `testing` feature ships [`KinesisTestBroker`](testing::KinesisTestBroker): an in-process
-transport with no server and no network, driving the framework's `TestApp` harness. The harness
-itself is the core's, and its own overview is the place to learn it:
+A test runs the service's own app: the builder `main` runs, on [`KinesisBroker`], handed to the
+framework's `TestApp` harness unchanged. With the `testing` feature in `[dev-dependencies]`,
+`TestApp::start` connects the broker in process instead of dialling the service, and the test
+addresses it by its production type, `tb.broker::<KinesisBroker>()`. `TestApp::start_live` runs
+the same test body against a running stack. The harness's usage is the core's:
 <https://docs.rs/ruststream/latest/ruststream/testing/index.html>.
-
-The mount is the service's own on both sides: [`KinesisStream`] opens the subscription here with
-the settings it carries in production, and [`KinesisPublish`] pairs into the stand-in's publisher.
-There is no test-only descriptor and no test-only policy.
 
 ```
 # #[cfg(feature = "testing")]
 # mod demo {
 use ruststream::testing::TestApp;
 use ruststream_kinesis::prelude::*;
-use ruststream_kinesis::testing::KinesisTestBroker;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]
+#[outgoing(name = "orders")]
 pub struct Order {
     pub id: u64,
 }
@@ -663,24 +667,30 @@ async fn handle(order: &Order) -> HandlerOutcome {
     HandlerOutcome::ack()
 }
 
-pub async fn run() {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
-        .with_broker(KinesisTestBroker::new(), |b| {
-            b.include(handle);
-        });
-    let tb = TestApp::start(app).await.expect("the harness starts");
-    tb.broker::<KinesisTestBroker>()
+/// The app `main` runs.
+pub fn app() -> RustStream {
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
+        b.include(handle);
+    })
+}
+
+pub async fn accepts_an_order() -> Result<(), Box<dyn std::error::Error>> {
+    let tb = TestApp::start(app()).await?;
+
+    // The publish returns once the handler it woke has settled.
+    tb.broker::<KinesisBroker>()
         .message(&Order { id: 7 })
-        .to("orders")
         .publish()
-        .await
-        .expect("the publish succeeds");
-    tb.settle().await.expect("the delivery settles");
-    tb.broker::<KinesisTestBroker>()
+        .await?;
+
+    tb.broker::<KinesisBroker>()
         .subscriber("orders")
-        .assert_called(1)
+        .assert_called_once()
+        .with(&Order { id: 7 })
         .settled(HandlerOutcome::ack());
-    tb.shutdown().await.expect("the harness shuts down");
+
+    tb.shutdown().await?;
+    Ok(())
 }
 # }
 # fn main() {
@@ -689,22 +699,30 @@ pub async fn run() {
 #         .enable_all()
 #         .build()
 #         .expect("the runtime starts")
-#         .block_on(demo::run());
+#         .block_on(demo::accepts_an_order())
+#         .expect("the test passes");
 # }
 ```
 
-The transport keeps a retained log per stream, because that is the property a handler observes
-without a server: a subscription opens at the tip, and `start_at(..)` or a handler's
-[`SeekHandle`] really re-reads the log from the position it names. A delivery carries the full
-surface - a [`KinesisPosition`], the three headers, the partition key, and the context the keys
-read - and a keyed publish resolves through the same four-step ladder the service uses, so it reads
-back here the way it will read back live. A per-message setting is recorded against the slot the
-publish left through, so the harness asserts it directly.
+In process, the connected broker carries an in-process transport in place of the SDK client, and
+so do its subscriptions, its publisher and its deliveries: the descriptors and the publish policy
+of the routes file are the production ones. The transport has no settings of its own. A record is
+written the way the publisher writes it for the service: the partition key resolved by the same
+four-step ladder, the headers in the same envelope. It is read back by the same decoding, so a
+delivery carries the position, the three headers and the context a record from a shard carries.
 
-What the stand-in does not have is what a server owns. It routes one shard
-([`IN_PROCESS_SHARD`](testing::IN_PROCESS_SHARD)), so there are no leases, no checkpoint
-durability, no retention limits, no resharding and no redelivery timing. Those are covered by the
-crate's live suites against a real stack.
+It never succeeds where the service fails. A stream name the service does not accept, an empty
+partition key or one longer than 256 characters, and a record over 1 MiB are refused. A handle used
+after `shutdown` reports [`KinesisError::NotConnected`], and a KPL-aggregated record is reported as
+[`KinesisError::AggregatedRecord`]. A subscription opens at the tip, and `start_at(..)` and a
+handler's [`SeekHandle`] re-read the retained log from the position they name. A record a handler
+leaves unhandled (`HandlerOutcome::retry()`) is read again, together with every record after it.
+
+What only the service has belongs to the live mode, over the same test body. In process a stream
+has one shard, so every record is ordered against every other; leases, checkpoints, retention and
+resharding are the service's; and every stream a service names is there. An unhandled record comes
+back at once in process, while the service reads it again when the shard's lease is next taken. The
+crate's live suites run against the stack in `docker-compose.test.yml` (`just test-brokers`).
 
 # Operations
 
@@ -714,6 +732,10 @@ crate's live suites against a real stack.
 - TLS comes from the SDK's default HTTPS client; the crate adds no transport configuration of its
   own. [`test_credentials`](KinesisBroker::test_credentials) supplies dummy static credentials for
   a local stack that wants them present and ignores their values.
+- Each runtime keeps its own connections. Requests from the runtime the broker connected on share
+  the client built at connect; a handler on a dedicated thread publishes and checkpoints through a
+  client built for that thread from the same config, so a connection it opens never serves the
+  broker's runtime and a busy thread never holds up another's request.
 - A local stack is three settings: `endpoint`, `test_credentials` and `region`. `just brokers-up`
   starts the one this repository's compose file defines, and `just test-brokers` runs the live
   suites against it.
@@ -736,8 +758,8 @@ Strictly additive, and all three are off by default.
 - `asyncapi`: the `x-ruststream-kinesis` binding objects this crate writes into the generated
   document.
 - `dynamodb-lease`: [`DynamoLeaseStore`], so several service instances share the shards.
-- `testing`: the in-process [`KinesisTestBroker`](testing::KinesisTestBroker) and its `TestApp`
-  support.
+- `testing`: the in-process mode of [`KinesisBroker`], which the framework's `TestApp` connects
+  in a test.
 
 Examples for every topic above are in
 [`examples/`](https://github.com/powersemmi/ruststream-kinesis/tree/main/crates/ruststream-kinesis/examples).

@@ -9,8 +9,8 @@ Amazon Kinesis Data Streams 上。一条流是一个分片的、带保留期的�
 
 ## 安装 { #install }
 
-三个 feature，默认都关闭：`dynamodb-lease` 让多个服务实例共享分片，`testing` 提供进程内 Broker，
-`asyncapi` 把这个 Broker 自己的词汇写进生成的文档。
+三个 feature，默认都关闭：`dynamodb-lease` 让多个服务实例共享分片，`testing` 让 `KinesisBroker`
+在框架的 `TestApp` 下于进程内运行，`asyncapi` 把这个 Broker 自己的词汇写进生成的文档。
 
 ```toml
 ruststream = { version = "0.7", features = ["macros", "json"] }
@@ -44,7 +44,7 @@ crate 的 rustdoc 就是它的指南，写在它所描述的代码旁边：
 - [发布](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#publishing)
   - 发布策略，以及为记录挑选分片的分区键。
 - [测试](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#testing)
-  - `testing` feature 背后的进程内传输。
+  - `TestApp` 测试套件下的生产应用，在进程内运行，或对着真实的流。
 
 ## 接下来读什么 { #where-to-go-next }
 

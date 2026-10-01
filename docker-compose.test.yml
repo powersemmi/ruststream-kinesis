@@ -13,7 +13,24 @@ services:
       # The mock injects 500ms of artificial latency per call by default.
       KINESIS_LATENCY: 0
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_localstack/health | grep -q '\"kinesis\": \"running\"' && curl -fsS http://localhost:4566/_localstack/health | grep -q '\"dynamodb\": \"running\"'"]
+      # "running" in the health report is not ready yet: each backend starts on the first request
+      # it serves, which takes over a second for Kinesis. The check makes one request to each, so
+      # that start happens before the stack counts as up, not inside the first test's time limit.
+      test:
+        - CMD-SHELL
+        - >-
+          curl -fsS http://localhost:4566/_localstack/health | grep -q '"kinesis": "running"'
+          && curl -fsS http://localhost:4566/_localstack/health | grep -q '"dynamodb": "running"'
+          && curl -fsS -m 9 -o /dev/null -X POST -d '{}'
+          -H 'Content-Type: application/x-amz-json-1.1'
+          -H 'X-Amz-Target: Kinesis_20131202.ListStreams'
+          -H 'Authorization: AWS4-HMAC-SHA256 Credential=test/20260101/us-east-1/kinesis/aws4_request, SignedHeaders=host, Signature=0'
+          http://localhost:4566/
+          && curl -fsS -m 9 -o /dev/null -X POST -d '{}'
+          -H 'Content-Type: application/x-amz-json-1.0'
+          -H 'X-Amz-Target: DynamoDB_20120810.ListTables'
+          -H 'Authorization: AWS4-HMAC-SHA256 Credential=test/20260101/us-east-1/dynamodb/aws4_request, SignedHeaders=host, Signature=0'
+          http://localhost:4566/
       interval: 5s
-      timeout: 5s
+      timeout: 10s
       retries: 24

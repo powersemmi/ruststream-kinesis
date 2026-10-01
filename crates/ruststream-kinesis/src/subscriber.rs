@@ -7,6 +7,7 @@
 //! `SHARD_END` once every delivery has settled.
 
 use std::collections::HashMap;
+use std::mem;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,13 +20,18 @@ use aws_sdk_kinesis::operation::get_shard_iterator::builders::GetShardIteratorFl
 use aws_sdk_kinesis::primitives::DateTime;
 use aws_sdk_kinesis::types::{Shard, ShardIteratorType};
 use futures::Stream;
+#[cfg(feature = "testing")]
+use futures::future::Either;
 use ruststream::{BatchSubscriber, BufferedSubscriber, Subscriber};
+use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::broker::Core;
 use crate::error::{KinesisError, sdk_err};
+#[cfg(feature = "testing")]
+use crate::in_process::{LogDeliveries, LogSeeker};
 use crate::lease::{LeaseError, LeaseKey, LeaseStore, SHARD_END};
-use crate::message::{KPL_MAGIC, KinesisMessage, KinesisPosition, Settlement};
+use crate::message::{KPL_MAGIC, KinesisMessage, KinesisPosition, Settle, Settlement};
 use crate::stream::KinesisStream;
 use crate::track::Watermark;
 
@@ -82,8 +88,11 @@ pub(crate) struct ShardHandle {
 }
 
 /// The subscription's seek surface, shared by the seeker, the coordinator, and every reader.
-#[derive(Default)]
 pub(crate) struct SeekState {
+    /// The connection the subscription reads over. A seeker outlives its broker's `shutdown`,
+    /// and a seek through it then must fail rather than reposition readers on a closed
+    /// connection.
+    core: Arc<Core>,
     /// The readers that can be repositioned right now, by shard id.
     shards: Mutex<HashMap<String, ShardHandle>>,
     /// The stream-wide position a seek installed, if any. Readers consult it when they fetch
@@ -96,6 +105,14 @@ pub(crate) struct SeekState {
 pub(crate) type SeekBus = Arc<SeekState>;
 
 impl SeekState {
+    fn new(core: Arc<Core>) -> Self {
+        Self {
+            core,
+            shards: Mutex::default(),
+            start: Mutex::default(),
+        }
+    }
+
     fn register(&self, shard: String, handle: ShardHandle) {
         self.lock_shards().insert(shard, handle);
     }
@@ -166,7 +183,7 @@ pub struct KinesisSubscriber {
     /// The live `GetRecords` limit, shared with every reader. This is how the mount site's batch
     /// size reaches the wire: [`BatchSubscriber::batches`] stores it before the first batch.
     limit: Arc<AtomicI32>,
-    deliveries: BufferedSubscriber<ShardDeliveries>,
+    deliveries: BufferedSubscriber<Deliveries>,
 }
 
 impl std::fmt::Debug for KinesisSubscriber {
@@ -184,25 +201,100 @@ impl KinesisSubscriber {
         &self.stream
     }
 
-    pub(crate) fn open(core: &Core, descriptor: KinesisStream) -> Self {
+    /// Opens the subscription and returns once it reads: every shard it took on the
+    /// coordinator's first pass has a reader with its starting cursor, so a record published
+    /// after this returns is one the subscription reads, and a seek made now reaches the reader
+    /// of the shard it names.
+    pub(crate) async fn open(core: &Arc<Core>, descriptor: KinesisStream) -> Self {
         let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
         let stream = descriptor.stream().to_owned();
-        let bus: SeekBus = Arc::new(SeekState::default());
+        let bus: SeekBus = Arc::new(SeekState::new(Arc::clone(core)));
         let limit = Arc::new(AtomicI32::new(DEFAULT_READ_LIMIT));
-        tokio::spawn(coordinate(Arc::new(Subscription {
-            client: core.client.clone(),
-            store: Arc::clone(&core.store),
-            owner: Arc::from(core.owner.as_str()),
-            descriptor,
-            out: tx,
-            bus: Arc::clone(&bus),
-            limit: Arc::clone(&limit),
-        })));
+        let (reading, first_pass) = oneshot::channel();
+        let coordinator = coordinate(
+            Arc::new(Subscription {
+                runtime: core.runtime.clone(),
+                // The coordinator and its readers run on the runtime `connect` ran on, whose client
+                // this is.
+                client: core.client.home().clone(),
+                store: Arc::clone(&core.store),
+                owner: Arc::from(core.owner.as_str()),
+                descriptor,
+                out: tx,
+                bus: Arc::clone(&bus),
+                limit: Arc::clone(&limit),
+            }),
+            reading,
+        );
+        core.runtime.spawn(coordinator);
+        // A coordinator that stops before its first pass drops the sender, which ends this wait
+        // too; whatever stopped it is reported on the subscription's stream.
+        let _ = first_pass.await;
         Self {
             stream,
             limit,
-            deliveries: BufferedSubscriber::new(ShardDeliveries { rx, bus })
+            deliveries: BufferedSubscriber::new(Deliveries::Shards(ShardDeliveries { rx, bus }))
                 .max_wait(BATCH_FILL_WINDOW),
+        }
+    }
+
+    /// A subscription on the in-process transport, batching on the client with the same deadline
+    /// the service's subscription uses.
+    #[cfg(feature = "testing")]
+    pub(crate) fn in_process(stream: String, deliveries: LogDeliveries) -> Self {
+        Self {
+            stream,
+            limit: Arc::new(AtomicI32::new(DEFAULT_READ_LIMIT)),
+            deliveries: BufferedSubscriber::new(Deliveries::InProcess(deliveries))
+                .max_wait(BATCH_FILL_WINDOW),
+        }
+    }
+}
+
+/// One delivery at a time, from whichever transport the broker was connected to: everything
+/// above it batches on the client.
+///
+/// Without the `testing` feature the shard readers' channel is the only variant, so the type is
+/// that channel and the `match` in [`stream`](Subscriber::stream) resolves at compile time.
+enum Deliveries {
+    Shards(ShardDeliveries),
+    #[cfg(feature = "testing")]
+    InProcess(LogDeliveries),
+}
+
+#[cfg(not(feature = "testing"))]
+const _: () = assert!(size_of::<Deliveries>() == size_of::<ShardDeliveries>());
+
+impl std::fmt::Debug for Deliveries {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Deliveries").finish_non_exhaustive()
+    }
+}
+
+impl ruststream::Seekable for Deliveries {
+    type Seeker = KinesisSeeker;
+
+    fn seeker(&self) -> KinesisSeeker {
+        match self {
+            Self::Shards(shards) => ruststream::Seekable::seeker(shards),
+            #[cfg(feature = "testing")]
+            Self::InProcess(log) => log.seeker(),
+        }
+    }
+}
+
+impl Subscriber for Deliveries {
+    type Message = KinesisMessage;
+    type Error = KinesisError;
+
+    fn stream(&mut self) -> impl Stream<Item = Result<KinesisMessage, KinesisError>> + Send + '_ {
+        match self {
+            #[cfg(not(feature = "testing"))]
+            Self::Shards(shards) => shards.stream(),
+            #[cfg(feature = "testing")]
+            Self::Shards(shards) => Either::Left(shards.stream()),
+            #[cfg(feature = "testing")]
+            Self::InProcess(log) => Either::Right(log.stream()),
         }
     }
 }
@@ -244,10 +336,11 @@ fn read_limit(size: NonZeroUsize) -> i32 {
 /// the affected shards drop their watermark bookkeeping: acknowledgements of records delivered
 /// before the seek no longer checkpoint.
 ///
-/// The same handle serves the in-process stand-in
-/// ([`KinesisTestBroker`](crate::testing::KinesisTestBroker)), where it re-reads that transport's
+/// After the broker's `shutdown` every seek returns [`KinesisError::NotConnected`].
+///
+/// On a broker the test harness connected in process, the same handle re-reads that transport's
 /// retained log instead, so a handler that repositions its subscription is the same code in a
-/// unit test and against the service.
+/// test and against the service.
 #[derive(Clone)]
 pub struct KinesisSeeker {
     target: SeekTarget,
@@ -259,10 +352,13 @@ pub struct KinesisSeeker {
 enum SeekTarget {
     /// The service: one command channel per owned shard, behind a shared seek bus.
     Shards(ShardSeeker),
-    /// The in-process stand-in: one retained log per stream.
+    /// The in-process transport: one retained log per stream.
     #[cfg(feature = "testing")]
-    Log(crate::testing::LogSeeker),
+    Log(LogSeeker),
 }
+
+#[cfg(not(feature = "testing"))]
+const _: () = assert!(size_of::<SeekTarget>() == size_of::<ShardSeeker>());
 
 impl std::fmt::Debug for KinesisSeeker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -281,7 +377,7 @@ impl KinesisSeeker {
 
     /// Mints a handle onto one in-process subscription's retained log.
     #[cfg(feature = "testing")]
-    pub(crate) fn in_process(log: crate::testing::LogSeeker) -> Self {
+    pub(crate) fn in_process(log: LogSeeker) -> Self {
         Self {
             target: SeekTarget::Log(log),
         }
@@ -363,6 +459,7 @@ impl ShardSeeker {
 
 impl ShardSeeker {
     async fn seek(&self, to: KinesisPosition) -> Result<(), KinesisError> {
+        self.bus.core.ensure_open()?;
         match to {
             KinesisPosition::Horizon => self.seek_stream(StreamStart::Horizon).await,
             KinesisPosition::Latest => self.seek_stream(StreamStart::Latest).await,
@@ -496,6 +593,8 @@ fn is_closed(shard: &Shard) -> bool {
 /// What one subscription's coordinator and every reader it spawns work from: one allocation per
 /// subscription, one reference-count bump per reader.
 struct Subscription {
+    /// The runtime the broker connected on, where the coordinator starts every reader.
+    runtime: Handle,
     client: aws_sdk_kinesis::Client,
     store: Arc<dyn LeaseStore>,
     /// This instance's lease-owner id, shared with every record a reader forwards.
@@ -506,8 +605,15 @@ struct Subscription {
     limit: Arc<AtomicI32>,
 }
 
-async fn coordinate(subscription: Arc<Subscription>) {
+/// Runs one subscription's shard discovery for as long as the subscription is open.
+///
+/// `reading` is answered once the first pass is over and every reader it started has fetched its
+/// starting cursor: until then a record published to a shard without a checkpoint could land
+/// ahead of the tip the reader opens at, and be skipped. Errors of the first pass are reported
+/// after that answer, since nothing reads the stream before `subscribe` returns.
+async fn coordinate(subscription: Arc<Subscription>, reading: oneshot::Sender<()>) {
     let Subscription {
+        runtime,
         client,
         store,
         owner,
@@ -520,8 +626,14 @@ async fn coordinate(subscription: Arc<Subscription>) {
     // Leases are the stream's and the shard's together: shard ids repeat across streams.
     let stream_key: Arc<str> = Arc::from(stream);
     let mut readers: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+    let mut reading = Some(reading);
+    // Filled on the first pass only: the readers' starting cursors, and the errors held back
+    // until `subscribe` has returned.
+    let mut positioned = Vec::new();
+    let mut held = Vec::new();
     loop {
         readers.retain(|_, handle| !handle.is_finished());
+        let first = reading.is_some();
 
         match list_all_shards(client, stream).await {
             Ok(shards) => {
@@ -540,9 +652,7 @@ async fn coordinate(subscription: Arc<Subscription>) {
                         Ok(state) if state.checkpoint.as_deref() == Some(SHARD_END) => continue,
                         Ok(_) => {}
                         Err(err) => {
-                            let _ = out
-                                .send(Stamped::unstamped(Err(lease_error(&key, err))))
-                                .await;
+                            report(out, &mut held, first, lease_error(&key, err)).await;
                             continue;
                         }
                     }
@@ -554,29 +664,41 @@ async fn coordinate(subscription: Arc<Subscription>) {
                                 tx: seek_tx,
                             };
                             bus.register(id.clone(), handle.clone());
+                            let started = first.then(|| {
+                                let (started, cursor) = oneshot::channel();
+                                positioned.push(cursor);
+                                started
+                            });
                             readers.insert(
                                 id,
-                                tokio::spawn(read_shard(
+                                runtime.spawn(read_shard(
                                     Arc::clone(&subscription),
                                     Arc::new(key),
                                     handle.gate,
                                     seek_rx,
+                                    started,
                                 )),
                             );
                         }
                         Ok(false) => {} // another instance owns it
                         Err(err) => {
-                            let _ = out
-                                .send(Stamped::unstamped(Err(lease_error(&key, err))))
-                                .await;
+                            report(out, &mut held, first, lease_error(&key, err)).await;
                         }
                     }
                 }
             }
-            Err(err) => {
-                if out.send(Stamped::unstamped(Err(err))).await.is_err() {
-                    break;
-                }
+            Err(err) => report(out, &mut held, first, err).await,
+        }
+
+        if let Some(reading) = reading.take() {
+            for cursor in mem::take(&mut positioned) {
+                // A reader that stopped before its cursor drops the sender; either way it is no
+                // longer about to read.
+                let _ = cursor.await;
+            }
+            let _ = reading.send(());
+            for err in mem::take(&mut held) {
+                let _ = out.send(Stamped::unstamped(Err(err))).await;
             }
         }
 
@@ -586,6 +708,22 @@ async fn coordinate(subscription: Arc<Subscription>) {
         }
     }
     // Readers watch the same channel and stop on their own.
+}
+
+/// Reports a coordinator error on the subscription's stream, or, on the first pass, holds it until
+/// `subscribe` has returned: the stream has no reader before that, and a full channel would stall
+/// the pass `subscribe` waits for.
+async fn report(
+    out: &mpsc::Sender<Stamped>,
+    held: &mut Vec<KinesisError>,
+    first: bool,
+    err: KinesisError,
+) {
+    if first {
+        held.push(err);
+    } else {
+        let _ = out.send(Stamped::unstamped(Err(err))).await;
+    }
 }
 
 /// A child shard may start only when every parent is fully consumed - that is what keeps
@@ -752,6 +890,7 @@ async fn read_shard(
     lease: Arc<LeaseKey>,
     gate: Arc<AtomicU64>,
     mut seek_rx: mpsc::UnboundedReceiver<ShardSeek>,
+    started: Option<oneshot::Sender<()>>,
 ) {
     // Every exit path must deregister this shard's seek surface.
     struct BusGuard {
@@ -771,6 +910,7 @@ async fn read_shard(
         out,
         bus,
         limit,
+        ..
     } = subscription.as_ref();
     let shard = lease.shard_shared();
     let _bus_guard = BusGuard {
@@ -782,15 +922,17 @@ async fn read_shard(
     let seeker = KinesisSeeker::shards(Arc::clone(bus));
     let stream = descriptor.stream();
     let mut tracker = Arc::new(Watermark::default());
-    let mut iterator =
-        match initial_iterator(client, &lease, bus, store.as_ref(), Reopen::Start).await {
-            Ok(Some(iterator)) => iterator,
-            Ok(None) => return, // already at SHARD_END
-            Err(err) => {
-                let _ = out.send(Stamped::unstamped(Err(err))).await;
-                return;
-            }
-        };
+    let initial = initial_iterator(client, &lease, bus, store.as_ref(), Reopen::Start).await;
+    // The cursor is fixed, so the tip this shard opens at is the one `subscribe` promised.
+    drop(started);
+    let mut iterator = match initial {
+        Ok(Some(iterator)) => iterator,
+        Ok(None) => return, // already at SHARD_END
+        Err(err) => {
+            let _ = out.send(Stamped::unstamped(Err(err))).await;
+            return;
+        }
+    };
     let mut last_renew = tokio::time::Instant::now();
     let mut failures: u32 = 0;
 
@@ -844,7 +986,7 @@ async fn read_shard(
                         }
                         continue;
                     }
-                    let settlement = Settlement {
+                    let settlement = Settle::Checkpoint(Settlement {
                         tracker: Arc::clone(&tracker),
                         index: tracker.deliver(record.sequence_number()),
                         store: Arc::clone(store),
@@ -852,10 +994,12 @@ async fn read_shard(
                         owner: Arc::clone(owner),
                         epoch,
                         gate: Arc::clone(&gate),
-                    };
+                    });
                     let message = KinesisMessage::new(
                         data,
-                        record.partition_key(),
+                        // The service stamps every record with the key it was put under; the
+                        // SDK's model only types the field as optional.
+                        record.partition_key().unwrap_or_default(),
                         record.sequence_number(),
                         seeker.clone(),
                         settlement,
