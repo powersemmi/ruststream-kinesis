@@ -15,8 +15,8 @@ use futures::{Stream, StreamExt};
 use ruststream::runtime::PublishExt;
 use ruststream::testing::{InProcess, TestableBroker};
 use ruststream::{
-    Bytes, BytesMut, ConnectedBroker, HeaderMap, IncomingMessage, OutgoingMessage, Publisher,
-    Seekable, Seeker, Subscriber,
+    AckError, Bytes, BytesMut, ConnectedBroker, HeaderMap, IncomingMessage, OutgoingMessage,
+    Publisher, Seekable, Seeker, Subscriber,
 };
 use ruststream_kinesis::{
     ConnectedKinesisBroker, KinesisBroker, KinesisError, KinesisMessage, KinesisPosition,
@@ -225,10 +225,11 @@ async fn an_aggregated_record_is_refused_and_the_stream_reads_on() {
     assert_eq!(delivery.payload(), b"plain");
 }
 
-// A record left unhandled stops the shard's watermark, and the shard is read again from it: the
-// record comes back, and so does every record after it, handled or not.
+// A shard cannot requeue one record, so a requeue answers as the service answers it, and nothing
+// comes back in process: the service reads an unhandled record again only when the shard's lease
+// is next taken.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_record_left_unhandled_comes_back_with_every_record_after_it() {
+async fn a_requeue_is_unsupported_and_nothing_comes_back() {
     let broker = connected().await;
     let mut subscriber = subscribe(&broker, "orders").await;
     publish(&broker, "orders", b"one").await;
@@ -237,41 +238,8 @@ async fn a_record_left_unhandled_comes_back_with_every_record_after_it() {
     let mut deliveries = Box::pin(subscriber.stream());
     let one = next(&mut deliveries).await.expect("one is delivered");
     let two = next(&mut deliveries).await.expect("two is delivered");
-    one.nack(true)
-        .await
-        .expect("leaving a record unhandled succeeds");
+    assert!(matches!(one.nack(true).await, Err(AckError::Unsupported)));
     two.ack().await.expect("the ack succeeds");
-
-    let again: Vec<Vec<u8>> = [
-        next(&mut deliveries).await.expect("one comes back"),
-        next(&mut deliveries).await.expect("two comes back"),
-    ]
-    .into_iter()
-    .map(|delivery| delivery.payload().to_vec())
-    .collect();
-    assert_eq!(again, [b"one".to_vec(), b"two".to_vec()]);
-    nothing_more(&mut deliveries).await;
-}
-
-// A reposition abandons the read it interrupted, so a record delivered before it and left
-// unhandled after it moves nothing: the service's reader settles such a record against a
-// watermark the reposition already reset.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_record_left_unhandled_after_a_seek_moves_nothing() {
-    let broker = connected().await;
-    let mut subscriber = subscribe(&broker, "orders").await;
-    let seeker = subscriber.seeker();
-    publish(&broker, "orders", b"one").await;
-
-    let mut deliveries = Box::pin(subscriber.stream());
-    let one = next(&mut deliveries).await.expect("one is delivered");
-    seeker
-        .seek(KinesisPosition::latest())
-        .await
-        .expect("the seek succeeds");
-    one.nack(true)
-        .await
-        .expect("leaving a record unhandled succeeds");
 
     nothing_more(&mut deliveries).await;
 }
