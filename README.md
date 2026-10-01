@@ -21,24 +21,29 @@
 
 ---
 
-`ruststream-kinesis` implements the RustStream broker contract over the official [`aws-sdk-kinesis`](https://crates.io/crates/aws-sdk-kinesis) - plus the coordination the vendor's consumer library provides on other platforms and the Rust SDK does not: shard discovery across splits and merges, shard leasing with fencing, and per-shard checkpointing. Handlers, routers, codecs, and middleware come from the framework; this crate supplies the transport.
+`ruststream-kinesis` connects a RustStream service to Amazon Kinesis Data Streams over the
+official [`aws-sdk-kinesis`](https://crates.io/crates/aws-sdk-kinesis). It also does the
+coordination the vendor's consumer library does on other platforms: shard discovery across splits
+and merges, shard leases, and per-shard checkpoints. Handlers, routing, codecs and middleware come
+from the framework; this crate is the transport.
 
 ## Features
 
-- **Lazy startup contract.** `KinesisBroker::new()` is synchronous and does no I/O (region and credentials resolve from the environment on connect; `from_config`, or `endpoint` + `region` + `test_credentials`, for local stacks); the runtime connects once at startup, so the broker composes with `#[ruststream::app]`.
-- **Checkpoint as acknowledgement.** `ack` marks a record handled; the per-shard watermark advances - and persists - once every earlier record is handled too, because a checkpoint implies everything before it. An unacknowledged record wedges the watermark, so the shard replays from it when the lease is next taken (at-least-once delivery). `HandlerOutcome::drop()` skips (checkpoints past) a poison record.
-- **Shard lifecycle owned by the crate.** A coordinator discovers shards (splits and merges included), runs one reader per owned shard, and starts children only after their parents are fully consumed, which preserves per-key ordering across resharding.
-- **Pluggable leasing.** The built-in in-process lease store is correct for a single service instance; `DynamoLeaseStore` (feature `dynamodb-lease`) lets multiple instances share the shards with conditional-write fencing - a failed renewal stops the reader immediately. A lease and its checkpoint belong to a stream and a shard together, so one store serves every stream a broker consumes, even though every stream's first shard is `shardId-000000000000`.
-- **Batch size named by the mount site, spent on the wire.** `.batch(nonzero!(500))` is the one subscription parameter the framework carries down to a broker, and this crate spends it on the wire: it becomes the `GetRecords` limit every shard reader asks with, so a read never fetches more than one batch's worth. Records still reach the runtime one at a time - acknowledgement is a per-shard checkpoint, so it has to be - and a batch closes on the size named or, when the owned shards had less to give, shortly after its first record. It never carries more records than it named. The framework's word comes first and this crate's settings chain after it: `b.include(digest.batch(nonzero!(500)).poll_interval(..))`.
-- **Read settings on the descriptor or the mount site.** `poll_interval` prices a read; the 1-second default is the service's own recommendation for staying inside the per-shard budget. `create_if_missing(n)` provisions the stream on subscribe, for local development. Both read the same on `KinesisStream::new("orders")` and chained onto a mount site.
-- **One start vocabulary.** Where a subscription reads from is always a `KinesisPosition`; the descriptor carries no separate start options. By default a shard resumes from its stored checkpoint and opens at the tip when it has none. `start_at(KinesisPosition::horizon())` on the subscriber opens it somewhere explicit, and the same positions reposition a running subscription through the delivery context: `Ctx(seeker): Ctx<SeekHandle>` hands a handler the subscription's seeker, `Ctx<Position>` the record's own position. `horizon()`, `latest()` and `timestamp(ms)` are stream-wide, so they reach shards discovered later too; a position captured from a delivered record is shard-scoped and pinned, and seeking to it redelivers exactly that record. Repositioning drops the affected shards' watermark bookkeeping, so a checkpoint from before the seek cannot drag the cursor back.
-- **The partition key as a per-message setting.** `publisher.message(&order).to("orders").partition_key("tenant-acme").publish()` names the record's key on the framework's publish builder, as one step among the framework's own - nothing wraps the publisher, so the record still leaves through its mount site, with that site's codec and transforms, and a test still attributes it to that site's slot. A reply has no call site of its own, so its key is named at the mount instead: `b.include(confirm).out_reply(Publish::default()).partition_key("receipts-v1")`. Below the call come the `partition-key` header a caller wrote by hand, then the mount site's key, then a process-unique key that spreads the records - a Kinesis record cannot go out without one. That header stays the wire in both directions and feeds `Partitioned`. The sequence number and shard id are surfaced as headers. User headers beyond that travel in a small conditional envelope - Kinesis records carry only a data blob and a partition key - and plain payloads stay unenveloped.
-- **Deferred retry with a stated destination, capped at the mount site.** Kinesis holds no redelivery timer, so `HandlerOutcome::retry_after(delay)` is served by the framework re-publishing the record after the delay. The subscription reports where that copy goes - a stream is both what it reads and what a publish reaches - so the registration owes no destination and needs no publisher named: `.out_retry(policy)` replaces the one it already has, and the position is an ordinary `Out` slot taking `.codec(..)`, `.transform(..)` and this crate's `.partition_key(..)`. How many deliveries a record gets, and the stream a spent one leaves for, are declared with `b.include(reconcile).max_attempts(nonzero!(4)).dead_letter("orders.unsettled")`, the same two steps as on every other broker. A delivered record does not say how many times it has been read, so the count is the framework's header, and that is why `HandlerOutcome::retry()` under a declaration is a published copy rather than a held shard. The copy lands at the tip rather than in place, so an undeclared `retry()` remains the way to hold a shard in order: its requeue answers `AckError::Unsupported`, and the record stays unhandled until the shard's lease is next taken.
-- **Server coordinate, not configuration.** `DescribeServer` reports the host and port clients dial: the scheme and any credentials come off a configured endpoint URL, and without one the regional Kinesis host is named. The generated AsyncAPI document is published and shared, so nothing secret reaches it.
-- **This broker's own vocabulary in the document** (feature `asyncapi`). A subscription describes its channel with the stream it reads, the pause between reads and the shards it provisions; a publishing position describes its channel with the stream the records land in, and a policy that fixed a partition key describes the records leaving through it. The specification has no Kinesis binding and its protocol keys are a closed list, so all three objects travel under `x-ruststream-kinesis`. Only what the descriptor and the policy hold is reported: the document is built before anything connects, so an existing stream's shard count and its ARN are not in it.
-- **Tests on the production app** (feature `testing`). The framework's `TestApp` runs the app `main` runs with `KinesisBroker` connected in process - no server, no docker - and the same test runs against LocalStack with `TestApp::start_live`. The in-process transport keeps a retained log per stream, so `start_at(..)` and a handler's seek handle really re-read it; it writes and reads a record exactly as the service's client does and refuses what the service refuses. The framework's contract suites run over it as well as against LocalStack: routing, the lifecycle ladder, what a settlement means (against LocalStack with the in-process answers compared to it), a shutdown's flush, retry addresses, partition keys and per-message settings, credentials in the generated document, `Seekable` and batches.
-
-Out of scope for this release: enhanced fan-out (a different resume machine on an HTTP/2 push stream, with no local emulator support) and KPL-aggregated records (rejected with an error rather than delivered as opaque protobuf). Kinesis has neither transactions nor request/reply, so this crate ships no policy for either: `Publish` is the whole publish vocabulary, and `partition_key` its whole per-message vocabulary, because a record is a partition key and a payload. A handler body that names the key imports this crate's prelude for the step and bounds its slot as `Out<impl Publisher<Options = KinesisPublishOptions>, _>`; a body that does not keeps the framework's prelude and a plain `Out<impl Publisher, _>`.
+- **Checkpoints as acknowledgement:** a shard's checkpoint advances once every earlier record is
+  handled, so delivery is at least once.
+- **Shards handled by the crate:** one reader per owned shard, and children start after their
+  parents, so per-key order survives resharding.
+- **Leases per stream and shard:** a lease and its checkpoint belong to a stream and a shard
+  together, so one lease store serves every stream a broker consumes. Instances share them
+  through DynamoDB behind the `dynamodb-lease` feature.
+- **Batches** sized at the mount site and read with one `GetRecords` call.
+- **Start positions and repositioning:** the horizon, the tip, a timestamp or a captured record.
+- **The partition key** as a per-message setting.
+- **Deferred retries,** with retry caps and dead-letter streams.
+- **AsyncAPI** with the stream, read pause and shards, behind the `asyncapi` feature.
+- **Tests on the production app** (feature `testing`): `TestApp` runs it with `KinesisBroker`
+  connected in process, with no AWS account, and `TestApp::start_live` runs the same test against
+  LocalStack.
 
 ## Install
 
@@ -49,22 +54,15 @@ ruststream-kinesis = "0.7"
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
-# Enables ruststream/testing along with it: `TestApp` connects `KinesisBroker` in process.
 ruststream-kinesis = { version = "0.7", features = ["testing"] }
 ```
 
-`dynamodb-lease` adds `DynamoLeaseStore` and pulls in `aws-sdk-dynamodb`; a service that hands the store a config it built itself needs `aws-config` as a direct dependency too. `asyncapi` lets this broker write its own bindings into the generated document.
-
 ## Write a service
-
-One glob, and it belongs to the file that mounts: `ruststream_kinesis::prelude` re-exports the framework's own prelude alongside this crate's broker, its stream descriptor, its positions and context keys, and its publish policy under the uniform name `Publish`, so a mount site reads the same on every broker. The prefixed original (`KinesisPublish`) stays at the crate root, for a file that mounts two brokers and has to say which `Publish` it means. A handler body imports `ruststream::prelude::*` instead, bounds an injected publisher with a framework capability, and never learns which broker it runs on - unless it names a per-message setting, which is one broker's word and brings that broker's prelude with it.
 
 ```rust
 use ruststream_kinesis::prelude::*;
 use serde::{Deserialize, Serialize};
 
-// `Outgoing`, `PartialEq` and `Serialize` on the order, and `Deserialize` and `PartialEq` on the
-// receipt, are here for the test below, which publishes an order and reads the receipt back.
 #[derive(Debug, Deserialize, Outgoing, PartialEq, Serialize)]
 struct Order {
     id: u64,
@@ -75,8 +73,6 @@ struct Receipt {
     order: u64,
 }
 
-// Drop the start_at clause to resume from the checkpoint instead (and open at the tip
-// when there is none).
 #[subscriber(
     KinesisStream::new("orders"),
     publish("receipts"),
@@ -89,8 +85,6 @@ async fn confirm(order: &Order) -> Receipt {
 #[ruststream::app]
 fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-        // One key means one shard: every receipt stays ordered against every other, at the
-        // cost of a single shard's throughput. Leave it off to spread them instead.
         b.include(confirm)
             .out_reply(Publish::default())
             .partition_key("receipts-v1");
@@ -98,25 +92,9 @@ fn app() -> impl App {
 }
 ```
 
-The handler names what it replies with; where that reply goes, and under which partition key, is the mount's. Full compiling examples: `crates/ruststream-kinesis/examples/kinesis_service.rs` and `kinesis_replies.rs`.
+`#[ruststream::app]` generates `main`, so the binary understands `run` and `asyncapi gen`.
 
-Multiple instances share the shards through DynamoDB:
-
-```rust
-use std::sync::Arc;
-
-use aws_config::BehaviorVersion;
-use ruststream_kinesis::prelude::*;
-
-let config = aws_config::defaults(BehaviorVersion::latest()).load().await;
-let broker = KinesisBroker::from_config(config.clone())
-    .lease_store(Arc::new(DynamoLeaseStore::new(&config, "orders-leases")))
-    // Identifies this instance in the lease table; a process-unique value is used when
-    // left out.
-    .owner_id("instance-a");
-```
-
-Full compiling example: `crates/ruststream-kinesis/examples/kinesis_leases.rs`.
+## Upgrading a DynamoDB lease table
 
 The table keeps one row per stream and shard, keyed `stream:shard` in the `lease_key` attribute. Versions before this one keyed a row by the shard id alone, so a table they wrote holds rows that name no stream. After the upgrade:
 
@@ -128,14 +106,14 @@ A table that served more than one stream before the upgrade holds, in each bare 
 
 ## Test it
 
-The app `main` runs, handed to the harness unchanged: `TestApp::start` connects `KinesisBroker` in process, with no server, and the test addresses it by that type.
+`TestApp::start` runs the service's own app with `KinesisBroker` connected in process, with no AWS
+account. `TestApp::start_live(app())` runs the same test against LocalStack.
 
 ```rust
 use ruststream::testing::TestApp;
 
 let tb = TestApp::start(app()).await?;
 
-// `publish` returns once the handlers it woke have settled.
 tb.broker::<KinesisBroker>()
     .message(&Order { id: 42 })
     .to("orders")
@@ -154,31 +132,18 @@ tb.broker::<KinesisBroker>()
     .with(&Receipt { order: 42 });
 ```
 
-Full compiling examples, including a handler that repositions its own subscription mid-run: `crates/ruststream-kinesis/tests/harness_kinesis.rs`.
+## Documentation
 
-The in-process mode has no settings of its own: the descriptors and the publish policy are the production ones, a record is written and read back exactly as the service's client writes and reads it, and a stream name, a partition key or a record size the service refuses is refused. A requeue answers `AckError::Unsupported` there as it does on the service, and a record left unhandled is read again only when a shard's lease is next taken, which only the service does. `TestApp::start_live(app())` runs the same test against LocalStack, which is where a stream's shards, leases, checkpoints and resharding are exercised (`just test-brokers`).
+- This crate: <https://docs.rs/ruststream-kinesis>
+- The framework: <https://powersemmi.github.io/ruststream/latest>
 
-## Layout
+## Minimum supported Rust version
 
-```
-ruststream-kinesis/
-├── crates/
-│   └── ruststream-kinesis/     the published crate
-│       ├── examples/           runnable kinesis_* examples
-│       └── tests/              TestApp harness, live integration, conformance
-├── docs/                       the documentation site
-├── docker-compose.test.yml     LocalStack for the live suite
-└── Cargo.toml                  workspace
-```
+The MSRV is **1.94.1**, edition 2024, the floor of the AWS SDK.
 
 ## Contributing
 
-```bash
-just check          # fmt, clippy, feature checks
-just test           # the in-process tests, no server
-just test-brokers   # live integration + conformance against LocalStack
-just ci             # check, test, codespell, cargo-deny, zizmor
-```
+See [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## License
 
