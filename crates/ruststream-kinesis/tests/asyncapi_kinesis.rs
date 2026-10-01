@@ -4,14 +4,13 @@
 //! objects travel as the `x-ruststream-kinesis` extension. Only what the descriptor and the
 //! policy hold goes in: the document is built before anything connects, so an existing stream's
 //! real shard count and its ARN have no place here.
-#![cfg(all(feature = "asyncapi", feature = "testing"))]
+#![cfg(feature = "asyncapi")]
 
 use std::time::Duration;
 
 use ruststream::asyncapi::{Spec, build_spec};
 use ruststream::conformance::harness;
 use ruststream_kinesis::prelude::*;
-use ruststream_kinesis::testing::KinesisTestBroker;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -52,14 +51,12 @@ const PUBLISH_CHANNEL_BINDING: &str = include_str!("snippets/asyncapi-publish-ch
 /// One mount, one document: the subscription describes its channel and the reply policy
 /// describes the records that leave through it.
 fn document() -> Spec {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        KinesisTestBroker::new(),
-        |b| {
+    let app =
+        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
             b.include(confirm)
                 .out_reply(Publish::default())
                 .partition_key("tenant-acme");
-        },
-    );
+        });
     build_spec(&app)
 }
 
@@ -118,12 +115,10 @@ fn the_message_object_names_no_stream() {
 /// carries no field the service never set.
 #[test]
 fn a_policy_without_a_key_adds_no_message_binding() {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        KinesisTestBroker::new(),
-        |b| {
+    let app =
+        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
             b.include(confirm).out_reply(Publish::default());
-        },
-    );
+        });
     let spec = build_spec(&app);
 
     assert!(spec.components.messages["Receipt"].bindings.is_empty());

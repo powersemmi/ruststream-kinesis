@@ -12,8 +12,8 @@ Amazon Kinesis Data Streams. Поток - это сегментированны�
 ## Установка {#install}
 
 Три фичи, все выключены по умолчанию: `dynamodb-lease` делит сегменты между экземплярами сервиса,
-`testing` даёт внутрипроцессный брокер, а `asyncapi` вписывает собственный словарь этого брокера в
-генерируемый документ.
+`testing` запускает `KinesisBroker` внутри процесса под обвязкой `TestApp` фреймворка, а
+`asyncapi` вписывает собственный словарь этого брокера в генерируемый документ.
 
 ```toml
 ruststream = { version = "0.7", features = ["macros", "json"] }
@@ -40,7 +40,8 @@ Rustdoc крейта и есть его руководство, написанн
 - [Подписка](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#subscribing)
   - дескриптор потока, пауза между чтениями и создание потока для локального стенда.
 - [Аренда и контрольные точки](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#leases-and-checkpoints)
-  - что пишет подтверждение и какое хранилище `DynamoDB` делят несколько экземпляров сервиса.
+  - что пишет подтверждение, какое хранилище `DynamoDB` делят несколько экземпляров сервиса и как
+  перейти на новую версию с таблицей аренды, которую вела прежняя.
 - [Позиции и перемотка](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#positions-and-seeking)
   - открыть подписку в любом месте, которое поток ещё хранит, и перемотать её из обработчика.
 - [Пакеты](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#batches)
@@ -48,7 +49,7 @@ Rustdoc крейта и есть его руководство, написанн
 - [Публикация](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#publishing)
   - политика публикации и ключ сегмента, который выбирает сегмент для записи.
 - [Тестирование](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#testing)
-  - внутрипроцессный транспорт за фичей `testing`.
+  - рабочее приложение под обвязкой `TestApp`, внутри процесса или против живого потока.
 
 ## Куда идти дальше {#where-to-go-next}
 

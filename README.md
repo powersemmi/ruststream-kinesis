@@ -33,13 +33,17 @@ from the framework; this crate is the transport.
   handled, so delivery is at least once.
 - **Shards handled by the crate:** one reader per owned shard, and children start after their
   parents, so per-key order survives resharding.
-- **Leases shared through DynamoDB** across instances, behind the `dynamodb-lease` feature.
+- **Leases per stream and shard:** a lease and its checkpoint belong to a stream and a shard
+  together, so one lease store serves every stream a broker consumes. Instances share them
+  through DynamoDB behind the `dynamodb-lease` feature.
 - **Batches** sized at the mount site and read with one `GetRecords` call.
 - **Start positions and repositioning:** the horizon, the tip, a timestamp or a captured record.
 - **The partition key** as a per-message setting.
 - **Deferred retries,** with retry caps and dead-letter streams.
 - **AsyncAPI** with the stream, read pause and shards, behind the `asyncapi` feature.
-- **Tests without AWS:** handlers run against an in-process Kinesis.
+- **Tests on the production app** (feature `testing`): `TestApp` runs it with `KinesisBroker`
+  connected in process, with no AWS account, and `TestApp::start_live` runs the same test against
+  LocalStack.
 
 ## Install
 
@@ -90,9 +94,20 @@ fn app() -> impl App {
 
 `#[ruststream::app]` generates `main`, so the binary understands `run` and `asyncapi gen`.
 
+## Upgrading a DynamoDB lease table
+
+The table keeps one row per stream and shard, keyed `stream:shard` in the `lease_key` attribute. Versions before this one keyed a row by the shard id alone, so a table they wrote holds rows that name no stream. After the upgrade:
+
+1. If the table served one stream, name it: `DynamoLeaseStore::new(&config, "orders-leases").legacy_stream("orders")`. A shard of that stream with no row of its own resumes from its bare row, and the first read copies that checkpoint under `orders:shardId-...`. Other streams ignore the bare rows.
+2. Without that setting, a shard whose bare row holds a checkpoint is not read: the subscription reports a lease error naming the table, the shard and the stream, so no stream starts from another stream's progress or from the tip by accident.
+3. Once the upgraded service has started every stream it consumes, each bare row that held progress has its copy. Delete the rows whose `lease_key` has no `:` and drop `legacy_stream`.
+
+A table that served more than one stream before the upgrade holds, in each bare row, whichever stream checkpointed last, so neither stream can resume from it: delete the bare rows and open the streams with `start_at(..)` at the position they should read from. Stop the instances of the old version before starting the new one: the two versions lease different rows, so running both at once lets both read the same shard (duplicates, not losses).
+
 ## Test it
 
-`TestApp` runs the service's own app with `KinesisBroker` in process, with no AWS account.
+`TestApp::start` runs the service's own app with `KinesisBroker` connected in process, with no AWS
+account. `TestApp::start_live(app())` runs the same test against LocalStack.
 
 ```rust
 use ruststream::testing::TestApp;

@@ -25,8 +25,9 @@ default = []
 asyncapi = ["ruststream/asyncapi", "dep:serde"]
 # A DynamoDB-backed lease store, so multiple service instances can share the shards.
 dynamodb-lease = ["dep:aws-sdk-dynamodb"]
-# The in-process test broker (TestableBroker + TestApp support). The conformance harness is a
-# broker-author tool and stays in this repo's dev-dependencies, not in the user-facing feature.
+# The broker's in-process mode: `TestApp::start` connects `KinesisBroker` without a server. A
+# service enables it in its dev-dependencies. The conformance harness is a broker-author tool and
+# stays in this repo's dev-dependencies, not in the user-facing feature.
 testing = ["ruststream/testing"]
 
 [dependencies]
