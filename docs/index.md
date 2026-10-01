@@ -11,8 +11,8 @@ one service instance reads a shard at a time, and delivery is at-least-once.
 ## Install
 
 Three features, all off by default: `dynamodb-lease` shares the shards between service instances,
-`testing` ships the in-process broker, and `asyncapi` writes this broker's own vocabulary into the
-generated document.
+`testing` runs `KinesisBroker` in process under the framework's `TestApp`, and `asyncapi` writes
+this broker's own vocabulary into the generated document.
 
 ```toml
 ruststream = { version = "0.7", features = ["macros", "json"] }
@@ -39,7 +39,8 @@ The crate's rustdoc is its guide, written next to the code it describes:
 - [Subscribing](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#subscribing)
   - the stream descriptor, the pause between reads, and creating a stream for a local stand.
 - [Leases and checkpoints](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#leases-and-checkpoints)
-  - what an acknowledgement writes, and the `DynamoDB` store several service instances share.
+  - what an acknowledgement writes, the `DynamoDB` store several service instances share, and
+  upgrading a lease table an earlier version wrote.
 - [Positions and seeking](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#positions-and-seeking)
   - opening a subscription anywhere the stream still retains, and repositioning it from a handler.
 - [Batches](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#batches)
@@ -47,7 +48,7 @@ The crate's rustdoc is its guide, written next to the code it describes:
 - [Publishing](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#publishing)
   - the publish policy, and the partition key that picks a record's shard.
 - [Testing](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#testing)
-  - the in-process transport behind the `testing` feature.
+  - the production app under the `TestApp` harness, in process or against a live stream.
 
 ## Where to go next
 
