@@ -104,9 +104,11 @@ advances - and is written to the lease store - only when no earlier record on th
 unhandled.
 
 - `HandlerOutcome::ack()` marks the record handled.
-- `HandlerOutcome::retry()` leaves it unhandled. The watermark stops there, so the shard replays
-  from that record when its lease is next taken. A sharded log repositions; it cannot requeue one
-  record.
+- `HandlerOutcome::retry()` on a registration that declares `max_attempts(..)` or a dead-letter
+  stream publishes a counted copy of the record back to its stream. Without a declaration it asks
+  for a requeue, which a shard cannot perform: a sharded log repositions, it cannot requeue one
+  record. `nack(requeue = true)` answers `AckError::Unsupported`, and the record stays unhandled.
+  The watermark stops there, so the shard replays from that record when its lease is next taken.
 - `HandlerOutcome::drop()` checkpoints past the record, which is how a poison one is retired.
 
 Delivery is at-least-once: an unacknowledged record holds the watermark where it is, and everything
@@ -328,7 +330,9 @@ reads again from where it stopped, so a handler sees a pause rather than an erro
 ## Positions and seeking
 
 [`KinesisPosition`] is the whole vocabulary for where a subscription reads from. By default each
-shard resumes from its stored checkpoint, and a shard without one opens at the tip.
+shard resumes from its stored checkpoint, and a shard without one opens at the tip. Opening a
+subscription returns once every shard it took has its reader and its starting cursor, so the tip
+is the moment the subscription opened: a record published after that is read.
 
 | Position | Scope | Meaning |
 | --- | --- | --- |
@@ -547,8 +551,10 @@ A Kinesis record carries a data blob and a partition key and nothing else, so us
 the partition key are written into a small envelope around the payload, and only when such headers
 exist. A record published with no user headers is the plain payload, which any Kinesis consumer
 reads, and a record written by another producer is read back as headerless. Otherwise the blob is
-the four-byte magic `RSK1`, a big-endian `u32` header-block length, the header block, and the
-payload.
+the four-byte magic `RSK2`, a big-endian `u32` header-block length, the header block, and the
+payload. The block holds each header as a big-endian `u32` name length, the name, a big-endian
+`u32` value length and the value, so a value comes back byte for byte, whatever bytes it holds.
+Records written in the earlier `RSK1` text envelope still read back with their headers.
 
 # The prelude
 

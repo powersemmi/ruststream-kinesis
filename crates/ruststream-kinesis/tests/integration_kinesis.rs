@@ -22,8 +22,8 @@ use tokio::sync::Notify;
 
 use ruststream::runtime::PublishExt;
 use ruststream::{
-    Broker, ConnectedBroker, HeaderMap, IncomingMessage, Outgoing, OutgoingMessage, PublishPolicy,
-    Publisher, Serialized, StartAt, Subscriber, SubscriptionSource,
+    AckError, Broker, ConnectedBroker, HeaderMap, IncomingMessage, Outgoing, OutgoingMessage,
+    PublishPolicy, Publisher, Serialized, StartAt, Subscriber, SubscriptionSource,
 };
 use ruststream_kinesis::{
     ConnectedKinesisBroker, KinesisBroker, KinesisError, KinesisPosition, KinesisPublish,
@@ -395,8 +395,12 @@ async fn an_unacknowledged_record_replays_on_the_next_lease() {
                 .expect("delivery is ok");
             assert_eq!(message.payload(), expected);
             if expected == b"sticky" {
-                // nack(requeue = true): leave it unhandled - the watermark must not advance.
-                message.nack(true).await.expect("nack succeeds");
+                // A requeue a shard cannot perform leaves the record unhandled: the watermark must
+                // not advance.
+                assert!(
+                    matches!(message.nack(true).await, Err(AckError::Unsupported)),
+                    "a shard cannot requeue one record",
+                );
             } else {
                 message.ack().await.expect("ack succeeds");
             }
