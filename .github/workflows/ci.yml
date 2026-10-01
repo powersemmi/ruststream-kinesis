@@ -80,7 +80,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@v2.87.18
+        uses: taiki-e/install-action@v2.87.20
         with:
           tool: cargo-deny
 
@@ -124,7 +124,7 @@ jobs:
 
       - name: Install cargo-hack
         if: "!cancelled() && env.RUST_CHANGED == 'true'"
-        uses: taiki-e/install-action@v2.87.18
+        uses: taiki-e/install-action@v2.87.20
         with:
           tool: cargo-hack
 
@@ -345,6 +345,19 @@ jobs:
           # DynamoDB backs the lease store, and its suite creates a table before it asserts.
           timeout 150 bash -c 'until curl -fsS http://127.0.0.1:4566/_localstack/health | grep -q "\"dynamodb\": \"running\""; do sleep 2; done'
           curl -fsS http://127.0.0.1:4566/_localstack/health
+          # "running" is not ready yet: each backend starts on the first request it serves, which
+          # takes over a second for Kinesis. One request to each here keeps that start out of the
+          # first test's time limit.
+          curl -fsS -m 60 -o /dev/null -X POST -d '{}' \
+            -H 'Content-Type: application/x-amz-json-1.1' \
+            -H 'X-Amz-Target: Kinesis_20131202.ListStreams' \
+            -H 'Authorization: AWS4-HMAC-SHA256 Credential=test/20260101/us-east-1/kinesis/aws4_request, SignedHeaders=host, Signature=0' \
+            http://127.0.0.1:4566/
+          curl -fsS -m 60 -o /dev/null -X POST -d '{}' \
+            -H 'Content-Type: application/x-amz-json-1.0' \
+            -H 'X-Amz-Target: DynamoDB_20120810.ListTables' \
+            -H 'Authorization: AWS4-HMAC-SHA256 Credential=test/20260101/us-east-1/dynamodb/aws4_request, SignedHeaders=host, Signature=0' \
+            http://127.0.0.1:4566/
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

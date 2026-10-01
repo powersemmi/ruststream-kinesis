@@ -12,16 +12,18 @@
 
 use std::pin::pin;
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
 use futures::StreamExt;
 use futures::future::BoxFuture;
+use tokio::runtime;
 use tokio::sync::Notify;
 
 use ruststream::runtime::PublishExt;
 use ruststream::{
-    Broker, ConnectedBroker, HeaderMap, IncomingMessage, Outgoing, OutgoingMessage, PublishPolicy,
-    Publisher, Serialized, StartAt, Subscriber, SubscriptionSource,
+    AckError, Broker, ConnectedBroker, HeaderMap, IncomingMessage, Outgoing, OutgoingMessage,
+    PublishPolicy, Publisher, Serialized, StartAt, Subscriber, SubscriptionSource,
 };
 use ruststream_kinesis::{
     ConnectedKinesisBroker, KinesisBroker, KinesisError, KinesisPosition, KinesisPublish,
@@ -191,6 +193,58 @@ async fn roundtrip_preserves_payload_headers_and_partition_key() {
     connected.shutdown().await.expect("shutdown succeeds");
 }
 
+/// A subscription opened from another runtime keeps reading after that runtime stops.
+///
+/// A handler on a dedicated thread runs on a runtime of its own, and the shard coordinator and
+/// readers a subscription starts belong to the runtime the broker connected on: started on the
+/// caller's runtime they would die with it, and the subscription would end with no error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_subscription_opened_from_another_runtime_outlives_it() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    let connected = connect(&endpoint).await;
+    let stream_name = unique("foreign-runtime");
+    let opening = from_horizon(&stream_name);
+
+    let mut subscriber = thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let runtime = runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("the caller's runtime builds");
+                let subscriber = runtime
+                    .block_on(opening.subscribe(&connected))
+                    .expect("subscription opens");
+                drop(runtime);
+                subscriber
+            })
+            .join()
+            .expect("the caller's thread finishes")
+    });
+
+    connected
+        .publisher()
+        .publish(
+            OutgoingMessage::new(&stream_name, b"after".as_slice()),
+            None,
+        )
+        .await
+        .expect("publish succeeds");
+
+    let mut stream = pin!(subscriber.stream());
+    let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+        .await
+        .expect("delivery arrives")
+        .expect("the subscription is still reading after the runtime it was opened on stopped")
+        .expect("delivery is ok");
+    assert_eq!(message.payload(), b"after");
+    message.ack().await.expect("ack succeeds");
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
 /// Bytes the test already holds encoded: a serialized type reaches the stream as it is, so this
 /// check stays about the partition key rather than about a codec.
 #[derive(Outgoing, Serialized)]
@@ -341,8 +395,12 @@ async fn an_unacknowledged_record_replays_on_the_next_lease() {
                 .expect("delivery is ok");
             assert_eq!(message.payload(), expected);
             if expected == b"sticky" {
-                // nack(requeue = true): leave it unhandled - the watermark must not advance.
-                message.nack(true).await.expect("nack succeeds");
+                // A requeue a shard cannot perform leaves the record unhandled: the watermark must
+                // not advance.
+                assert!(
+                    matches!(message.nack(true).await, Err(AckError::Unsupported)),
+                    "a shard cannot requeue one record",
+                );
             } else {
                 message.ack().await.expect("ack succeeds");
             }
