@@ -75,7 +75,7 @@ struct Receipt {
 
 #[subscriber(
     KinesisStream::new("orders"),
-    publish("receipts"),
+    reply("receipts"),
     start_at(KinesisPosition::horizon())
 )]
 async fn confirm(order: &Order) -> Receipt {

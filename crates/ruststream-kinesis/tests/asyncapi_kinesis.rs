@@ -30,7 +30,7 @@ struct Receipt {
     KinesisStream::new("orders")
         .poll_interval(Duration::from_millis(250))
         .create_if_missing(2),
-    publish
+    reply
 )]
 async fn confirm(order: &Order) -> Receipt {
     Receipt { id: order.id }

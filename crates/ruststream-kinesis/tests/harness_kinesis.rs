@@ -106,13 +106,13 @@ async fn batches(batch: &[Job], ctx: &mut Context<'_, KinesisBatchContext>) -> H
 /// Replies with the file's nameless model, so the stream is the attribute's to name. The reply
 /// publisher is paired from a policy, so a service never holds it and the mount site is the only
 /// place its partition key can be named.
-#[subscriber(KinesisStream::new("orders"), publish("receipts"))]
+#[subscriber(KinesisStream::new("orders"), reply("receipts"))]
 async fn confirm(order: &Job) -> Job {
     Job { id: order.id }
 }
 
 /// Replies with a type that names its own stream, so the attribute carries the bare clause.
-#[subscriber(KinesisStream::new("orders"), publish)]
+#[subscriber(KinesisStream::new("orders"), reply)]
 async fn issue(order: &Job) -> Receipt {
     Receipt { order: order.id }
 }
