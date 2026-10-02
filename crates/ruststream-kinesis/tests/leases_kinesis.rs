@@ -40,7 +40,7 @@ mod live;
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(30);
 /// Long enough that nothing under test expires on its own.
-const TTL: Duration = Duration::from_secs(60);
+const TTL: Duration = Duration::from_mins(1);
 
 /// The stack's endpoint, or `None` to skip the live checks below. Under `RUSTSTREAM_REQUIRE_LIVE`
 /// a missing endpoint is a failure instead, so a job that started a stack cannot report `ok`
@@ -93,7 +93,7 @@ async fn provision_table(config: &SdkConfig, table: &str) -> aws_sdk_dynamodb::C
     client
         .wait_until_table_exists()
         .table_name(table)
-        .wait(Duration::from_secs(60))
+        .wait(Duration::from_mins(1))
         .await
         .expect("the table becomes usable");
     client
@@ -576,7 +576,7 @@ async fn a_table_from_an_earlier_version_resumes_from_its_bare_row() {
     kinesis
         .wait_until_stream_exists()
         .stream_name(&stream_name)
-        .wait(Duration::from_secs(60))
+        .wait(Duration::from_mins(1))
         .await
         .expect("the stream becomes usable");
     let mut written = Vec::new();

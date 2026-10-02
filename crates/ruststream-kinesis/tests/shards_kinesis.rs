@@ -29,7 +29,7 @@ use ruststream_kinesis::{
 
 mod live;
 
-const RECV_TIMEOUT: Duration = Duration::from_secs(60);
+const RECV_TIMEOUT: Duration = Duration::from_mins(1);
 /// Records published under one key, and distinct keys published beside them. Sixteen keys over
 /// two shards cover both: the service hashes the key, so which shard each one takes is fixed.
 const PINNED: usize = 8;
@@ -163,7 +163,7 @@ async fn split_in_half(client: &aws_sdk_kinesis::Client, stream: &str, parent: &
     client
         .wait_until_stream_exists()
         .stream_name(stream)
-        .wait(Duration::from_secs(60))
+        .wait(Duration::from_mins(1))
         .await
         .expect("the stream becomes usable again");
 
@@ -529,7 +529,7 @@ async fn a_merge_gates_the_child_on_both_of_its_parents() {
     client
         .wait_until_stream_exists()
         .stream_name(&stream_name)
-        .wait(Duration::from_secs(60))
+        .wait(Duration::from_mins(1))
         .await
         .expect("the stream becomes usable again");
 
