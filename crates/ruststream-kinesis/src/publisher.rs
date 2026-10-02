@@ -394,7 +394,7 @@ impl KinesisPublish {
 ///
 /// The policy reads nothing of its own here: a policy holds this broker's settings and never a
 /// destination, so the stream is the one the mount site resolved and the runtime handed over -
-/// the reply type's `#[outgoing(name)]`, the `publish("dest")` clause, a slot entry's name. The
+/// the reply type's `#[outgoing(name)]`, the `reply("dest")` clause, a slot entry's name. The
 /// subscription side names its stream on the same object, so both ends of a channel report the
 /// Kinesis stream behind it.
 #[cfg(feature = "asyncapi")]
@@ -484,7 +484,7 @@ impl PublishPolicy<ConnectedKinesisBroker> for KinesisPublish {
 ///     id: u64,
 /// }
 ///
-/// #[subscriber(KinesisStream::new("orders"), publish)]
+/// #[subscriber(KinesisStream::new("orders"), reply)]
 /// async fn confirm(order: &Order) -> Receipt {
 ///     Receipt { id: order.id }
 /// }

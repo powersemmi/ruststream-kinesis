@@ -551,7 +551,7 @@ struct Receipt {
     order: u64,
 }
 
-#[subscriber(KinesisStream::new("orders"), publish)]
+#[subscriber(KinesisStream::new("orders"), reply)]
 async fn confirm(order: &Order) -> Receipt {
     Receipt { order: order.id }
 }
@@ -637,7 +637,7 @@ struct Receipt {
     order: u64,
 }
 
-#[subscriber(KinesisStream::new("orders").create_if_missing(2), publish)]
+#[subscriber(KinesisStream::new("orders").create_if_missing(2), reply)]
 async fn confirm(order: &Order) -> Receipt {
     Receipt { order: order.id }
 }

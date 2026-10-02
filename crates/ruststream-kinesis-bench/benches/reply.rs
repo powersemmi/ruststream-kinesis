@@ -35,7 +35,7 @@ const CONFIRMATIONS: &[&str] = &["confirmations"];
 #[subscriber(
     KinesisStream::new(common::stream()).poll_interval(POLL_INTERVAL),
     start_at(KinesisPosition::horizon()),
-    publish
+    reply
 )]
 async fn confirm(order: &Order, ctx: &mut Context<'_, (), Latch>) -> Confirmation {
     ctx.state().arrived();

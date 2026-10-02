@@ -146,7 +146,7 @@ async fn split(client: &aws_sdk_kinesis::Client, stream: &str, parent: &str) {
     client
         .wait_until_stream_exists()
         .stream_name(stream)
-        .wait(Duration::from_secs(60))
+        .wait(Duration::from_mins(1))
         .await
         .expect("the stream becomes usable again");
 }

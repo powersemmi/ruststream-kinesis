@@ -25,7 +25,7 @@ struct Receipt {
 }
 
 /// The handler names what it replies with; how that reply is published is the mount's.
-#[subscriber(KinesisStream::new("orders"), publish)]
+#[subscriber(KinesisStream::new("orders"), reply)]
 async fn confirm(order: &Order) -> Receipt {
     Receipt { order: order.id }
 }

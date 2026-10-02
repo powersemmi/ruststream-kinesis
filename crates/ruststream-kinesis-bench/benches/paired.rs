@@ -164,7 +164,7 @@ const PROBE_BUDGET: Duration = Duration::from_secs(10);
 /// broker-bound.
 const BOUND_SHARE: f64 = 0.5;
 /// How long a run may go without a delivery before it is called stuck.
-const STALL: Duration = Duration::from_secs(60);
+const STALL: Duration = Duration::from_mins(1);
 /// How long a lease is valid without renewal, and the renewal cadence derived from it. Both are
 /// the crate's own, so the raw loop renews on the same schedule.
 const LEASE_TTL: Duration = Duration::from_secs(10);
@@ -391,7 +391,7 @@ async fn create_stream(client: &KinesisClient, stream: &str) {
     client
         .wait_until_stream_exists()
         .stream_name(stream)
-        .wait(Duration::from_secs(60))
+        .wait(Duration::from_mins(1))
         .await
         .expect("the stream becomes active");
 }
@@ -443,7 +443,7 @@ async fn create_table(client: &DynamoClient, table: &str) {
     client
         .wait_until_table_exists()
         .table_name(table)
-        .wait(Duration::from_secs(60))
+        .wait(Duration::from_mins(1))
         .await
         .expect("the table becomes active");
 }
