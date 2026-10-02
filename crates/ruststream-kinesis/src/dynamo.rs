@@ -56,14 +56,40 @@ impl DynamoLeaseStore {
     /// # Examples
     ///
     /// ```
-    /// use aws_config::{BehaviorVersion, SdkConfig};
-    /// use ruststream_kinesis::DynamoLeaseStore;
+    /// # mod demo {
+    /// use std::error::Error;
+    /// use std::sync::Arc;
     ///
-    /// let config = SdkConfig::builder()
-    ///     .behavior_version(BehaviorVersion::latest())
-    ///     .build();
-    /// let store = DynamoLeaseStore::new(&config, "orders-leases");
-    /// # let _ = store;
+    /// use aws_config::BehaviorVersion;
+    /// use ruststream_kinesis::prelude::*;
+    /// # use serde::Deserialize;
+    /// #
+    /// # #[derive(Deserialize)]
+    /// # struct Order {
+    /// #     id: u64,
+    /// # }
+    /// #
+    /// # #[subscriber(KinesisStream::new("orders"))]
+    /// # async fn handle(order: &Order) -> HandlerOutcome {
+    /// #     println!("got order {}", order.id);
+    /// #     HandlerOutcome::ack()
+    /// # }
+    ///
+    /// pub async fn run() -> Result<(), Box<dyn Error>> {
+    ///     let config = aws_config::defaults(BehaviorVersion::latest()).load().await;
+    ///     let leases = Arc::new(DynamoLeaseStore::new(&config, "orders-leases"));
+    ///     let broker = KinesisBroker::from_config(config).lease_store(leases);
+    ///
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+    ///         .with_broker(broker, |b| {
+    ///             b.include(handle);
+    ///         })
+    ///         .run()
+    ///         .await?;
+    ///     Ok(())
+    /// }
+    /// # }
+    /// # fn main() {}
     /// ```
     #[must_use]
     pub fn new(config: &SdkConfig, table: impl Into<String>) -> Self {
@@ -89,15 +115,42 @@ impl DynamoLeaseStore {
     /// # Examples
     ///
     /// ```
-    /// use aws_config::{BehaviorVersion, SdkConfig};
-    /// use ruststream_kinesis::DynamoLeaseStore;
+    /// # mod demo {
+    /// use std::error::Error;
+    /// use std::sync::Arc;
     ///
-    /// let config = SdkConfig::builder()
-    ///     .behavior_version(BehaviorVersion::latest())
-    ///     .build();
-    /// // The table was written by an earlier version for the `orders` stream only.
-    /// let store = DynamoLeaseStore::new(&config, "orders-leases").legacy_stream("orders");
-    /// # let _ = store;
+    /// use aws_config::BehaviorVersion;
+    /// use ruststream_kinesis::prelude::*;
+    /// # use serde::Deserialize;
+    /// #
+    /// # #[derive(Deserialize)]
+    /// # struct Order {
+    /// #     id: u64,
+    /// # }
+    /// #
+    /// # #[subscriber(KinesisStream::new("orders"))]
+    /// # async fn handle(order: &Order) -> HandlerOutcome {
+    /// #     println!("got order {}", order.id);
+    /// #     HandlerOutcome::ack()
+    /// # }
+    ///
+    /// pub async fn run() -> Result<(), Box<dyn Error>> {
+    ///     let config = aws_config::defaults(BehaviorVersion::latest()).load().await;
+    ///     // The table was written by an earlier version for the `orders` stream only.
+    ///     let leases =
+    ///         Arc::new(DynamoLeaseStore::new(&config, "orders-leases").legacy_stream("orders"));
+    ///     let broker = KinesisBroker::from_config(config).lease_store(leases);
+    ///
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+    ///         .with_broker(broker, |b| {
+    ///             b.include(handle);
+    ///         })
+    ///         .run()
+    ///         .await?;
+    ///     Ok(())
+    /// }
+    /// # }
+    /// # fn main() {}
     /// ```
     #[must_use]
     pub fn legacy_stream(mut self, stream: impl Into<String>) -> Self {

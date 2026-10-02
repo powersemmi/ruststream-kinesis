@@ -25,31 +25,39 @@ use crate::subscriber::KinesisSeeker;
 /// # Examples
 ///
 /// ```
-/// use ruststream::prelude::*;
-/// use ruststream::Seeker;
-/// use ruststream_kinesis::{KinesisContext, KinesisPosition, Position, SeekHandle};
-/// # #[derive(serde::Deserialize)]
-/// # struct Job { id: u64 }
+/// # mod demo {
+/// use ruststream_kinesis::prelude::*;
+/// use serde::Deserialize;
 ///
-/// struct Replayer;
-///
-/// impl Handle<Job, (), (), KinesisContext> for Replayer {
-///     async fn handle(
-///         &self,
-///         job: &Job,
-///         _outs: &(),
-///         ctx: &mut Context<'_, KinesisContext>,
-///     ) -> Result<(), HandlerOutcome> {
-///         let here = ctx.context(Position);
-///         println!("job {} sits at {here:?}", job.id);
-///         if job.id == u64::MAX
-///             && ctx.context(SeekHandle).seek(KinesisPosition::latest()).await.is_err()
-///         {
-///             return Err(HandlerOutcome::retry());
-///         }
-///         Ok(())
-///     }
+/// #[derive(Deserialize)]
+/// struct Job {
+///     id: u64,
 /// }
+///
+/// /// Logs where each job sits, and follows the tip from the marker job on.
+/// #[subscriber(KinesisStream::new("jobs"))]
+/// async fn follow(job: &Job, ctx: &mut Context<'_, KinesisContext>) -> HandlerOutcome {
+///     println!("job {} sits at {:?}", job.id, ctx.context(Position));
+///     if job.id == u64::MAX
+///         && ctx
+///             .context(SeekHandle)
+///             .seek(KinesisPosition::latest())
+///             .await
+///             .is_err()
+///     {
+///         return HandlerOutcome::retry();
+///     }
+///     HandlerOutcome::ack()
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
+///         b.include(follow);
+///     })
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 #[derive(Debug, Clone)]
 pub struct KinesisContext {
@@ -80,34 +88,38 @@ impl BuildContext<KinesisMessage> for KinesisContext {
 /// # Examples
 ///
 /// ```
-/// use ruststream::prelude::*;
-/// use ruststream::Seeker;
-/// use ruststream_kinesis::{KinesisBatchContext, KinesisPosition, SeekHandle};
-/// # #[derive(serde::Deserialize)]
-/// # struct Job { id: u64 }
+/// # mod demo {
+/// use ruststream_kinesis::prelude::*;
+/// use serde::Deserialize;
 ///
-/// struct Replayer;
-///
-/// impl Handle<[Job], (), (), KinesisBatchContext> for Replayer {
-///     async fn handle(
-///         &self,
-///         batch: &[Job],
-///         _outs: &(),
-///         ctx: &mut Context<'_, KinesisBatchContext>,
-///     ) -> Result<(), Vec<HandlerOutcome>> {
-///         // A batch carrying the rewind marker moves the whole subscription once it settles.
-///         if batch.iter().any(|job| job.id == u64::MAX)
-///             && ctx
-///                 .context(SeekHandle)
-///                 .seek(KinesisPosition::horizon())
-///                 .await
-///                 .is_err()
-///         {
-///             return Err(batch.iter().map(|_| HandlerOutcome::retry()).collect());
-///         }
-///         Ok(())
-///     }
+/// #[derive(Deserialize)]
+/// struct Job {
+///     id: u64,
 /// }
+///
+/// /// A batch carrying the rewind marker moves the whole subscription once it settles.
+/// #[subscriber(KinesisStream::new("jobs"))]
+/// async fn rewind(batch: &[Job], ctx: &mut Context<'_, KinesisBatchContext>) -> HandlerOutcome {
+///     if batch.iter().any(|job| job.id == u64::MAX)
+///         && ctx
+///             .context(SeekHandle)
+///             .seek(KinesisPosition::horizon())
+///             .await
+///             .is_err()
+///     {
+///         return HandlerOutcome::retry();
+///     }
+///     HandlerOutcome::ack()
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
+///         b.include(rewind.batch(nonzero!(100)));
+///     })
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 #[derive(Debug, Clone)]
 pub struct KinesisBatchContext {

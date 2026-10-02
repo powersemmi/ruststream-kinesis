@@ -37,12 +37,79 @@ use crate::message::{PARTITION_KEY_HEADER, encode_envelope};
 /// # Examples
 ///
 /// ```
-/// use ruststream_kinesis::KinesisPublishOptions;
+/// # #[cfg(feature = "testing")]
+/// # mod demo {
+/// use std::error::Error;
 ///
-/// let options = KinesisPublishOptions {
-///     partition_key: Some("tenant-acme".to_owned()),
-/// };
-/// # let _ = options;
+/// use ruststream::testing::TestApp;
+/// use ruststream_kinesis::prelude::*;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Deserialize, Serialize, Outgoing)]
+/// pub struct Order {
+///     pub id: u64,
+/// }
+///
+/// #[derive(Serialize, Outgoing)]
+/// struct Journalled {
+///     order: u64,
+/// }
+///
+/// /// The slot the journal entries leave through.
+/// #[derive(OutSlot)]
+/// #[publishes(Journalled)]
+/// struct Journal;
+///
+/// /// Every entry of one tenant lands on one shard, so they stay in order.
+/// #[subscriber(KinesisStream::new("orders"))]
+/// async fn record(
+///     order: &Order,
+///     Out(journal): Out<impl Publisher<Options = KinesisPublishOptions>, Journal>,
+/// ) -> HandlerOutcome {
+///     let sent = journal
+///         .message(&Journalled { order: order.id })
+///         .to("orders.journal")
+///         .partition_key("tenant-acme")
+///         .publish()
+///         .await;
+///     if sent.is_err() {
+///         return HandlerOutcome::retry();
+///     }
+///     HandlerOutcome::ack()
+/// }
+///
+/// /// The app `main` runs.
+/// pub fn app() -> RustStream {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
+///         b.include(record).out(Journal, Publish::default()).build();
+///     })
+/// }
+///
+/// pub async fn keys_each_entry() -> Result<(), Box<dyn Error>> {
+///     let tb = TestApp::start(app()).await?;
+///     tb.broker::<KinesisBroker>()
+///         .message(&Order { id: 7 })
+///         .to("orders")
+///         .publish()
+///         .await?;
+///
+///     tb.out::<Journal>()
+///         .assert_called_once()
+///         .with_options(&KinesisPublishOptions {
+///             partition_key: Some("tenant-acme".to_owned()),
+///         });
+///     Ok(())
+/// }
+/// # }
+/// # #[cfg(feature = "testing")]
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// #     tokio::runtime::Builder::new_multi_thread()
+/// #         .enable_all()
+/// #         .build()?
+/// #         .block_on(demo::keys_each_entry())
+/// # }
+/// # #[cfg(not(feature = "testing"))]
+/// # fn main() {}
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KinesisPublishOptions {
@@ -186,10 +253,48 @@ impl Publisher for KinesisPublisher {
 /// # Examples
 ///
 /// ```
+/// # mod demo {
 /// use ruststream_kinesis::KinesisPublish;
+/// use ruststream_kinesis::prelude::*;
+/// use serde::{Deserialize, Serialize};
 ///
-/// let policy = KinesisPublish::default().partition_key("tenant-acme");
-/// # let _ = policy;
+/// #[derive(Deserialize)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[derive(Serialize, Outgoing)]
+/// struct Journalled {
+///     order: u64,
+/// }
+///
+/// /// The slot the journal entries leave through.
+/// #[derive(OutSlot)]
+/// #[publishes(Journalled)]
+/// struct Journal;
+///
+/// /// The body names no broker: the plain bound moves between brokers untouched.
+/// #[subscriber(KinesisStream::new("orders"))]
+/// async fn record(order: &Order, Out(journal): Out<impl Publisher, Journal>) -> HandlerOutcome {
+///     let sent = journal
+///         .message(&Journalled { order: order.id })
+///         .to("orders.journal")
+///         .publish()
+///         .await;
+///     if sent.is_err() {
+///         return HandlerOutcome::retry();
+///     }
+///     HandlerOutcome::ack()
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
+///         b.include(record).out(Journal, KinesisPublish::default()).build();
+///     })
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[must_use]
@@ -213,10 +318,50 @@ impl KinesisPublish {
     /// # Examples
     ///
     /// ```
+    /// # mod demo {
     /// use ruststream_kinesis::KinesisPublish;
+    /// use ruststream_kinesis::prelude::*;
+    /// use serde::{Deserialize, Serialize};
     ///
-    /// let policy = KinesisPublish::default().partition_key("tenant-acme");
-    /// # let _ = policy;
+    /// #[derive(Deserialize)]
+    /// struct Order {
+    ///     id: u64,
+    /// }
+    ///
+    /// #[derive(Serialize, Outgoing)]
+    /// struct Journalled {
+    ///     order: u64,
+    /// }
+    ///
+    /// /// The slot the journal entries leave through.
+    /// #[derive(OutSlot)]
+    /// #[publishes(Journalled)]
+    /// struct Journal;
+    ///
+    /// /// The body names no broker: the plain bound moves between brokers untouched.
+    /// #[subscriber(KinesisStream::new("orders"))]
+    /// async fn record(order: &Order, Out(journal): Out<impl Publisher, Journal>) -> HandlerOutcome {
+    ///     let sent = journal
+    ///         .message(&Journalled { order: order.id })
+    ///         .to("orders.journal")
+    ///         .publish()
+    ///         .await;
+    ///     if sent.is_err() {
+    ///         return HandlerOutcome::retry();
+    ///     }
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
+    ///         // Every journal entry on one shard, mutually ordered.
+    ///         let journal = KinesisPublish::default().partition_key("journal-v1");
+    ///         b.include(record).out(Journal, journal).build();
+    ///     })
+    /// }
+    /// # }
+    /// # fn main() {}
     /// ```
     pub fn partition_key(mut self, key: impl Into<String>) -> Self {
         self.partition_key = Some(key.into());
@@ -323,30 +468,37 @@ impl PublishPolicy<ConnectedKinesisBroker> for KinesisPublish {
 /// # Examples
 ///
 /// ```
+/// # mod demo {
 /// use ruststream_kinesis::prelude::*;
-/// # #[derive(serde::Deserialize)]
-/// # struct Order { id: u64 }
+/// use serde::{Deserialize, Serialize};
 ///
-/// // The reply type names the stream it goes to; the mount site names how it is published.
-/// #[derive(Outgoing, serde::Serialize)]
+/// #[derive(Deserialize)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// /// The reply type names the stream it goes to; the mount site names how it is published.
+/// #[derive(Serialize, Outgoing)]
 /// #[outgoing(name = "receipts")]
-/// struct Receipt { id: u64 }
+/// struct Receipt {
+///     id: u64,
+/// }
 ///
 /// #[subscriber(KinesisStream::new("orders"), publish)]
 /// async fn confirm(order: &Order) -> Receipt {
 ///     Receipt { id: order.id }
 /// }
 ///
-/// # fn wire() {
-/// let _app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-///     KinesisBroker::new(),
-///     |b| {
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
 ///         b.include(confirm)
 ///             .out_reply(Publish::default())
 ///             .partition_key("tenant-acme");
-///     },
-/// );
+///     })
+/// }
 /// # }
+/// # fn main() {}
 /// ```
 ///
 /// The settings live on the policy the chain named, so a chain that named another broker's
@@ -383,23 +535,51 @@ where
 /// # Examples
 ///
 /// ```
-/// # async fn demo() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+/// # mod demo {
 /// use ruststream_kinesis::prelude::*;
+/// use serde::{Deserialize, Serialize};
 ///
-/// // The record is already encoded, so it declares itself serialized: no codec runs on it,
-/// // and the name still puts it in the generated document.
-/// #[derive(Outgoing, Serialized)]
-/// struct Job(Vec<u8>);
+/// #[derive(Deserialize)]
+/// struct Order {
+///     id: u64,
+/// }
 ///
-/// KinesisBroker::new()
-///     .publisher()
-///     .message(&Job(br#"{"id":1}"#.to_vec()))
-///     .to("jobs")
-///     .partition_key("tenant-acme")
-///     .publish()
-///     .await?;
-/// # Ok(())
+/// #[derive(Serialize, Outgoing)]
+/// struct Journalled {
+///     order: u64,
+/// }
+///
+/// /// The slot the journal entries leave through.
+/// #[derive(OutSlot)]
+/// #[publishes(Journalled)]
+/// struct Journal;
+///
+/// /// Every entry of one tenant lands on one shard, so they stay in order.
+/// #[subscriber(KinesisStream::new("orders"))]
+/// async fn record(
+///     order: &Order,
+///     Out(journal): Out<impl Publisher<Options = KinesisPublishOptions>, Journal>,
+/// ) -> HandlerOutcome {
+///     let sent = journal
+///         .message(&Journalled { order: order.id })
+///         .to("orders.journal")
+///         .partition_key("tenant-acme")
+///         .publish()
+///         .await;
+///     if sent.is_err() {
+///         return HandlerOutcome::retry();
+///     }
+///     HandlerOutcome::ack()
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
+///         b.include(record).out(Journal, Publish::default()).build();
+///     })
+/// }
 /// # }
+/// # fn main() {}
 /// ```
 pub trait KinesisPublishSteps {
     /// Sends this one record under `key` as its partition key.
