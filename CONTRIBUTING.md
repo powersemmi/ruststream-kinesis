@@ -26,9 +26,9 @@ git clone https://github.com/powersemmi/ruststream-kinesis.git
 ## Environment
 
 - **Rust** through rustup. `rust-toolchain.toml` selects stable with rustfmt and clippy. The
-  minimum supported version is 1.94.1, the `rust-version` in `Cargo.toml`:
-  `rustup toolchain install 1.94.1` builds against it with
-  `cargo +1.94.1 check --workspace --all-features`.
+  minimum supported version is 1.95, the `rust-version` in `Cargo.toml`:
+  `rustup toolchain install 1.95` builds against it with
+  `cargo +1.95 check --workspace --all-features`.
 - **just**, which runs every recipe below.
 - **Docker** with Compose, for the LocalStack stand (Kinesis and DynamoDB) the live suite and the benchmarks run against.
 - Per task:

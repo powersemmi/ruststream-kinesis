@@ -5,9 +5,9 @@ members = ["crates/ruststream-kinesis", "crates/ruststream-kinesis-bench"]
 [workspace.package]
 version = "0.7.0"
 edition = "2024"
-# The AWS SDK tracks a stable-2 MSRV policy (1.94.1 today); the core stays at 1.85 (a
-# dependent may exceed its dependency's floor).
-rust-version = "1.94.1"
+# The floor is the higher of the core's (1.95) and the AWS SDK's, which tracks a stable-2
+# policy (1.94.1 today).
+rust-version = "1.95"
 license = "Apache-2.0"
 repository = "https://github.com/powersemmi/ruststream-kinesis"
 authors = ["RustStream contributors"]
