@@ -164,11 +164,30 @@ fn decode_text(block: &[u8]) -> HeaderMap {
 /// # Examples
 ///
 /// ```
-/// use ruststream_kinesis::KinesisPosition;
+/// # mod demo {
+/// use ruststream_kinesis::prelude::*;
+/// use serde::Deserialize;
 ///
-/// // Every retained record on every shard, replayed from the trim horizon.
-/// let backlog = KinesisPosition::horizon();
-/// # let _ = backlog;
+/// #[derive(Deserialize)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// /// Rebuilds a read model from every record the stream still retains, on every shard.
+/// #[subscriber(KinesisStream::new("orders"), start_at(KinesisPosition::horizon()))]
+/// async fn backfill(order: &Order) -> HandlerOutcome {
+///     println!("order {}", order.id);
+///     HandlerOutcome::ack()
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
+///         b.include(backfill);
+///     })
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KinesisPosition {

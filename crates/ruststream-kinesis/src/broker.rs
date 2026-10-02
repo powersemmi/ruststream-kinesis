@@ -104,14 +104,35 @@ pub(crate) type CoreCell = Arc<OnceCell<Link>>;
 /// # Examples
 ///
 /// ```
-/// use ruststream_kinesis::KinesisBroker;
+/// # mod demo {
+/// use ruststream_kinesis::prelude::*;
+/// use serde::Deserialize;
 ///
-/// let broker = KinesisBroker::new(); // region and credentials from the environment
-/// let local = KinesisBroker::new()
-///     .endpoint("http://localhost:4566")
-///     .test_credentials()
-///     .region("us-east-1");
-/// # let _ = (broker, local);
+/// #[derive(Deserialize)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[subscriber(KinesisStream::new("orders"))]
+/// async fn handle(order: &Order) -> HandlerOutcome {
+///     println!("got order {}", order.id);
+///     HandlerOutcome::ack()
+/// }
+///
+/// /// Against a local stack. A production service writes `KinesisBroker::new()` alone, and the
+/// /// region and the credentials resolve from the environment when the runtime connects.
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     let broker = KinesisBroker::new()
+///         .endpoint("http://localhost:4566")
+///         .test_credentials()
+///         .region("us-east-1");
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+///         b.include(handle);
+///     })
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 #[derive(Clone, Default)]
 #[must_use]

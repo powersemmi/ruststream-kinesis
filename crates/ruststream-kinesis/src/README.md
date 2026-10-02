@@ -188,12 +188,37 @@ stream named by [`DynamoLeaseStore::legacy_stream`]:
 ```
 # #[cfg(feature = "dynamodb-lease")]
 # mod demo {
-use aws_config::SdkConfig;
-use ruststream_kinesis::DynamoLeaseStore;
+use std::error::Error;
+use std::sync::Arc;
 
-// The table was written for the `orders` stream only.
-pub fn store(config: &SdkConfig) -> DynamoLeaseStore {
-    DynamoLeaseStore::new(config, "orders-leases").legacy_stream("orders")
+use aws_config::BehaviorVersion;
+use ruststream_kinesis::prelude::*;
+# use serde::Deserialize;
+#
+# #[derive(Deserialize)]
+# struct Order {
+#     id: u64,
+# }
+#
+# #[subscriber(KinesisStream::new("orders"))]
+# async fn handle(order: &Order) -> HandlerOutcome {
+#     println!("got order {}", order.id);
+#     HandlerOutcome::ack()
+# }
+
+pub async fn run() -> Result<(), Box<dyn Error>> {
+    let config = aws_config::defaults(BehaviorVersion::latest()).load().await;
+    // The table was written for the `orders` stream only.
+    let leases = Arc::new(DynamoLeaseStore::new(&config, "orders-leases").legacy_stream("orders"));
+    let broker = KinesisBroker::from_config(config).lease_store(leases);
+
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(broker, |b| {
+            b.include(handle);
+        })
+        .run()
+        .await?;
+    Ok(())
 }
 # }
 # fn main() {}
@@ -651,6 +676,8 @@ the same test body against a running stack. The harness's usage is the core's:
 ```
 # #[cfg(feature = "testing")]
 # mod demo {
+use std::error::Error;
+
 use ruststream::testing::TestApp;
 use ruststream_kinesis::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -674,7 +701,7 @@ pub fn app() -> RustStream {
     })
 }
 
-pub async fn accepts_an_order() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn accepts_an_order() -> Result<(), Box<dyn Error>> {
     let tb = TestApp::start(app()).await?;
 
     // The publish returns once the handler it woke has settled.
@@ -693,15 +720,15 @@ pub async fn accepts_an_order() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 # }
-# fn main() {
-#     #[cfg(feature = "testing")]
+# #[cfg(feature = "testing")]
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
 #     tokio::runtime::Builder::new_multi_thread()
 #         .enable_all()
-#         .build()
-#         .expect("the runtime starts")
+#         .build()?
 #         .block_on(demo::accepts_an_order())
-#         .expect("the test passes");
 # }
+# #[cfg(not(feature = "testing"))]
+# fn main() {}
 ```
 
 In process, the connected broker carries an in-process transport in place of the SDK client, and

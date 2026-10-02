@@ -21,21 +21,37 @@
 //! # Examples
 //!
 //! ```
+//! # mod demo {
 //! use std::time::Duration;
 //!
 //! use ruststream_kinesis::prelude::*;
-//! # #[derive(serde::Deserialize)]
-//! # struct Order { id: u64 }
+//! use serde::{Deserialize, Serialize};
 //!
-//! async fn handle(order: &Order, Ctx(at): Ctx<Position>) -> HandlerOutcome {
-//!     println!("order {} sits at {at:?}", order.id);
-//!     HandlerOutcome::ack()
+//! #[derive(Deserialize)]
+//! struct Order {
+//!     id: u64,
 //! }
 //!
-//! let orders = KinesisStream::new("orders").poll_interval(Duration::from_millis(500));
-//! let broker = KinesisBroker::new();
-//! let reply_with = Publish::default();
-//! # let _ = (orders, broker, reply_with, handle);
+//! #[derive(Serialize, Outgoing)]
+//! #[outgoing(name = "receipts")]
+//! struct Receipt {
+//!     order: u64,
+//! }
+//!
+//! #[subscriber(KinesisStream::new("orders").poll_interval(Duration::from_millis(500)), publish)]
+//! async fn confirm(order: &Order, Ctx(at): Ctx<Position>) -> Receipt {
+//!     println!("order {} sits at {at:?}", order.id);
+//!     Receipt { order: order.id }
+//! }
+//!
+//! #[ruststream::app]
+//! fn app() -> impl App {
+//!     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
+//!         b.include(confirm).out_reply(Publish::default());
+//!     })
+//! }
+//! # }
+//! # fn main() {}
 //! ```
 
 pub use ruststream::prelude::*;

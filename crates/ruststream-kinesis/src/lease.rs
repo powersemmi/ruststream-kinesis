@@ -25,13 +25,69 @@ pub const SHARD_END: &str = "SHARD_END";
 ///
 /// # Examples
 ///
-/// ```
-/// use ruststream_kinesis::LeaseKey;
+/// A store over a string-keyed table writes each shard's row under the key's `stream:shard` form:
 ///
-/// let key = LeaseKey::new("orders", "shardId-000000000000");
-/// assert_eq!(key.stream(), "orders");
-/// assert_eq!(key.shard(), "shardId-000000000000");
-/// assert_eq!(key.to_string(), "orders:shardId-000000000000");
+/// ```
+/// use std::collections::HashMap;
+/// use std::sync::Mutex;
+/// # use std::time::Duration;
+///
+/// use futures::future::BoxFuture;
+/// use ruststream_kinesis::{LeaseError, LeaseKey, LeaseState, LeaseStore};
+///
+/// /// Checkpoints for a single instance, which owns every shard.
+/// #[derive(Default)]
+/// pub struct Checkpoints(Mutex<HashMap<String, String>>);
+///
+/// impl LeaseStore for Checkpoints {
+///     fn checkpoint<'a>(
+///         &'a self,
+///         key: &'a LeaseKey,
+///         _owner: &'a str,
+///         sequence: &'a str,
+///     ) -> BoxFuture<'a, Result<bool, LeaseError>> {
+///         Box::pin(async move {
+///             let mut rows = self.0.lock().map_err(|e| e.to_string())?;
+///             rows.insert(key.to_string(), sequence.to_owned());
+///             Ok(true)
+///         })
+///     }
+///
+///     fn read<'a>(&'a self, key: &'a LeaseKey) -> BoxFuture<'a, Result<LeaseState, LeaseError>> {
+///         Box::pin(async move {
+///             let rows = self.0.lock().map_err(|e| e.to_string())?;
+///             let mut state = LeaseState::default();
+///             state.checkpoint = rows.get(&key.to_string()).cloned();
+///             Ok(state)
+///         })
+///     }
+/// #
+/// #     fn acquire<'a>(
+/// #         &'a self,
+/// #         _key: &'a LeaseKey,
+/// #         _owner: &'a str,
+/// #         _ttl: Duration,
+/// #     ) -> BoxFuture<'a, Result<bool, LeaseError>> {
+/// #         Box::pin(async { Ok(true) })
+/// #     }
+/// #
+/// #     fn renew<'a>(
+/// #         &'a self,
+/// #         _key: &'a LeaseKey,
+/// #         _owner: &'a str,
+/// #         _ttl: Duration,
+/// #     ) -> BoxFuture<'a, Result<bool, LeaseError>> {
+/// #         Box::pin(async { Ok(true) })
+/// #     }
+/// #
+/// #     fn release<'a>(
+/// #         &'a self,
+/// #         _key: &'a LeaseKey,
+/// #         _owner: &'a str,
+/// #     ) -> BoxFuture<'a, Result<(), LeaseError>> {
+/// #         Box::pin(async { Ok(()) })
+/// #     }
+/// }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct LeaseKey {

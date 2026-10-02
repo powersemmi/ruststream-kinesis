@@ -32,12 +32,19 @@ use crate::subscriber::KinesisSubscriber;
 /// [`subscriber`](ruststream::runtime::subscriber) constructor names a stream with it too:
 ///
 /// ```
+/// # mod demo {
+/// use std::error::Error;
 /// use std::time::Duration;
 ///
 /// use ruststream::prelude::*;
-/// use ruststream_kinesis::KinesisStream;
-/// # #[derive(serde::Deserialize)]
-/// # struct Order { id: u64 }
+/// use ruststream_kinesis::{KinesisBroker, KinesisStream};
+/// use schemars::JsonSchema;
+/// use serde::Deserialize;
+///
+/// #[derive(Deserialize, JsonSchema)]
+/// struct Order {
+///     id: u64,
+/// }
 ///
 /// struct Audit;
 ///
@@ -53,9 +60,18 @@ use crate::subscriber::KinesisSubscriber;
 ///     }
 /// }
 ///
-/// let source = KinesisStream::new("orders").poll_interval(Duration::from_millis(500));
-/// let mountable = subscriber(source, Audit).build();
-/// # let _ = mountable;
+/// pub async fn run() -> Result<(), Box<dyn Error>> {
+///     let orders = KinesisStream::new("orders").poll_interval(Duration::from_millis(500));
+///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+///         .with_broker(KinesisBroker::new(), |b| {
+///             b.include(subscriber(orders, Audit).build());
+///         })
+///         .run()
+///         .await?;
+///     Ok(())
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use]
@@ -133,23 +149,40 @@ impl KinesisStream {
 /// crate's, and they read as a chain after it:
 ///
 /// ```
+/// # mod demo {
 /// use std::time::Duration;
 ///
 /// use ruststream_kinesis::prelude::*;
-/// # #[derive(serde::Deserialize)]
-/// # struct Job { id: u64 }
+/// use serde::Deserialize;
+///
+/// #[derive(Deserialize)]
+/// struct Job {
+///     id: u64,
+/// }
 ///
 /// #[subscriber(KinesisStream::new("jobs"))]
 /// async fn work(batch: &[Job]) -> Vec<HandlerOutcome> {
-///     batch.iter().map(|_| HandlerOutcome::ack()).collect()
+///     batch
+///         .iter()
+///         .map(|job| {
+///             println!("job {}", job.id);
+///             HandlerOutcome::ack()
+///         })
+///         .collect()
 /// }
 ///
-/// # fn wire() {
-/// let _mountable = work
-///     .batch(nonzero!(500))
-///     .poll_interval(Duration::from_millis(500))
-///     .create_if_missing(1);
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
+///         b.include(
+///             work.batch(nonzero!(500))
+///                 .poll_interval(Duration::from_millis(500))
+///                 .create_if_missing(1),
+///         );
+///     })
+/// }
 /// # }
+/// # fn main() {}
 /// ```
 ///
 /// Both settings transform the descriptor, so they need one to transform: `start_at(..)`
