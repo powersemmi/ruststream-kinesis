@@ -11,7 +11,7 @@
 use std::convert::Infallible;
 use std::future::{Future, ready};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicIsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ruststream::codec::CborCodec;
@@ -291,7 +291,7 @@ impl Handle<Job> for Ledger {
 /// until both have sought.
 #[derive(Debug, Clone)]
 struct Rewind {
-    budget: Arc<AtomicUsize>,
+    budget: Arc<AtomicIsize>,
     both_sought: Arc<Barrier>,
 }
 
@@ -312,12 +312,7 @@ async fn lanes(
     Ctx(seeker): Ctx<SeekHandle>,
     State(rewind): State<Rewind>,
 ) -> HandlerOutcome {
-    let rewinds = rewind
-        .budget
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
-            left.checked_sub(1)
-        })
-        .is_ok();
+    let rewinds = rewind.budget.fetch_sub(1, Ordering::SeqCst) > 0;
     if !rewinds {
         return HandlerOutcome::ack();
     }
@@ -724,7 +719,7 @@ async fn a_reposition_replaced_before_it_is_applied_leaves_nothing_in_flight() {
         .on_startup(async move |()| {
             Ok::<_, Infallible>(Lanes {
                 rewind: Rewind {
-                    budget: Arc::new(AtomicUsize::new(2)),
+                    budget: Arc::new(AtomicIsize::new(2)),
                     both_sought: Arc::new(Barrier::new(2)),
                 },
             })

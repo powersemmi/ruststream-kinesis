@@ -146,7 +146,7 @@ async fn a_record_the_service_refuses_is_refused() {
         matches!(refused, KinesisError::Publish { .. }),
         "got {refused}"
     );
-    assert!(broker.published("orders").is_empty());
+    assert_eq!(broker.published("orders"), Vec::new());
 }
 
 /// Bytes the case already holds encoded, published as they are.
@@ -314,5 +314,8 @@ async fn a_record_reaches_every_subscription_on_its_stream() {
         broker.routes("orders", &["orders", "payments", "orders"]),
         [0, 2]
     );
-    assert!(broker.routes("orders", &["orders.dead"]).is_empty());
+    assert_eq!(
+        broker.routes("orders", &["orders.dead"]),
+        Vec::<usize>::new()
+    );
 }

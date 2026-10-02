@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use ruststream::asyncapi::{Spec, build_spec};
+use ruststream::asyncapi::{Bindings, Spec, build_spec};
 use ruststream::conformance::harness;
 use ruststream_kinesis::prelude::*;
 use schemars::JsonSchema;
@@ -121,7 +121,10 @@ fn a_policy_without_a_key_adds_no_message_binding() {
         });
     let spec = build_spec(&app);
 
-    assert!(spec.components.messages["Receipt"].bindings.is_empty());
+    assert_eq!(
+        spec.components.messages["Receipt"].bindings,
+        Bindings::new()
+    );
 }
 
 /// The document is generated to be published, so nothing the broker or the descriptor

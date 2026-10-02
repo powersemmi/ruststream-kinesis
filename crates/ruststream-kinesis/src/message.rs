@@ -528,7 +528,7 @@ mod tests {
     #[test]
     fn plain_payloads_read_as_headerless() {
         let (headers, payload) = decode_envelope(b"{\"id\":1}");
-        assert!(headers.is_empty());
+        assert_eq!(headers, HeaderMap::new());
         assert_eq!(payload.as_ref(), b"{\"id\":1}");
     }
 }
