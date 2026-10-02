@@ -15,13 +15,13 @@ This site holds the entry pages. The crate's guide is its overview on docs.rs, a
 
 - [Overview](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html): the transport and a first service
 - [Subscribing](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#subscribing): the stream descriptor, settling a record and delayed redelivery with its cap
-- [Leases and checkpoints](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#leases-and-checkpoints): how shards are leased and progress is checkpointed, in one process or across instances
+- [Leases and checkpoints](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#leases-and-checkpoints): how shards are leased and progress is checkpointed per stream and shard, in one process or across instances, and how a lease table an earlier version wrote is upgraded
 - [Batches](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#batches): batch handlers over a shard's records
 - [Positions and seeking](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#positions-and-seeking): where a subscription starts and how a handler repositions it
 - [Publishing](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#publishing): the publish policy, the partition key, replies and the header envelope
 - [The prelude](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#the-prelude): what a routes file and a handler body import
 - [The generated document](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#the-generated-document): what the `asyncapi` feature reports
-- [Testing](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#testing): the in-process broker behind the `testing` feature, driven by `TestApp`
+- [Testing](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#testing): the production app under `TestApp`, `KinesisBroker` in process behind the `testing` feature or against a live stream
 - [Operations](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#operations): credentials, a local stack, read budgets and the client's limits
 - [Cargo features](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#cargo-features): `asyncapi`, `dynamodb-lease` and `testing`
 
