@@ -35,7 +35,7 @@ aws-sdk-kinesis.workspace = true
 futures.workspace = true
 # The code-cost benchmarks (`consume`, `reply`, `batch`): callgrind and DHAT through the runner the
 # core pins.
-gungraun = "=0.19.4"
+gungraun = "=0.20.0"
 serde.workspace = true
 serde_json = "1"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
