@@ -517,12 +517,12 @@ mod tests {
         let enveloped = encode_envelope(&headers, BytesMut::new());
         for cut in [6, enveloped.len() - 1] {
             let (decoded, payload) = decode_envelope(&enveloped[..cut]);
-            assert!(decoded.is_empty(), "cut at {cut}");
+            assert_eq!(decoded, HeaderMap::new(), "cut at {cut}");
             assert_eq!(payload.as_ref(), &enveloped[..cut]);
         }
         let mut not_utf8_name = enveloped;
         not_utf8_name[12] = 0xff;
-        assert!(decode_envelope(&not_utf8_name).0.is_empty());
+        assert_eq!(decode_envelope(&not_utf8_name).0, HeaderMap::new());
     }
 
     #[test]
