@@ -117,9 +117,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-dynamodb"
-version = "1.128.0"
+version = "1.129.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "875e1078bcdeab3da04c91bd4b6d169a2cd48ce1c7b027a747c0958c6aedab97"
+checksum = "06027c5a4de74b9ff7db7cb851dba0ac945b726ec3b35d756fa0d756d655e685"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
@@ -143,9 +143,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-kinesis"
-version = "1.123.0"
+version = "1.124.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7eebf8e3c0989ed9fe6bf28ea0fbe6807c0a9891593594b67e8575506d6790ec"
+checksum = "13d54cf67b891bd5832eae1f81d783431bdf5ee96e3940bb706987c15dfbe353"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
