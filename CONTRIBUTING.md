@@ -38,7 +38,7 @@ git clone https://github.com/powersemmi/ruststream-kinesis.git
 | `just deny` | cargo-deny | `cargo install cargo-deny --locked` |
 | `just typo`, `just zizmor` | uv | the uv documentation |
 | `just bench` | Python 3 | the system package manager |
-| `just bench-code` | valgrind and the benchmark runner | the system package manager, then `cargo install --locked gungraun-runner --version =0.19.4` |
+| `just bench-code` | valgrind | the system package manager; the recipe installs the benchmark runner itself, at the release `Cargo.lock` pins |
 | the documentation site | Python 3.12 | `pip install -r docs/requirements.txt`, then `properdocs serve` |
 
 ## Checking a change
@@ -59,6 +59,9 @@ stops the stand.
 minutes and wants the machine to itself. `just bench-code` counts what a message costs in this
 crate's code, in instructions and allocations, with the service on the same stand, and rewrites
 the code table of the same document; it takes minutes and does not need a quiet machine.
+`just bench-code --baseline=main` compares the counts against a run saved on `main` with
+`just bench-code --save-baseline=main`. A run that breaches a limit prints every breach and fails.
+A pull request that changes the cost cites its numbers.
 
 ## Testing against a local core
 

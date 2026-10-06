@@ -48,7 +48,9 @@
 //! been answered by then; a long run also meets a varying number of the lease renewals and shard
 //! syncs that run on timers. The instructions move by a fraction of a percent and the allocations
 //! by a few blocks, so each scenario's limit sits at least a tenth of a percent above the highest
-//! count observed, and below what one more allocation per message would reach.
+//! count observed, and below what one more allocation per message would reach. The instruction
+//! limit sits at two percent, and it holds a run to a named baseline rather than to the run before
+//! it.
 
 // Each benchmark target compiles this module on its own and uses the part it needs; what another
 // target uses looks unused here.
@@ -70,7 +72,7 @@ use aws_sdk_kinesis::client::Waiters as _;
 use aws_sdk_kinesis::operation::create_stream::CreateStreamError;
 use aws_sdk_kinesis::primitives::Blob;
 use aws_sdk_kinesis::types::PutRecordsRequestEntry;
-use gungraun::{Callgrind, Dhat, DhatMetric, EntryPoint, EventKind, LibraryBenchmarkConfig};
+use gungraun::{Callgrind, Dhat, DhatMetric, EntryPoint, LibraryBenchmarkConfig};
 use ruststream::runtime::{AppInfo, BrokerScope, Identity, RunningApp, RustStream};
 use ruststream_kinesis::KinesisBroker;
 use serde::Deserialize;
@@ -119,10 +121,30 @@ pub struct Order {
     pub quantity: u32,
 }
 
-/// Deliveries per measured run: large enough that entering and leaving the region is lost in the
-/// per-message number, small enough that a scenario stays within minutes of valgrind time.
-/// `scripts/bench_results.py` divides by the same count.
-pub const MESSAGES: usize = 1_000;
+/// Deliveries per measured run.
+///
+/// The default is large enough that entering and leaving the region is lost in the per-message
+/// number, and small enough that a scenario stays within minutes of valgrind time.
+/// `RUSTSTREAM_BENCH_MESSAGES` at build time overrides it (`just bench-code 2000`) for a steadier
+/// number at the price of a longer run, and the allocation limits scale with the count through
+/// [`config`]. The published document is measured at the default, and `scripts/bench_results.py`
+/// divides by the same count.
+pub const MESSAGES: usize = messages(option_env!("RUSTSTREAM_BENCH_MESSAGES"));
+
+/// The count a run measures when nothing names one.
+const DEFAULT_MESSAGES: usize = 1_000;
+
+/// The configured count, or the default. A value that is not a positive number is a build error
+/// naming the variable, so a typo cannot silently measure the default.
+const fn messages(configured: Option<&str>) -> usize {
+    let Some(text) = configured else {
+        return DEFAULT_MESSAGES;
+    };
+    match usize::from_str_radix(text, 10) {
+        Ok(count) if count > 0 => count,
+        _ => panic!("RUSTSTREAM_BENCH_MESSAGES must be a positive number of deliveries"),
+    }
+}
 
 /// The measurement configuration every gated scenario shares.
 ///
@@ -131,8 +153,9 @@ pub const MESSAGES: usize = 1_000;
 /// longest run of the scenario (twice [`MESSAGES`] deliveries) is held to, so the run
 /// fails when the path allocates more than it does today. Both are floors the code is held to,
 /// so a number that goes down is lowered here in the same change. The instruction limit is
-/// relative: `just bench-code --save-baseline=main` records a baseline and
-/// `just bench-code --baseline=main` compares against it.
+/// relative, and `just bench-code` sets it only for a run against a named baseline:
+/// `just bench-code --save-baseline=main` records one, and `just bench-code --baseline=main`
+/// fails on two percent more instructions than it.
 pub fn config(steady: u64, cold: u64) -> LibraryBenchmarkConfig {
     config_every(steady, 1, cold)
 }
@@ -143,7 +166,7 @@ pub fn config_every(steady: u64, per: u64, cold: u64) -> LibraryBenchmarkConfig 
     let mut config = LibraryBenchmarkConfig::default();
     config
         .pass_through_env(ENDPOINT_VAR)
-        .tool(callgrind().soft_limits([(EventKind::Ir, 2f64)]))
+        .tool(callgrind())
         .tool(dhat().hard_limits([(DhatMetric::TotalBlocks, blocks(steady, per, cold))]));
     config
 }
