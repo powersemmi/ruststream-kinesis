@@ -120,5 +120,5 @@ just bench-code
 ```
 
 这个配方启动同一套服务，在 valgrind 下统计代码表，再把它停掉，并重写同一份文档里的 `code` 部分。它要
-花几分钟；除了那套服务，还需要 valgrind 和基准测试运行器：
-`cargo install --locked gungraun-runner --version =0.19.4`。
+花几分钟；除了那套服务，还需要 valgrind。基准测试运行器由配方自己安装，版本与 `Cargo.lock` 锁定的
+一致。超出某个限制的运行仍会跑完全程，在表格下方列出每一处超限，然后以失败结束。
