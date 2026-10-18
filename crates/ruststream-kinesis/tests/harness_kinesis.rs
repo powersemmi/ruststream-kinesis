@@ -117,6 +117,18 @@ async fn issue(order: &Job) -> Receipt {
     Receipt { order: order.id }
 }
 
+/// Posts each ledger entry as it arrives.
+#[subscriber(KinesisStream::new("ledger"))]
+async fn post(_entry: &Job) -> HandlerOutcome {
+    HandlerOutcome::ack()
+}
+
+/// Reconciles the same ledger in batches: a second reading of a stream the service already reads.
+#[subscriber(KinesisStream::new("ledger"))]
+async fn reconcile(_entries: &[Job]) -> HandlerOutcome {
+    HandlerOutcome::ack()
+}
+
 /// The descriptor a service ships carries the settings that price a real read, and it mounts
 /// here carrying them.
 #[subscriber(
@@ -632,6 +644,29 @@ async fn an_invalid_descriptor_fails_the_mount_in_process() {
         panic!("a descriptor that names no stream must not mount");
     };
     assert!(matches!(err, TestError::Subscribe(_)), "got {err}");
+}
+
+/// One broker reads a stream once. Its shards are leased and checkpointed per stream under the
+/// broker's one owner id, so a second subscription to the stream would share those leases with the
+/// first and lose records against the service. The mount fails in process as it fails there, a
+/// batch subscription counting like a single one, and the error says how to read the stream twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_subscription_to_one_stream_fails_the_mount() {
+    let app =
+        RustStream::new(AppInfo::new("ledger", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
+            b.include(post);
+            b.include(reconcile.batch(nonzero!(10)));
+        });
+
+    let Err(err) = TestApp::start(app).await else {
+        panic!("a second subscription to one stream must not mount");
+    };
+    assert!(matches!(err, TestError::Subscribe(_)), "got {err}");
+    let message = err.to_string();
+    assert!(
+        message.contains("'ledger'") && message.contains("second `KinesisBroker`"),
+        "the error names the stream and the way to read it twice: {message}",
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

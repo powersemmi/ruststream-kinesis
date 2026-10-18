@@ -30,6 +30,7 @@ use ruststream::{OutgoingMessage, RawMessage};
 use tokio::runtime::Handle;
 use tokio::sync::OnceCell;
 
+use crate::claim::ReadStreams;
 use crate::clients::RuntimeClients;
 use crate::error::{KinesisError, sdk_err};
 #[cfg(feature = "testing")]
@@ -281,6 +282,7 @@ impl Broker for KinesisBroker {
         Ok(ConnectedKinesisBroker {
             link,
             cell: self.cell,
+            streams: Arc::default(),
         })
     }
 }
@@ -303,6 +305,7 @@ impl InProcess for KinesisBroker {
         Ok(ConnectedKinesisBroker {
             link,
             cell: self.cell,
+            streams: Arc::default(),
         })
     }
 }
@@ -338,6 +341,8 @@ pub struct ConnectedKinesisBroker {
     link: Link,
     // Keeps the cell of publishers handed out before connect alive and filled.
     cell: CoreCell,
+    /// The streams this broker has an open subscription to: it reads each of them once.
+    streams: Arc<ReadStreams>,
 }
 
 impl ConnectedKinesisBroker {
@@ -361,16 +366,19 @@ impl ConnectedKinesisBroker {
     ///
     /// Returns [`KinesisError`] when the descriptor is invalid, the stream does not exist and
     /// the descriptor does not create it, stream creation (when opted in) fails, or the broker
-    /// is shut down.
+    /// is shut down. Returns [`KinesisError::AlreadySubscribed`] when this broker already has an
+    /// open subscription to the stream: its shards are leased under the broker's one owner id,
+    /// so a second subscription would share the first one's leases and checkpoints.
     pub async fn subscribe_stream(
         &self,
         descriptor: KinesisStream,
     ) -> Result<KinesisSubscriber, KinesisError> {
         descriptor.validate()?;
+        let claim = self.streams.claim(descriptor.stream())?;
         let core = match &self.link {
             Link::Aws(core) => core,
             #[cfg(feature = "testing")]
-            Link::InProcess(bus) => return bus.subscribe(&descriptor),
+            Link::InProcess(bus) => return bus.subscribe(&descriptor, claim),
         };
         core.ensure_open()?;
         if let Some(shards) = descriptor.create_value() {
@@ -378,7 +386,7 @@ impl ConnectedKinesisBroker {
         } else {
             Self::require_stream(core, descriptor.stream()).await?;
         }
-        Ok(KinesisSubscriber::open(core, descriptor).await)
+        Ok(KinesisSubscriber::open(core, descriptor, claim).await)
     }
 
     /// Refuses a stream the service does not have, before the subscription exists.
@@ -509,10 +517,9 @@ impl TestableBroker for ConnectedKinesisBroker {
         self.bus("published").published(name)
     }
 
-    /// A record reaches every subscription on the stream it was published to. Each subscription
-    /// reads every shard of its stream through iterators of its own (shared-throughput consumers),
-    /// so two subscriptions on one stream both receive the record, and a subscription on another
-    /// stream never does.
+    /// A record reaches the subscription on the stream it was published to, which reads every
+    /// shard of its stream, and a subscription on another stream never receives it. A broker
+    /// reads a stream once, so it opens no second subscription to the same stream.
     fn routes(&self, destination: &str, subscriptions: &[&str]) -> Vec<usize> {
         subscriptions
             .iter()

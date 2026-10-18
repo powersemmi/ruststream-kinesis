@@ -11,8 +11,9 @@
 //! partition key or a record size the service refuses is refused here with the same error, and so
 //! is every handle used after `shutdown`.
 //!
-//! What it models: one retained log per stream, read by every subscription on that stream; a
-//! subscription opening at the tip; the stream-wide and shard-scoped positions of `start_at(..)`
+//! What it models: one retained log per stream, read by the broker's one subscription to that
+//! stream (a second one is refused, as the service's broker refuses it); a subscription opening at
+//! the tip; the stream-wide and shard-scoped positions of `start_at(..)`
 //! and the seek handle; and the answers of every settlement, `AckError::Unsupported` for a requeue
 //! included. What belongs to the service and is left to the live mode: a stream's shards (a stream
 //! here has one, so every record is ordered against every other), leases and checkpoints, and so
@@ -33,6 +34,7 @@ use ruststream::{BytesMut, OutgoingFor, OutgoingMessage, RawMessage, Str, Take};
 pub(crate) use deliveries::{LogDeliveries, Release};
 pub(crate) use seek::LogSeeker;
 
+use crate::claim::StreamClaim;
 use crate::error::KinesisError;
 use crate::message::{PARTITION_KEY_HEADER, decode_envelope, encode_envelope};
 use crate::publisher::{KinesisPublishOptions, resolve_partition_key};
@@ -102,6 +104,7 @@ impl Bus {
     pub(crate) fn subscribe(
         self: &Arc<Self>,
         descriptor: &KinesisStream,
+        claim: StreamClaim,
     ) -> Result<KinesisSubscriber, KinesisError> {
         self.ensure_open()?;
         let stream = descriptor.stream();
@@ -112,6 +115,7 @@ impl Bus {
         Ok(KinesisSubscriber::in_process(
             stream.to_owned(),
             LogDeliveries::open(self, stream),
+            claim,
         ))
     }
 

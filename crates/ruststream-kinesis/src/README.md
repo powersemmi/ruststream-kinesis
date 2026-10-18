@@ -129,6 +129,12 @@ shard id. Shard ids repeat across streams (every stream's first shard is `shardI
 a lease, a checkpoint and a finished mark belong to one stream's shard, and one store serves every
 stream a broker consumes.
 
+A broker reads each stream once. Its leases are taken under its one owner id, so a second
+subscription to a stream the broker already reads is refused when it opens, with
+[`KinesisError::AlreadySubscribed`]; the in-process transport refuses it the same way. Two readings
+of one stream that each see every record take two brokers, the second with a lease store of its
+own.
+
 The default store is [`MemoryLeaseStore`]: in process, correct for a single service instance, and
 empty again after a restart. The `dynamodb-lease` feature adds [`DynamoLeaseStore`], and several
 instances of a service then share the shards. The table needs a string partition key named

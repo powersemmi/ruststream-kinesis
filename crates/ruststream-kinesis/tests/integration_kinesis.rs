@@ -621,6 +621,67 @@ async fn a_subscription_on_a_missing_stream_is_refused_when_it_opens() {
     connected.shutdown().await.expect("shutdown succeeds");
 }
 
+/// One broker reads a stream once. Its shards are leased and checkpointed per stream under the
+/// broker's one owner id, so a second subscription to the stream on the same broker would take the
+/// same leases: the two would overwrite each other's checkpoints, and one finishing a shard would
+/// stop the other mid-shard. The second subscription is refused when it opens; a second broker with
+/// a lease store of its own reads the stream in full beside the first, and the stream opens again
+/// on the first broker once its subscription is gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_subscription_to_one_stream_is_refused_when_it_opens() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    let connected = connect(&endpoint).await;
+    let stream_name = unique("twice");
+
+    let mut first = from_horizon(&stream_name)
+        .subscribe(&connected)
+        .await
+        .expect("the first subscription opens");
+    let refused = source(&stream_name)
+        .subscribe(&connected)
+        .await
+        .expect_err("a second subscription to the stream on one broker must be refused");
+    let message = refused.to_string();
+    assert!(
+        message.contains(&format!("'{stream_name}'")) && message.contains("second `KinesisBroker`"),
+        "the error names the stream and the way to read it twice: {message}",
+    );
+
+    let elsewhere = connect(&endpoint).await;
+    let mut second = from_horizon(&stream_name)
+        .subscribe(&elsewhere)
+        .await
+        .expect("a broker with its own lease store reads the stream too");
+    connected
+        .publisher()
+        .publish(OutgoingMessage::new(&stream_name, b"both".as_slice()), None)
+        .await
+        .expect("publish succeeds");
+    for subscriber in [&mut first, &mut second] {
+        let mut stream = pin!(subscriber.stream());
+        let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+            .await
+            .expect("delivery arrives")
+            .expect("stream is open")
+            .expect("delivery is ok");
+        assert_eq!(message.payload(), b"both");
+        message.ack().await.expect("ack succeeds");
+    }
+
+    drop(first);
+    let reopened = source(&stream_name)
+        .subscribe(&connected)
+        .await
+        .expect("the stream opens again once the first subscription is gone");
+    drop(reopened);
+    drop(second);
+
+    connected.shutdown().await.expect("shutdown succeeds");
+    elsewhere.shutdown().await.expect("shutdown succeeds");
+}
+
 /// The two rungs of the partition-key ladder that have no call site: the key a mount site fixed
 /// on the policy, and the spreading key a record gets when nothing named one. Both are resolved
 /// inside the publisher and written into the record's own field, so only a delivery off a real
