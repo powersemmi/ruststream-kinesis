@@ -1,6 +1,6 @@
 ---
 title: LeaseStore
-description: "A lease store holds each shard's owner, checkpoint and where its reading opened: acquire, renew, checkpoint, record_opened_at, read and release, with SHARD_END marking a finished shard."
+description: "A lease store holds each shard's owner, its checkpoint and where its last reading opened, and marks a finished shard with SHARD_END."
 ---
 
 import Tabs from '@theme/Tabs';
