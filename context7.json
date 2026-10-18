@@ -26,7 +26,7 @@
     "Treat `ack` as a per-shard checkpoint: it moves only when every earlier record of the shard is handled, `HandlerOutcome::drop()` retires a poison record, and delivery is at-least-once.",
     "Keep checkpoints in `MemoryLeaseStore` (the default) for one instance; give several instances one `DynamoLeaseStore` table (feature `dynamodb-lease`) with a string partition key `lease_key`.",
     "Leave `owner_id` out so each broker takes a unique id, or give each instance a stable name of its own; never share one fixed id between two instances running at the same time.",
-    "Build the broker with `KinesisBroker::from_config(config)` when the service loads its own AWS config, as a `DynamoLeaseStore` needs; set endpoint, region and credentials on that config.",
+    "Build the broker with `KinesisBroker::from_config(config)` when the service loads its own AWS config, as a `DynamoLeaseStore` needs; the config carries the credentials, and an endpoint or a region named on the broker replaces the config's own.",
     "Read a `DynamoDB` lease table an earlier version keyed by bare shard id through `DynamoLeaseStore::legacy_stream(stream)`, naming the one stream those rows belong to.",
     "Open or move a subscription with `KinesisPosition`: `start_at(..)` for the shards it opens with, `Ctx<SeekHandle>` in a handler; a stream-wide position moves every shard, `sequence` only the shard it names.",
     "Test a service by handing the app `main` runs to `ruststream::testing::TestApp::start`, which connects `KinesisBroker` in process with the `testing` feature, and address it as `tb.broker::<KinesisBroker>()`.",

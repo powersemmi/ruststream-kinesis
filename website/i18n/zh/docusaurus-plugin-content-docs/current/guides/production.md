@@ -34,7 +34,7 @@ SDK 在为第一个请求签名时读取凭据。这个请求就是启动时对�
 </TabItem>
 </Tabs>
 
-[`KinesisBroker::from_config`](api:ruststream_kinesis::KinesisBroker::from_config) 接收服务构建的 `SdkConfig`。`aws_config` 用一个 `async` 加载器从环境构建配置，而应用函数是同步的。所以示例用不做任何 I/O 的 `SdkConfig::builder()` 构建配置。配置文件提供者在第一个请求时读取 `orders-service` 配置文件；带有 `role_arn` 的配置文件会代入该角色。固定的行为版本让 SDK 更新时，它的默认值不会在服务不知情时改变。Broker 按原样使用这份配置：[`endpoint`、`region` 和 `test_credentials`](../components/broker/endpoint.md) 只作用于 `KinesisBroker::new()`，你自己的配置在构建器上用 `endpoint_url`、`region` 和 `credentials_provider` 指定它们。[`DynamoLeaseStore`](../components/leases/dynamo-lease-store.md) 接收同一份配置（[多个实例](leases.md)）。示例还需要两个依赖：
+[`KinesisBroker::from_config`](api:ruststream_kinesis::KinesisBroker::from_config) 接收服务构建的 `SdkConfig`。`aws_config` 用一个 `async` 加载器从环境构建配置，而应用函数是同步的。所以示例用不做任何 I/O 的 `SdkConfig::builder()` 构建配置。配置文件提供者在第一个请求时读取 `orders-service` 配置文件；带有 `role_arn` 的配置文件会代入该角色。固定的行为版本让 SDK 更新时，它的默认值不会在服务不知情时改变。Broker 保留配置的全部设置，只有在 Broker 自身上指定的 [`endpoint` 和 `region`](../components/broker/endpoint.md) 会取代配置中的值。[`DynamoLeaseStore`](../components/leases/dynamo-lease-store.md) 接收同一份配置（[多个实例](leases.md)）。示例还需要两个依赖：
 
 ```toml title="Cargo.toml"
 [dependencies]
@@ -95,6 +95,6 @@ aws-sdk-kinesis = "1"
 
 ## AsyncAPI 文档显示什么 {/* #what-the-asyncapi-document-shows */}
 
-启用 `asyncapi` feature 后，服务的 AsyncAPI 文档指定一个[服务器](../components/asyncapi/server.md)：Broker 的 `endpoint` 的主机；`region` 指定了区域时为 `kinesis.<region>.amazonaws.com`；否则为 `kinesis.amazonaws.com`。文档从不包含凭据，所以可以公开发布。
+启用 `asyncapi` feature 后，服务的 AsyncAPI 文档指定一个[服务器](../components/asyncapi/server.md)：Broker 端点所在的主机；没有端点时，是其区域的区域主机，例如 `kinesis.eu-west-1.amazonaws.com`。SDK 从环境中解析的区域要到连接时才知道，那时文档已经构建完成，所以这样的 Broker 报告 `kinesis.amazonaws.com`。文档从不包含凭据，所以可以公开发布。
 
 示例文件中的测试在进程内启动同一个应用；进程内 Kinesis 不签名任何请求，也不读取任何配置文件。[测试 Kinesis 服务](testing.md)讲解了测试工具。

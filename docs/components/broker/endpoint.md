@@ -15,10 +15,10 @@ import TabItem from '@theme/TabItem';
 `region` sets the region every request is signed for.
 `test_credentials` signs requests with a fixed dummy key: a local stack checks that a request is signed and ignores the key.
 Each step overrides only its own setting, and the SDK's [default chain](./credentials.md) resolves the rest.
-The three steps apply to a broker built with `new`; a broker built with `from_config` takes all three from its config.
+On a broker built with [`from_config`](./credentials.md), `endpoint` and `region` replace the config's own, and the config supplies the rest.
 
 The generated [AsyncAPI document](../asyncapi/server.md) reports the endpoint's host and port as the server.
-A broker with no endpoint and a named region is reported as that region's Kinesis host, `kinesis.<region>.amazonaws.com`.
+A broker with no endpoint and a known region is reported by the regional host, such as `kinesis.eu-west-1.amazonaws.com`.
 
 ## Example
 

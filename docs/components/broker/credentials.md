@@ -18,8 +18,9 @@ The SDK fetches them on the first request, a subscription's `DescribeStreamSumma
 The configuration follows the SDK's latest behaviour version.
 
 `from_config` takes an `aws_config::SdkConfig` the service builds itself: a named profile, a pinned behaviour version, its own HTTP client or credential provider.
-The broker uses that config as it is.
-The region, the credentials and the endpoint all come from it, and the broker's own [`endpoint`, `region` and `test_credentials`](./endpoint.md) steps do not apply.
+The credentials, the timeouts and the rest of the SDK's settings come from that config.
+An [`endpoint`](./endpoint.md) or a `region` named on the broker replaces the config's own, and what the broker does not name stays as the config has it.
+`test_credentials` belongs to `new`: a prebuilt config signs with its own credential provider.
 A [`DynamoLeaseStore`](../leases/dynamo-lease-store.md) is built from an `SdkConfig` too, so a service that uses one hands the same config to both.
 Transport security is the SDK's HTTPS client in both cases.
 

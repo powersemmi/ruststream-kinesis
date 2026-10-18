@@ -10,10 +10,6 @@ use std::error::Error as StdError;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum KinesisError {
-    /// Loading the AWS configuration failed.
-    #[error("aws config error: {0}")]
-    Config(String),
-
     /// A stream admin call (describe, create, shard listing) failed.
     #[error("kinesis stream error for '{stream}': {source}")]
     Stream {
