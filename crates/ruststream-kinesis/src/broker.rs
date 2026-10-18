@@ -13,6 +13,7 @@
 )]
 
 use std::future::{Future, ready};
+use std::hash::{BuildHasher, Hasher, RandomState};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -29,6 +30,7 @@ use ruststream::{OutgoingMessage, RawMessage};
 use tokio::runtime::Handle;
 use tokio::sync::OnceCell;
 
+use crate::claim::ReadStreams;
 use crate::clients::RuntimeClients;
 use crate::error::{KinesisError, sdk_err};
 #[cfg(feature = "testing")]
@@ -195,7 +197,11 @@ impl KinesisBroker {
         self
     }
 
-    /// Overrides this instance's lease-owner id (defaults to a process-unique value).
+    /// Overrides this instance's lease-owner id.
+    ///
+    /// The default is `rs-<host>-<pid>-<random>`, unique per broker across processes, hosts and
+    /// restarts. A fixed id names an instance in the lease table; two live instances must not
+    /// share one, or both hold every shard.
     pub fn owner_id(mut self, owner: impl Into<String>) -> Self {
         self.owner = Some(owner.into());
         self
@@ -210,11 +216,27 @@ impl KinesisBroker {
 
 fn default_owner() -> String {
     static SEQ: AtomicU64 = AtomicU64::new(0);
-    format!(
-        "rs-{}-{}",
+    owner_on(
+        std::env::var("HOSTNAME").ok().as_deref(),
         std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
+        SEQ.fetch_add(1, Ordering::Relaxed),
     )
+}
+
+/// The owner id a broker takes from what its process knows about itself: the host name, the
+/// process id and the broker's place in the process.
+///
+/// None of these tells two hosts apart (replicas in containers all run as PID 1, and the host name
+/// may be missing or reused), so the id ends in 64 random bits. They come from std's hasher keys,
+/// which the OS seeds; the id is drawn once per broker, at connect.
+fn owner_on(host: Option<&str>, pid: u32, seq: u64) -> String {
+    let mut hasher = RandomState::new().build_hasher();
+    hasher.write_u64(seq);
+    let nonce = hasher.finish();
+    match host {
+        Some(host) if !host.is_empty() => format!("rs-{host}-{pid}-{nonce:016x}"),
+        _ => format!("rs-{pid}-{nonce:016x}"),
+    }
 }
 
 impl Broker for KinesisBroker {
@@ -260,6 +282,7 @@ impl Broker for KinesisBroker {
         Ok(ConnectedKinesisBroker {
             link,
             cell: self.cell,
+            streams: Arc::default(),
         })
     }
 }
@@ -282,6 +305,7 @@ impl InProcess for KinesisBroker {
         Ok(ConnectedKinesisBroker {
             link,
             cell: self.cell,
+            streams: Arc::default(),
         })
     }
 }
@@ -317,6 +341,8 @@ pub struct ConnectedKinesisBroker {
     link: Link,
     // Keeps the cell of publishers handed out before connect alive and filled.
     cell: CoreCell,
+    /// The streams this broker has an open subscription to: it reads each of them once.
+    streams: Arc<ReadStreams>,
 }
 
 impl ConnectedKinesisBroker {
@@ -340,16 +366,19 @@ impl ConnectedKinesisBroker {
     ///
     /// Returns [`KinesisError`] when the descriptor is invalid, the stream does not exist and
     /// the descriptor does not create it, stream creation (when opted in) fails, or the broker
-    /// is shut down.
+    /// is shut down. Returns [`KinesisError::AlreadySubscribed`] when this broker already has an
+    /// open subscription to the stream: its shards are leased under the broker's one owner id,
+    /// so a second subscription would share the first one's leases and checkpoints.
     pub async fn subscribe_stream(
         &self,
         descriptor: KinesisStream,
     ) -> Result<KinesisSubscriber, KinesisError> {
         descriptor.validate()?;
+        let claim = self.streams.claim(descriptor.stream())?;
         let core = match &self.link {
             Link::Aws(core) => core,
             #[cfg(feature = "testing")]
-            Link::InProcess(bus) => return bus.subscribe(&descriptor),
+            Link::InProcess(bus) => return bus.subscribe(&descriptor, claim),
         };
         core.ensure_open()?;
         if let Some(shards) = descriptor.create_value() {
@@ -357,7 +386,7 @@ impl ConnectedKinesisBroker {
         } else {
             Self::require_stream(core, descriptor.stream()).await?;
         }
-        Ok(KinesisSubscriber::open(core, descriptor).await)
+        Ok(KinesisSubscriber::open(core, descriptor, claim).await)
     }
 
     /// Refuses a stream the service does not have, before the subscription exists.
@@ -488,10 +517,9 @@ impl TestableBroker for ConnectedKinesisBroker {
         self.bus("published").published(name)
     }
 
-    /// A record reaches every subscription on the stream it was published to. Each subscription
-    /// reads every shard of its stream through iterators of its own (shared-throughput consumers),
-    /// so two subscriptions on one stream both receive the record, and a subscription on another
-    /// stream never does.
+    /// A record reaches the subscription on the stream it was published to, which reads every
+    /// shard of its stream, and a subscription on another stream never receives it. A broker
+    /// reads a stream once, so it opens no second subscription to the same stream.
     fn routes(&self, destination: &str, subscriptions: &[&str]) -> Vec<usize> {
         subscriptions
             .iter()
@@ -519,6 +547,15 @@ impl ConnectedKinesisBroker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two replicas in containers both run as PID 1 and both start their first broker, and a
+    /// lease store tells owners apart by this id alone: equal ids would hold every shard twice.
+    #[test]
+    fn two_hosts_with_the_same_pid_and_sequence_get_different_owner_ids() {
+        let first = owner_on(None, 1, 0);
+        let second = owner_on(None, 1, 0);
+        assert_ne!(first, second);
+    }
 
     /// The generated document is published and shared, so the server it names is a coordinate:
     /// the host and port a client dials, never the endpoint URL the service was configured with.

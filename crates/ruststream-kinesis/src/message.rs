@@ -79,7 +79,7 @@ pub(crate) fn encode_envelope(headers: &HeaderMap, payload: BytesMut) -> Vec<u8>
     out
 }
 
-/// A length as the envelope writes it. A record is at most 1 MiB, so every length fits; one
+/// A length as the envelope writes it. A record is at most 10 MiB, so every length fits; one
 /// that does not writes zero, and the service refuses the record for its size anyway.
 fn field_len(len: usize) -> [u8; FIELD_LEN] {
     u32::try_from(len).unwrap_or(0).to_be_bytes()
@@ -159,7 +159,9 @@ fn decode_text(block: &[u8]) -> HeaderMap {
 /// onward are delivered again, which at-least-once permits.
 ///
 /// Without a position a subscription resumes from the stored checkpoint of each shard, and
-/// starts at the tip on a shard that has none.
+/// starts at the tip on a shard that has none. A position given to `start_at(..)` applies to
+/// the shards the subscription opens with; a shard it takes on later resumes from its
+/// checkpoint.
 ///
 /// # Examples
 ///
@@ -193,12 +195,14 @@ fn decode_text(block: &[u8]) -> HeaderMap {
 pub enum KinesisPosition {
     /// The trim horizon: everything the stream still retains.
     ///
-    /// Stream-wide - it applies to every shard of the subscription, including shards
-    /// discovered later (the children of a split or merge).
+    /// Stream-wide - it applies to every shard the subscription reads when it lands, and to a
+    /// shard whose reader starts later without a checkpoint.
     Horizon,
     /// The tip: only records published after the reposition.
     ///
-    /// Stream-wide, and the position a shard without a checkpoint starts at by default.
+    /// Stream-wide, and the position a shard without a checkpoint starts at by default. A child
+    /// of a split or a merge whose parent was read to its end opens at its own beginning
+    /// instead, so nothing written to it before its reader started is skipped.
     Latest,
     /// The first record at or after this timestamp, in milliseconds since the Unix epoch.
     ///

@@ -129,6 +129,12 @@ shard id. Shard ids repeat across streams (every stream's first shard is `shardI
 a lease, a checkpoint and a finished mark belong to one stream's shard, and one store serves every
 stream a broker consumes.
 
+A broker reads each stream once. Its leases are taken under its one owner id, so a second
+subscription to a stream the broker already reads is refused when it opens, with
+[`KinesisError::AlreadySubscribed`]; the in-process transport refuses it the same way. Two readings
+of one stream that each see every record take two brokers, the second with a lease store of its
+own.
+
 The default store is [`MemoryLeaseStore`]: in process, correct for a single service instance, and
 empty again after a restart. The `dynamodb-lease` feature adds [`DynamoLeaseStore`], and several
 instances of a service then share the shards. The table needs a string partition key named
@@ -164,7 +170,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
     let leases = Arc::new(DynamoLeaseStore::new(&config, "orders-leases"));
     let broker = KinesisBroker::from_config(config)
         .lease_store(leases)
-        // Names this instance in the lease table; a process-unique value is used when left out.
+        // Names this instance in the lease table; a random id per broker is used when left out.
         .owner_id("instance-a");
 
     RustStream::new(AppInfo::new("orders", "0.1.0"))
@@ -357,7 +363,9 @@ reads again from where it stopped, so a handler sees a pause rather than an erro
 [`KinesisPosition`] is the whole vocabulary for where a subscription reads from. By default each
 shard resumes from its stored checkpoint, and a shard without one opens at the tip. Opening a
 subscription returns once every shard it took has its reader and its starting cursor, so the tip
-is the moment the subscription opened: a record published after that is read.
+is the moment the subscription opened: a record published after that is read. A child of a split
+or a merge whose parent was read to its end opens at its own beginning instead, so what landed on
+it before its reader started is read too.
 
 | Position | Scope | Meaning |
 | --- | --- | --- |
@@ -370,14 +378,17 @@ The instant a timestamp names is matched against the arrival timestamp the servi
 each record, and the service calls that stamp approximate: records that arrived around the same
 moment are not separated exactly.
 
-A stream-wide position reaches shards discovered later too, the children of a split among them, so
-a seek keeps its meaning when the stream reshards. The shard-scoped form is the pinned position the
+A stream-wide position moves every shard this instance reads when the seek lands. A shard whose
+reader starts later resumes from its checkpoint and opens at the position only when it has none; a
+child continuing a parent that was read to its end opens at its own beginning, or at the instant a
+timestamp names. The shard-scoped form is the pinned position the
 framework captures from a delivered record (`Positioned::position`): seeking to it redelivers that
 record and moves no other shard. It needs a live reader for that shard in this instance, and errors
 for a shard this instance does not own or has already finished.
 
-`start_at(..)` opens the subscription at a position you name, ahead of any stored checkpoint. A
-running subscription repositions from a handler: this broker fills the delivery context with the
+`start_at(..)` opens the subscription at a position you name, ahead of any stored checkpoint, for
+the shards it opens with. A shard this instance takes on later (a lease another instance released
+or let lapse, a child of a split) resumes from its checkpoint. A running subscription repositions from a handler: this broker fills the delivery context with the
 record's position and the subscription's seeker, and [`Ctx<SeekHandle>`](SeekHandle) binds that
 seeker as a handler parameter.
 
@@ -739,7 +750,8 @@ four-step ladder, the headers in the same envelope. It is read back by the same 
 delivery carries the position, the three headers and the context a record from a shard carries.
 
 It never succeeds where the service fails. A stream name the service does not accept, an empty
-partition key or one longer than 256 characters, and a record over 1 MiB are refused. A handle used
+partition key or one longer than 256 characters, and a record over 10 MiB (the most a stream can be
+configured to take) are refused. A handle used
 after `shutdown` reports [`KinesisError::NotConnected`], and a KPL-aggregated record is reported as
 [`KinesisError::AggregatedRecord`]. A subscription opens at the tip, and `start_at(..)` and a
 handler's [`SeekHandle`] re-read the retained log from the position they name. A record a handler

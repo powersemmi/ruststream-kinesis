@@ -27,6 +27,7 @@ use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::broker::Core;
+use crate::claim::StreamClaim;
 use crate::error::{KinesisError, sdk_err};
 #[cfg(feature = "testing")]
 use crate::in_process::{LogDeliveries, LogSeeker};
@@ -95,10 +96,9 @@ pub(crate) struct SeekState {
     core: Arc<Core>,
     /// The readers that can be repositioned right now, by shard id.
     shards: Mutex<HashMap<String, ShardHandle>>,
-    /// The stream-wide position a seek installed, if any. Readers consult it when they fetch
-    /// their first iterator, which is what makes a stream-wide seek reach shards that have no
-    /// reader yet: the subscription opened microseconds ago (the `start_at(..)` case), or the
-    /// shard is a child that only appears after a split.
+    /// The stream-wide position a seek installed, if any. A seek moves the readers that are live
+    /// when it lands; a reader that starts later opens here only when its shard has no
+    /// checkpoint, so a shard taken over mid-run resumes where its previous owner stopped.
     start: Mutex<Option<StreamStart>>,
 }
 
@@ -184,6 +184,8 @@ pub struct KinesisSubscriber {
     /// size reaches the wire: [`BatchSubscriber::batches`] stores it before the first batch.
     limit: Arc<AtomicI32>,
     deliveries: BufferedSubscriber<Deliveries>,
+    /// Given back when the subscription is dropped, so the broker may open the stream again.
+    _claim: StreamClaim,
 }
 
 impl std::fmt::Debug for KinesisSubscriber {
@@ -205,7 +207,11 @@ impl KinesisSubscriber {
     /// coordinator's first pass has a reader with its starting cursor, so a record published
     /// after this returns is one the subscription reads, and a seek made now reaches the reader
     /// of the shard it names.
-    pub(crate) async fn open(core: &Arc<Core>, descriptor: KinesisStream) -> Self {
+    pub(crate) async fn open(
+        core: &Arc<Core>,
+        descriptor: KinesisStream,
+        claim: StreamClaim,
+    ) -> Self {
         let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
         let stream = descriptor.stream().to_owned();
         let bus: SeekBus = Arc::new(SeekState::new(Arc::clone(core)));
@@ -235,18 +241,24 @@ impl KinesisSubscriber {
             limit,
             deliveries: BufferedSubscriber::new(Deliveries::Shards(ShardDeliveries { rx, bus }))
                 .max_wait(BATCH_FILL_WINDOW),
+            _claim: claim,
         }
     }
 
     /// A subscription on the in-process transport, batching on the client with the same deadline
     /// the service's subscription uses.
     #[cfg(feature = "testing")]
-    pub(crate) fn in_process(stream: String, deliveries: LogDeliveries) -> Self {
+    pub(crate) fn in_process(
+        stream: String,
+        deliveries: LogDeliveries,
+        claim: StreamClaim,
+    ) -> Self {
         Self {
             stream,
             limit: Arc::new(AtomicI32::new(DEFAULT_READ_LIMIT)),
             deliveries: BufferedSubscriber::new(Deliveries::InProcess(deliveries))
                 .max_wait(BATCH_FILL_WINDOW),
+            _claim: claim,
         }
     }
 }
@@ -330,8 +342,9 @@ fn read_limit(size: NonZeroUsize) -> i32 {
 /// [`Seekable::seeker`](ruststream::Seekable::seeker).
 ///
 /// A stream-wide position ([`KinesisPosition::Horizon`], [`Latest`](KinesisPosition::Latest),
-/// [`Timestamp`](KinesisPosition::Timestamp)) moves every shard of the subscription and is
-/// remembered, so shards whose readers start later open there too. A captured
+/// [`Timestamp`](KinesisPosition::Timestamp)) moves every shard this instance reads when the seek
+/// lands. It is remembered for shards whose readers start later: such a shard resumes from its
+/// checkpoint, and opens at the position only when it has none. A captured
 /// [`Sequence`](KinesisPosition::Sequence) position moves the one shard it names. Either way
 /// the affected shards drop their watermark bookkeeping: acknowledgements of records delivered
 /// before the seek no longer checkpoint.
@@ -421,10 +434,8 @@ impl ShardSeeker {
 
     /// Repositions every shard, present and future.
     async fn seek_stream(&self, start: StreamStart) -> Result<(), KinesisError> {
-        // Installed before the broadcast, so a shard whose reader has not fetched its first
-        // iterator yet lands on the position instead of racing past it. This is the whole
-        // reason a `start_at(..)` clause works: it seeks the instant the subscription is
-        // created, when no reader has started.
+        // Installed before the broadcast, so a reader the coordinator starts while the seek is
+        // under way, on a shard with no checkpoint, opens at the position instead of at the tip.
         self.bus.install(start);
         let handles = self.bus.live();
         // Every gate bumps before the first await, so a batch already in flight anywhere in
@@ -644,9 +655,12 @@ async fn coordinate(subscription: Arc<Subscription>, reading: oneshot::Sender<()
                     if readers.contains_key(&id) {
                         continue;
                     }
-                    if !parents_done(bus, &stream_key, shard, &by_id, store.as_ref()).await {
-                        continue;
-                    }
+                    let lineage =
+                        match parents(bus, &stream_key, shard, &by_id, store.as_ref()).await {
+                            Parents::Pending => continue,
+                            Parents::Consumed => Lineage::Continues,
+                            Parents::Skipped => Lineage::Opens,
+                        };
                     let key = LeaseKey::new(Arc::clone(&stream_key), id.as_str());
                     match store.read(&key).await {
                         Ok(state) if state.checkpoint.as_deref() == Some(SHARD_END) => continue,
@@ -676,6 +690,7 @@ async fn coordinate(subscription: Arc<Subscription>, reading: oneshot::Sender<()
                                     Arc::new(key),
                                     handle.gate,
                                     seek_rx,
+                                    lineage,
                                     started,
                                 )),
                             );
@@ -726,33 +741,57 @@ async fn report(
     }
 }
 
-/// A child shard may start only when every parent is fully consumed - that is what keeps
-/// per-key ordering across a split. A parent counts as done when it reached `SHARD_END`, was
-/// trimmed out of the listing, or is closed with no checkpoint while the subscription starts
-/// at the tip (its history is being skipped by request).
-async fn parents_done(
+/// Where a shard's parents stand, which decides whether its reader may start and where a shard
+/// with no checkpoint opens.
+enum Parents {
+    /// A parent still has records to deliver: the child waits, which is what keeps per-key
+    /// ordering across a split.
+    Pending,
+    /// A parent was read to its end under this lease table, so the child continues that reading.
+    Consumed,
+    /// The shard has no parent to wait for: none at all, trimmed out of the listing, or closed
+    /// with no checkpoint while the subscription starts at the tip (its history is being skipped
+    /// by request).
+    Skipped,
+}
+
+/// Whether a shard's reader picks up a reading its parents left off, or opens one of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lineage {
+    /// The shard opens at the subscription's position: the stored checkpoint, a sought position,
+    /// or the tip.
+    Opens,
+    /// A parent was read to its end, so whatever landed on this shard since the split follows
+    /// what was delivered. Without a checkpoint the shard opens at its own beginning, as the
+    /// vendor's consumer library opens a child: opening it at the tip would skip every record
+    /// written to it before its reader started.
+    Continues,
+}
+
+async fn parents(
     bus: &SeekState,
     stream: &Arc<str>,
     shard: &Shard,
     by_id: &HashMap<&str, &Shard>,
     store: &dyn LeaseStore,
-) -> bool {
+) -> Parents {
+    let mut outcome = Parents::Skipped;
     let parents = [shard.parent_shard_id(), shard.adjacent_parent_shard_id()];
     for parent in parents.into_iter().flatten() {
         let Some(parent_shard) = by_id.get(parent) else {
             continue; // trimmed past retention
         };
         let Ok(state) = store.read(&LeaseKey::new(Arc::clone(stream), parent)).await else {
-            return false;
+            return Parents::Pending;
         };
         match state.checkpoint.as_deref() {
-            Some(SHARD_END) => {}
+            Some(SHARD_END) => outcome = Parents::Consumed,
             None if is_closed(parent_shard)
                 && matches!(bus.installed(), None | Some(StreamStart::Latest)) => {}
-            _ => return false,
+            _ => return Parents::Pending,
         }
     }
-    true
+    outcome
 }
 
 /// Points a `GetShardIterator` request at a cursor.
@@ -781,20 +820,6 @@ fn iterator_at(
     }
 }
 
-/// Why a reader is fetching an iterator from scratch, which decides whether a sought position
-/// or the stored checkpoint wins.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Reopen {
-    /// The reader is starting. A position installed by a seek is forced here, ahead of the
-    /// checkpoint: that is what the capability promises, and what `start_at(..)` means.
-    Start,
-    /// The reader lost its iterator mid-flight (expiry, a transient failure). The checkpoint
-    /// is the truth now - re-applying the installed position would replay everything this
-    /// reader has already handled - and the position only serves a shard that never
-    /// checkpointed.
-    Recover,
-}
-
 /// The crate's error for a lease store failure on `key`, naming the stream and the shard.
 fn lease_error(key: &LeaseKey, source: LeaseError) -> KinesisError {
     KinesisError::Lease {
@@ -804,12 +829,19 @@ fn lease_error(key: &LeaseKey, source: LeaseError) -> KinesisError {
     }
 }
 
+/// Fetches a reader's iterator from scratch: when it starts, and when it lost the one it had.
+///
+/// The stored checkpoint always wins. A sought position reaches the readers that are live when
+/// the seek lands, `start_at(..)` included, since a subscription opens only once every reader of
+/// its first pass has its cursor; a reader that starts later, on a shard taken over from another
+/// instance or after a reader gave up, continues where the shard's last owner stopped instead of
+/// replaying the shard or skipping what was left unread.
 async fn initial_iterator(
     client: &aws_sdk_kinesis::Client,
     key: &LeaseKey,
     bus: &SeekState,
     store: &dyn LeaseStore,
-    why: Reopen,
+    lineage: Lineage,
 ) -> Result<Option<String>, KinesisError> {
     let (stream, shard) = (key.stream(), key.shard());
     let checkpoint = store
@@ -820,12 +852,15 @@ async fn initial_iterator(
     if checkpoint.as_deref() == Some(SHARD_END) {
         return Ok(None);
     }
-    let start = match (why, bus.installed(), checkpoint) {
-        (Reopen::Start, Some(installed), _) | (Reopen::Recover, Some(installed), None) => {
-            ShardStart::Stream(installed)
+    let start = match (checkpoint, lineage, bus.installed()) {
+        (Some(sequence), _, _) => ShardStart::After(sequence),
+        (None, Lineage::Continues, Some(StreamStart::Timestamp(millis))) => {
+            ShardStart::Stream(StreamStart::Timestamp(millis))
         }
-        (_, _, Some(sequence)) => ShardStart::After(sequence),
-        (_, None, None) => ShardStart::Stream(StreamStart::Latest),
+        (None, Lineage::Continues, _) => ShardStart::Stream(StreamStart::Horizon),
+        (None, Lineage::Opens, installed) => {
+            ShardStart::Stream(installed.unwrap_or(StreamStart::Latest))
+        }
     };
     let request = iterator_at(
         client
@@ -890,6 +925,7 @@ async fn read_shard(
     lease: Arc<LeaseKey>,
     gate: Arc<AtomicU64>,
     mut seek_rx: mpsc::UnboundedReceiver<ShardSeek>,
+    lineage: Lineage,
     started: Option<oneshot::Sender<()>>,
 ) {
     // Every exit path must deregister this shard's seek surface.
@@ -922,7 +958,7 @@ async fn read_shard(
     let seeker = KinesisSeeker::shards(Arc::clone(bus));
     let stream = descriptor.stream();
     let mut tracker = Arc::new(Watermark::default());
-    let initial = initial_iterator(client, &lease, bus, store.as_ref(), Reopen::Start).await;
+    let initial = initial_iterator(client, &lease, bus, store.as_ref(), lineage).await;
     // The cursor is fixed, so the tip this shard opens at is the one `subscribe` promised.
     drop(started);
     let mut iterator = match initial {
@@ -1086,7 +1122,7 @@ async fn read_shard(
                 // Expired iterators are refetched from the checkpoint (never Latest, which
                 // would silently skip data); everything else backs off and retries.
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                match initial_iterator(client, &lease, bus, store.as_ref(), Reopen::Recover).await {
+                match initial_iterator(client, &lease, bus, store.as_ref(), lineage).await {
                     Ok(Some(fresh)) => iterator = fresh,
                     Ok(None) => return,
                     Err(_) => {}

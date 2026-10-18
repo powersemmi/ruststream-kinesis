@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let leases = Arc::new(DynamoLeaseStore::new(&config, "orders-leases"));
     let broker = KinesisBroker::from_config(config)
         .lease_store(leases)
-        // Identifies this instance in the lease table; a process-unique value is used when
+        // Identifies this instance in the lease table; a random id per broker is used when
         // left out.
         .owner_id("instance-a");
 
