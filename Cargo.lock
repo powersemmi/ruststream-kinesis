@@ -801,7 +801,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1602,9 +1602,9 @@ dependencies = [
 
 [[package]]
 name = "ruststream"
-version = "0.7.2"
+version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99b143cfae828a90314d76db00092b52877a7599d684677d5a53961a1e5827cb"
+checksum = "16703bcc614b0bb6fa741b6e5805428f059e47d41491b72e66da47ff49121697"
 dependencies = [
  "bytes",
  "bytes-utils",
@@ -1625,7 +1625,7 @@ dependencies = [
 
 [[package]]
 name = "ruststream-kinesis"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "aws-config",
  "aws-sdk-dynamodb",
@@ -1643,7 +1643,7 @@ dependencies = [
 
 [[package]]
 name = "ruststream-kinesis-bench"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "aws-config",
  "aws-sdk-dynamodb",
@@ -1659,9 +1659,9 @@ dependencies = [
 
 [[package]]
 name = "ruststream-macros"
-version = "0.7.2"
+version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "826fb5fac343948f07c1653cc6f3164086233d1d0b473605cfeb322218310ca9"
+checksum = "c6b01a6d229bf75a76d5806e57e7c7bf64d6f9b022681f3414816e7a0d63c74b"
 dependencies = [
  "proc-macro2",
  "quote",
