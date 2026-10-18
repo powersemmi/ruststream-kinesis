@@ -22,16 +22,14 @@ use aws_config::{BehaviorVersion, Region, SdkConfig};
 use aws_sdk_kinesis::client::Waiters;
 #[cfg(feature = "testing")]
 use ruststream::testing::{Coordinator, InProcess, TestableBroker};
-use ruststream::{
-    AddressedCopies, Broker, ConnectedBroker, DefaultPublish, DescribeServer, ServerSpec, Subscribe,
-};
+use ruststream::{AddressedCopies, Broker, ConnectedBroker, DefaultPublish, Subscribe};
 #[cfg(feature = "testing")]
 use ruststream::{OutgoingMessage, RawMessage};
 use tokio::runtime::Handle;
 use tokio::sync::OnceCell;
 
 use crate::claim::ReadStreams;
-use crate::clients::RuntimeClients;
+use crate::clients::{Overrides, RuntimeClients};
 use crate::error::{KinesisError, sdk_err};
 #[cfg(feature = "testing")]
 use crate::in_process::Bus;
@@ -39,6 +37,8 @@ use crate::lease::{LeaseStore, MemoryLeaseStore};
 use crate::publisher::{KinesisPublish, KinesisPublisher};
 use crate::stream::KinesisStream;
 use crate::subscriber::KinesisSubscriber;
+
+mod describe;
 
 /// The live client state shared by the connected form and every handle derived from it.
 ///
@@ -170,9 +170,11 @@ impl KinesisBroker {
 
     /// Uses an already built AWS config instead of resolving one from the environment.
     ///
-    /// The config is used as it is: [`endpoint`](Self::endpoint), [`region`](Self::region) and
-    /// [`test_credentials`](Self::test_credentials) apply to a broker built with
-    /// [`new`](Self::new), so a service that builds its own config sets them on that config.
+    /// The broker keeps the config's settings, its credentials and timeouts included. An
+    /// [`endpoint`](Self::endpoint) or a [`region`](Self::region) named on the broker replaces the
+    /// config's own; what the broker does not name stays as the config has it.
+    /// [`test_credentials`](Self::test_credentials) applies to a broker built with
+    /// [`new`](Self::new): a prebuilt config signs with its own credentials provider.
     pub fn from_config(config: SdkConfig) -> Self {
         Self {
             sdk_config: Some(config),
@@ -180,15 +182,15 @@ impl KinesisBroker {
         }
     }
 
-    /// Overrides the service endpoint (a local stack for development). Applies to a broker built
-    /// with [`new`](Self::new); a [`from_config`](Self::from_config) broker uses its config's.
+    /// Overrides the service endpoint (a local stack for development), the one of a config given
+    /// to [`from_config`](Self::from_config) included.
     pub fn endpoint(mut self, endpoint: impl Into<String>) -> Self {
         self.endpoint = Some(endpoint.into());
         self
     }
 
-    /// Overrides the region. Applies to a broker built with [`new`](Self::new); a
-    /// [`from_config`](Self::from_config) broker uses its config's.
+    /// Overrides the region, the one of a config given to [`from_config`](Self::from_config)
+    /// included.
     pub fn region(mut self, region: impl Into<String>) -> Self {
         self.region = Some(region.into());
         self
@@ -323,9 +325,13 @@ impl Broker for KinesisBroker {
                     }
                     loader.load().await
                 };
+                let overrides = Overrides {
+                    endpoint: self.endpoint.clone(),
+                    region: self.region.clone().map(Region::new),
+                };
                 let runtime = Handle::current();
                 Ok::<_, KinesisError>(Link::Aws(Arc::new(Core {
-                    client: RuntimeClients::homed(config, &runtime),
+                    client: RuntimeClients::homed(config, overrides, &runtime),
                     store: self
                         .store
                         .clone()
@@ -443,78 +449,6 @@ impl InProcess for KinesisBroker {
 
 #[cfg(feature = "testing")]
 ruststream::register_testable_broker!(KinesisBroker);
-
-impl DescribeServer for KinesisBroker {
-    /// The coordinate clients connect to: the host and port, never the endpoint URL as written.
-    ///
-    /// An overridden endpoint is a URL, so the scheme and any userinfo come off it here - the
-    /// generated document is published and shared, and a URL carrying credentials would leave the
-    /// service with it. Without an override the coordinate is the regional Kinesis endpoint; a
-    /// broker that takes its region from the environment cannot name it before `connect`, so the
-    /// document reports the service-wide host instead.
-    ///
-    /// # Examples
-    ///
-    /// With the `asyncapi` feature the document also carries what only this broker knows, under
-    /// `x-ruststream-kinesis`: the stream, the read pause and the provisioned shards on a channel,
-    /// and a policy's partition key on the message object. The document is built before anything
-    /// connects, so it reports what the descriptors and the policies hold, and a key named on one
-    /// publish call is not in it:
-    ///
-    /// ```
-    /// # #[cfg(feature = "asyncapi")]
-    /// # mod demo {
-    /// use ruststream::asyncapi::{Spec, build_spec};
-    /// use ruststream_kinesis::prelude::*;
-    /// use schemars::JsonSchema;
-    /// use serde::{Deserialize, Serialize};
-    ///
-    /// #[derive(Deserialize, JsonSchema)]
-    /// struct Order {
-    ///     id: u64,
-    /// }
-    ///
-    /// #[derive(Serialize, Outgoing, JsonSchema)]
-    /// #[outgoing(name = "receipts")]
-    /// struct Receipt {
-    ///     order: u64,
-    /// }
-    ///
-    /// #[subscriber(KinesisStream::new("orders").create_if_missing(2), reply)]
-    /// async fn confirm(order: &Order) -> Receipt {
-    ///     Receipt { order: order.id }
-    /// }
-    ///
-    /// pub fn document() -> Spec {
-    ///     let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-    ///         KinesisBroker::new().region("eu-west-1"),
-    ///         |b| {
-    ///             b.include(confirm)
-    ///                 .out_reply(Publish::default())
-    ///                 .partition_key("tenant-acme");
-    ///         },
-    ///     );
-    ///     build_spec(&app)
-    /// }
-    /// # }
-    /// # fn main() {
-    /// #     #[cfg(feature = "asyncapi")]
-    /// #     let _ = demo::document();
-    /// # }
-    /// ```
-    fn describe_server(&self) -> ServerSpec {
-        let host = self.endpoint.as_deref().map_or_else(
-            || {
-                self.region.as_ref().map_or_else(
-                    || "kinesis.amazonaws.com".to_owned(),
-                    |region| format!("kinesis.{region}.amazonaws.com"),
-                )
-            },
-            ServerSpec::host_from_url,
-        );
-        ServerSpec::new(host, "kinesis")
-    }
-}
 
 /// The typed witness that `connect` succeeded: holds the live SDK client directly.
 #[derive(Debug)]
@@ -727,7 +661,155 @@ impl ConnectedKinesisBroker {
 
 #[cfg(test)]
 mod tests {
+    use std::thread;
+
+    use aws_sdk_kinesis::Client as KinesisClient;
+    use aws_sdk_kinesis::config::{Credentials, SharedCredentialsProvider};
+    use tokio::io::AsyncReadExt;
+    use tokio::net::TcpListener;
+    use tokio::runtime::Builder;
+    use tokio::time::timeout;
+
     use super::*;
+
+    /// An address nothing listens on: a request that goes there is refused.
+    const NOWHERE: &str = "http://127.0.0.1:9";
+
+    /// A prebuilt config that names a region and an endpoint of its own.
+    fn prebuilt(region: &str, endpoint: &str) -> SdkConfig {
+        SdkConfig::builder()
+            .behavior_version(BehaviorVersion::latest())
+            .region(Region::new(region.to_owned()))
+            .endpoint_url(endpoint)
+            .credentials_provider(SharedCredentialsProvider::new(Credentials::new(
+                "test", "test", None, None, "test",
+            )))
+            .build()
+    }
+
+    /// A listener standing in for an endpoint, and the URL that names it.
+    async fn endpoint() -> (TcpListener, String) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a local port binds");
+        let url = format!(
+            "http://{}",
+            listener
+                .local_addr()
+                .expect("a bound listener has an address")
+        );
+        (listener, url)
+    }
+
+    fn core(connected: &ConnectedKinesisBroker) -> &Core {
+        match &connected.link {
+            Link::Aws(core) => core,
+            #[cfg(feature = "testing")]
+            Link::InProcess(_) => unreachable!("the broker connected to AWS"),
+        }
+    }
+
+    /// The lowercased head of the first request `request` makes reach `listener`.
+    async fn request_head<Sent>(listener: TcpListener, request: Sent) -> String
+    where
+        Sent: Future + Send + 'static,
+        Sent::Output: Send,
+    {
+        let sending = tokio::spawn(request);
+        let (mut socket, _) = timeout(Duration::from_secs(5), listener.accept())
+            .await
+            .expect("no request reached the endpoint the broker should send to")
+            .expect("the listener accepts");
+        let mut head = Vec::new();
+        let mut chunk = [0; 4096];
+        while !head.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = socket.read(&mut chunk).await.expect("the request reads");
+            assert_ne!(
+                read, 0,
+                "the connection closed before the request head ended"
+            );
+            head.extend_from_slice(&chunk[..read]);
+        }
+        sending.abort();
+        String::from_utf8_lossy(&head).to_lowercase()
+    }
+
+    /// The head of the first Kinesis request the connected broker sends, as `listener` receives
+    /// it.
+    async fn kinesis_request(listener: TcpListener, connected: &ConnectedKinesisBroker) -> String {
+        request_head(
+            listener,
+            core(connected)
+                .client
+                .with(|client| client.list_streams().send()),
+        )
+        .await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_endpoint_and_region_named_on_the_broker_override_a_prebuilt_config() {
+        let (listener, named) = endpoint().await;
+        let connected = KinesisBroker::from_config(prebuilt("us-east-1", NOWHERE))
+            .endpoint(named)
+            .region("eu-west-1")
+            .connect()
+            .await
+            .expect("the broker connects");
+        let head = kinesis_request(listener, &connected).await;
+        assert!(head.contains("/eu-west-1/kinesis/aws4_request"), "{head}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_named_endpoint_keeps_the_region_of_a_prebuilt_config() {
+        let (listener, named) = endpoint().await;
+        let connected = KinesisBroker::from_config(prebuilt("ap-south-1", NOWHERE))
+            .endpoint(named)
+            .connect()
+            .await
+            .expect("the broker connects");
+        let head = kinesis_request(listener, &connected).await;
+        assert!(head.contains("/ap-south-1/kinesis/aws4_request"), "{head}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_named_region_keeps_the_endpoint_of_a_prebuilt_config() {
+        let (listener, configured) = endpoint().await;
+        let connected = KinesisBroker::from_config(prebuilt("us-east-1", &configured))
+            .region("eu-west-1")
+            .connect()
+            .await
+            .expect("the broker connects");
+        let head = kinesis_request(listener, &connected).await;
+        assert!(head.contains("/eu-west-1/kinesis/aws4_request"), "{head}");
+    }
+
+    /// A thread of another runtime builds a client of its own, and it honours the broker too.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_thread_of_another_runtime_sends_where_the_broker_names() {
+        let (listener, named) = endpoint().await;
+        let connected = KinesisBroker::from_config(prebuilt("us-east-1", NOWHERE))
+            .endpoint(named)
+            .region("eu-west-1")
+            .connect()
+            .await
+            .expect("the broker connects");
+        let request = thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let runtime = Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("a current-thread runtime builds");
+                    runtime.block_on(async {
+                        core(&connected).client.with(KinesisClient::list_streams)
+                    })
+                })
+                .join()
+                .expect("the other thread finished")
+        });
+        let head = request_head(listener, request.send()).await;
+        assert!(head.contains("/eu-west-1/kinesis/aws4_request"), "{head}");
+    }
 
     /// Two replicas in containers both run as PID 1 and both start their first broker, and a
     /// lease store tells owners apart by this id alone: equal ids would hold every shard twice.
@@ -736,37 +818,5 @@ mod tests {
         let first = owner_on(None, 1, 0);
         let second = owner_on(None, 1, 0);
         assert_ne!(first, second);
-    }
-
-    /// The generated document is published and shared, so the server it names is a coordinate:
-    /// the host and port a client dials, never the endpoint URL the service was configured with.
-    #[test]
-    fn the_described_server_is_a_host_not_the_configured_url() {
-        let spec = KinesisBroker::new()
-            .endpoint("https://kinesis.eu-west-1.amazonaws.com:443")
-            .describe_server();
-        assert_eq!(
-            spec.host.as_deref(),
-            Some("kinesis.eu-west-1.amazonaws.com:443")
-        );
-    }
-
-    /// A URL may carry credentials, and the document must not.
-    #[test]
-    fn credentials_in_an_endpoint_url_stay_out_of_the_description() {
-        let spec = KinesisBroker::new()
-            .endpoint("http://key:secret@localhost:4566")
-            .describe_server();
-        assert_eq!(spec.host.as_deref(), Some("localhost:4566"));
-    }
-
-    /// Without an override the coordinate is the regional endpoint the SDK dials.
-    #[test]
-    fn a_named_region_names_the_regional_endpoint() {
-        let spec = KinesisBroker::new().region("eu-west-1").describe_server();
-        assert_eq!(
-            spec.host.as_deref(),
-            Some("kinesis.eu-west-1.amazonaws.com")
-        );
     }
 }
