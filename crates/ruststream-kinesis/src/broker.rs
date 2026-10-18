@@ -101,6 +101,11 @@ pub(crate) type CoreCell = Arc<OnceCell<Link>>;
 /// builds the client once at startup via the consuming [`Broker::connect`]. That is what lets
 /// a service compose with the synchronous `#[ruststream::app]` builder.
 ///
+/// TLS comes from the SDK's default HTTPS client. Each runtime keeps its own connections: requests
+/// from the runtime the broker connected on share the client built at connect, and a handler on a
+/// dedicated thread publishes and checkpoints through a client built for that thread from the same
+/// config, so a busy thread never holds up another's request.
+///
 /// # Examples
 ///
 /// ```
@@ -405,7 +410,9 @@ impl DescribeServer for KinesisBroker {
     ///
     /// With the `asyncapi` feature the document also carries what only this broker knows, under
     /// `x-ruststream-kinesis`: the stream, the read pause and the provisioned shards on a channel,
-    /// and a policy's partition key on the message object:
+    /// and a policy's partition key on the message object. The document is built before anything
+    /// connects, so it reports what the descriptors and the policies hold, and a key named on one
+    /// publish call is not in it:
     ///
     /// ```
     /// # #[cfg(feature = "asyncapi")]

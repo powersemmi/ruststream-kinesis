@@ -41,6 +41,9 @@ const CHECKPOINT: &str = "checkpoint";
 /// are ignored. With no stream named, a shard whose bare row holds a checkpoint is refused with an
 /// error naming the table, the shard and the stream that asked, and it is not read until the
 /// operator names the stream or deletes the row.
+///
+/// The two versions lease different rows, so an instance of each can read the same shard at
+/// once: stop the old instances before starting the new ones, or accept the duplicates.
 #[derive(Debug, Clone)]
 pub struct DynamoLeaseStore {
     /// The client of whichever runtime a request runs on: a checkpoint is written from the thread

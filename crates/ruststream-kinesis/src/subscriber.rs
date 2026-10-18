@@ -174,7 +174,11 @@ impl Stamped {
 /// against the shard's watermark, and a batch mount groups them: the size the mount site named
 /// becomes the `GetRecords` limit every reader asks with, so a read never fetches more than one
 /// batch's worth, and the batch itself is closed by that size or, when the shards had less to
-/// give, 50 ms after its first record.
+/// give, 50 ms after its first record. One batch mixes records from every shard this instance
+/// holds, and each record settles on its own against its shard's checkpoint.
+///
+/// A read the service throttles is not a delivery failure: the reader waits one
+/// [`poll_interval`](crate::KinesisStream::poll_interval) and reads again from where it stopped.
 ///
 /// Dropping the subscriber stops the coordinator and every reader; unsettled records
 /// redeliver from the last checkpoint when the leases are next taken.

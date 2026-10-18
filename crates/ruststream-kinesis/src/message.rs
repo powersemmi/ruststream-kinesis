@@ -20,14 +20,17 @@ use crate::track::Watermark;
 
 /// Header carrying the partition key, mapped onto the record's own partition key.
 ///
+/// Every delivery carries it, and it is where `IncomingMessage::partition_key` and the
+/// framework's per-key dispatch find the key. On a publish it is the portable way to name the key.
+///
 /// Mirrors the in-memory broker's convention, so services can switch brokers without changing
 /// their headers.
 pub const PARTITION_KEY_HEADER: &str = "partition-key";
 
-/// Header exposing the record's sequence number on received messages.
+/// Header exposing the record's sequence number; every delivery carries it.
 pub const SEQUENCE_HEADER: &str = "kinesis-sequence-number";
 
-/// Header exposing the shard a record arrived on.
+/// Header exposing the shard a record arrived on; every delivery carries it.
 pub const SHARD_HEADER: &str = "kinesis-shard-id";
 
 /// The KPL aggregation magic prefix; such records are refused loudly (deaggregation is a
@@ -305,6 +308,10 @@ impl Settle {
 /// stays unhandled, so the watermark stops advancing, and the records from it onward are delivered
 /// again when the shard's lease is next taken. `nack(requeue = false)` skips the record
 /// (checkpoints past it).
+///
+/// In a handler, `HandlerOutcome::ack()` is the ack, `HandlerOutcome::drop()` the skip, and
+/// `HandlerOutcome::retry()` the requeue, unless the registration declares `max_attempts(..)` or
+/// a dead-letter stream: then the retry publishes a counted copy of the record back to its stream.
 pub struct KinesisMessage {
     payload: Bytes,
     headers: HeaderMap,

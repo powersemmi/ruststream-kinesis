@@ -125,7 +125,12 @@ pub struct KinesisPublishOptions {
 /// that names none takes the key the mount site named on the policy
 /// ([`KinesisPublish::partition_key`]), and without that a process-unique key spreads the records
 /// across the shards. User headers beyond the partition key travel in a small conditional envelope
-/// (Kinesis records carry only a data blob and a partition key); plain payloads stay unenveloped.
+/// (Kinesis records carry only a data blob and a partition key); plain payloads stay unenveloped,
+/// so any Kinesis consumer reads them, and a record from another producer reads back as
+/// headerless. The envelope is the magic `RSK2`, a big-endian `u32` length of the header block,
+/// the block, and the payload; each header is a `u32`-prefixed name and a `u32`-prefixed value,
+/// so a value comes back byte for byte. Records in the earlier `RSK1` text envelope still read
+/// back with their headers. One publish is one `PutRecord` call.
 /// Buildable before `connect` and usable until `shutdown`; afterwards every publish reports
 /// [`KinesisError::NotConnected`].
 #[derive(Clone)]

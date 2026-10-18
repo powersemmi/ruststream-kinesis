@@ -27,6 +27,17 @@ use crate::subscriber::KinesisSubscriber;
 /// To open somewhere else, wrap the descriptor in the framework's `start_at(..)` clause with a
 /// [`KinesisPosition`](crate::KinesisPosition).
 ///
+/// A string literal names a stream too: `#[subscriber("orders")]` builds this descriptor with its
+/// defaults. An invalid descriptor (an empty stream name, a zero shard count) fails the mount
+/// before any I/O, and a stream the service does not have fails it when the subscription opens,
+/// unless the descriptor [creates it](Self::create_if_missing).
+///
+/// The subscription lists the stream's shards and lists them again as splits and merges change
+/// the set, takes a lease per shard, and runs one reader per shard it holds. A child of a split
+/// or a merge starts only after its parents are fully consumed, which keeps per-key ordering
+/// across resharding. A KPL-aggregated record is reported as
+/// [`KinesisError::AggregatedRecord`](crate::KinesisError::AggregatedRecord).
+///
 /// Implements [`SubscriptionSource`], so it can sit inline in the `#[subscriber(..)]`
 /// decorator, and [`IntoSource`], so the manual path's
 /// [`subscriber`](ruststream::runtime::subscriber) constructor names a stream with it too:
@@ -102,8 +113,8 @@ impl KinesisStream {
     }
 
     /// Creates the stream with `shards` provisioned shards on subscribe when it does not
-    /// exist yet. Meant for local development and tests; production streams are usually
-    /// managed as infrastructure.
+    /// exist yet, then waits up to a minute for it to become active. Meant for local development
+    /// and tests; production streams are usually managed as infrastructure.
     ///
     /// Without it a stream the service does not have refuses the subscription when it opens,
     /// so the name is checked while a service is starting rather than after it has started.
@@ -296,7 +307,13 @@ impl RedeliveryAddressed<ConnectedKinesisBroker> for KinesisStream {
     ///
     /// The copy arrives at the tip rather than in the place the original held, and its partition
     /// key picks the shard it lands on, so a deferred record loses its position in the stream's
-    /// order.
+    /// order. Where that order matters, declare no cap and let `HandlerOutcome::retry()` hold the
+    /// shard: the checkpoint stops at the record, and the shard is read again from it.
+    ///
+    /// `max_attempts(n)` counts the first delivery, and under it `HandlerOutcome::retry()` becomes
+    /// a published copy as well, because only a copy carries the attempt count forward.
+    /// `dead_letter(name)` is the stream a spent record leaves for, payload and headers as it
+    /// arrived; a cap declared without one checkpoints past the spent record, as `drop()` does.
     ///
     /// # Examples
     ///
