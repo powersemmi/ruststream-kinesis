@@ -263,3 +263,15 @@ name = "manual_guide_consuming"
 path = "examples/manual/guide/consuming.rs"
 required-features = ["testing"]
 test = true
+
+[[example]]
+name = "guide_ordering"
+path = "examples/guide/ordering.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_ordering"
+path = "examples/manual/guide/ordering.rs"
+required-features = ["testing"]
+test = true
