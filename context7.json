@@ -1,4 +1,19 @@
 {
+  "$schema": "https://context7.com/schema/context7.json",
+  "folders": [
+    "docs",
+    "crates/ruststream-kinesis/src",
+    "crates/ruststream-kinesis/examples",
+    "website/static"
+  ],
+  "excludeFolders": [
+    "docs/benchmarks",
+    "website/i18n",
+    "website/build",
+    "website/.docusaurus",
+    "website/node_modules",
+    "target"
+  ],
   "rules": [
     "Import `ruststream_kinesis::prelude::*` in the file that mounts handlers; a handler body keeps `ruststream::prelude::*` and learns no broker, except the one body that names a per-message setting.",
     "Name the stream with `KinesisStream::new(\"orders\")` inside `#[subscriber(..)]`; the bare `#[subscriber(\"orders\")]` form builds the same descriptor with its default read settings.",
