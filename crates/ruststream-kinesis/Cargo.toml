@@ -57,6 +57,85 @@ serde.workspace = true
 serde_json = "1"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 
+# --- examples: subscriptions, settlement, leases ---
+
+[[example]]
+name = "kinesis_subscriptions_name"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_subscriptions_name"
+path = "examples/manual/kinesis_subscriptions_name.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_subscriptions_stream"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_subscriptions_stream"
+path = "examples/manual/kinesis_subscriptions_stream.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_subscriptions_poll"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_subscriptions_poll"
+path = "examples/manual/kinesis_subscriptions_poll.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_subscriptions_create"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_subscriptions_create"
+path = "examples/manual/kinesis_subscriptions_create.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_subscriptions_ext"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_subscriptions_ext"
+path = "examples/manual/kinesis_subscriptions_ext.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_subscriptions_shards"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_subscriptions_shards"
+path = "examples/manual/kinesis_subscriptions_shards.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_batches"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_batches"
+path = "examples/manual/kinesis_batches.rs"
+required-features = ["testing"]
+test = true
+
 [[example]]
 name = "kinesis_leases"
 required-features = ["dynamodb-lease"]
