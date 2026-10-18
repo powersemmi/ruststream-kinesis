@@ -4,7 +4,7 @@
 so the crate owns what a log consumer needs and the SDK does not provide: shard discovery across
 splits and merges, shard leasing with fencing, and per-shard checkpointing. For framework concepts
 (writing subscribers, routing, codecs, middleware), see the
-[RustStream documentation](https://powersemmi.github.io/ruststream/).
+[RustStream documentation](https://powersemmi.github.io/ruststream/0.6/).
 
 ```toml
 ruststream = { version = "0.6", features = ["macros", "json"] }
@@ -147,7 +147,7 @@ checkpoint. A running subscription repositions through the injected `Seek` param
 Repositioning drops the watermark bookkeeping of every shard it moves, so an acknowledgement of a
 record delivered before the seek cannot drag the cursor back over the position just taken. Records
 from the new position onward are delivered again, which at-least-once permits. See
-[Seeking](https://powersemmi.github.io/ruststream/latest/guides/subscribers/#seeking) in the
+[Seeking](https://powersemmi.github.io/ruststream/0.6/guides/subscribers/#seeking) in the
 framework docs for the capability itself.
 
 ## Publishing
@@ -204,7 +204,7 @@ crate's core routing with no server and no network. It follows the same ladder a
 and its connected form implements `ruststream::testing::TestableBroker`, so it drives the `TestApp`
 harness: inject traffic with `broker.inject(OutgoingMessage::new(..))` and assert on published
 output with the free `ruststream::testing::expect_published`. See
-[Unit-testing a service with TestApp](https://powersemmi.github.io/ruststream/latest/guides/testing/#unit-testing-a-service-with-testapp).
+[Unit-testing a service with TestApp](https://powersemmi.github.io/ruststream/0.6/guides/testing/#unit-testing-a-service-with-testapp).
 
 It routes by exact address match and simulates none of the product behaviour. Shard leases,
 checkpoint resume, replay of unacknowledged records, and resharding are covered by the live suite
