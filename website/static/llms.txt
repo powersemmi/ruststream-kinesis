@@ -4,12 +4,14 @@
 
 A subscription is the descriptor `KinesisStream`, which names the stream and carries the pause between reads. A routes file imports `ruststream_kinesis::prelude::*`, which offers `KinesisPublish` as `Publish`; a body that sets the partition key of one record takes the `partition_key` step from `KinesisPublishSteps`. The `dynamodb-lease` feature adds `DynamoLeaseStore`, so several service instances share the shards.
 
-This site holds the entry pages. The crate's guide is its overview on docs.rs, and the framework itself is documented on the RustStream site.
+This site holds the guides, one page per component and the architecture of the crate; the API reference is on docs.rs, and the framework itself is documented on the RustStream site.
 
 ## Site
 
-- [Home](https://powersemmi.github.io/ruststream-kinesis/latest/): what the crate does, its cargo features and a first service
-- [Benchmarks](https://powersemmi.github.io/ruststream-kinesis/latest/benchmarks/): what this crate and the framework's runtime cost over the raw `aws-sdk-kinesis` client on LocalStack, and how to re-measure it with `just bench`
+- [Guides](https://powersemmi.github.io/ruststream-kinesis/latest/): building a Kinesis service with the crate, from installation to production
+- [Components](https://powersemmi.github.io/ruststream-kinesis/latest/components/): the parts of the crate a Kinesis service uses, one page each
+- [Architecture](https://powersemmi.github.io/ruststream-kinesis/latest/architecture/): how Kinesis Data Streams works, where the crate sits between Kinesis and the RustStream runtime, and what that costs
+- [Benchmarks](https://powersemmi.github.io/ruststream-kinesis/latest/architecture/benchmarks/): what this crate and the framework's runtime cost over the raw `aws-sdk-kinesis` client on LocalStack, and how to re-measure it with `just bench`
 
 ## Guide
 

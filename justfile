@@ -37,7 +37,7 @@ test-brokers: brokers-up
 
 # What this crate costs over the aws-sdk-kinesis client it wraps: two scenarios run as a RustStream
 # service and as a hand-written loop, against the stack the tests use. On demand only - it takes
-# minutes and it wants the machine to itself. The page it feeds is docs/benchmarks.md.
+# minutes and it wants the machine to itself. It feeds the site's benchmarks pages.
 bench *ARGS: brokers-up
     #!/usr/bin/env bash
     set -euo pipefail
@@ -54,9 +54,9 @@ bench *ARGS: brokers-up
 # callgrind and allocations through DHAT, each scenario a service on the production broker against
 # the stack the tests use, with everything the service's thread runs counted, the AWS SDK's
 # requests included. It takes minutes, and the counts barely move with the machine's load, so it
-# needs the stack but not a quiet machine. The page it feeds is the code table of
-# docs/benchmarks.md. RUSTFLAGS is cleared because valgrind aborts on the instructions a recent CPU
-# advertises. Needs valgrind.
+# needs the stack but not a quiet machine. It feeds the code table of the site's benchmarks
+# pages. RUSTFLAGS is cleared because valgrind aborts on the instructions a recent CPU advertises.
+# Needs valgrind.
 #
 # The benchmarks hand the measurement to gungraun's runner, which has to be the release of the
 # library the lock file pins. The recipe installs that release into `target/gungraun-runner` on

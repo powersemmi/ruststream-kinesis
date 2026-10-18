@@ -1,3 +1,8 @@
+---
+title: Benchmarks
+description: "What ruststream-kinesis costs on every record: throughput against the raw aws-sdk-kinesis client, and instructions and allocations of its code."
+---
+
 # Benchmarks
 
 Reaching a Kinesis record through this crate costs time on every record: the shard reader, the
@@ -18,13 +23,15 @@ procedure is the framework's own and is described on the
 [RustStream benchmarks page](https://powersemmi.github.io/ruststream/latest/benchmarks/#methodology);
 this page publishes what it produced here.
 
-!!! warning "What answers here is an emulator"
+:::warning[What answers here is an emulator]
 
-    Kinesis has no server you can run, so all three loops talk to the LocalStack image the live
-    suites use. The comparison stays valid, because one emulator answers all of them - but its
-    saturation profile is not the hosted service's: no TLS handshake, no credential refresh, no
-    regional latency. A row here is a statement about what a record costs inside this crate, and
-    nothing at all about what a service costs in a region.
+Kinesis has no server you can run, so all three loops talk to the LocalStack image the live
+suites use. The comparison stays valid, because one emulator answers all of them - but its
+saturation profile is not the hosted service's: no TLS handshake, no credential refresh, no
+regional latency. A row here is a statement about what a record costs inside this crate, and
+nothing at all about what a service costs in a region.
+
+:::
 
 ## The numbers
 

@@ -1,4 +1,9 @@
-# 基准测试
+---
+title: 基准测试
+description: "ruststream-kinesis 在每条记录上的开销：与裸 aws-sdk-kinesis 客户端对比的吞吐量，以及其代码的指令数与内存分配。"
+---
+
+# 基准测试 {/* #benchmarks */}
 
 通过这个 crate 拿到一条 Kinesis 记录，每条都要花时间：分片读取、解码、结算。本页给出这份代价，对照
 手写在 `aws-sdk-kinesis` 上的同样工作测得。
@@ -14,13 +19,15 @@
 [RustStream 基准测试页](https://powersemmi.github.io/ruststream/latest/benchmarks/#methodology)；本页
 发布的是它在这里得出的结果。
 
-!!! warning "这里回应的是模拟器"
+:::warning[这里回应的是模拟器]
 
-    Kinesis 没有可以自己运行的服务端，所以三个循环都连到实时测试所用的 LocalStack 镜像。这个对照仍然
-    成立，因为同一个模拟器回应三者 - 但它的饱和特征不是托管服务的：没有 TLS 握手，没有凭证刷新，没有
-    区域延迟。这里的一行讲的是一条记录在这个 crate 里的代价，完全不讲一个服务在某个区域里的代价。
+Kinesis 没有可以自己运行的服务端，所以三个循环都连到实时测试所用的 LocalStack 镜像。这个对照仍然
+成立，因为同一个模拟器回应三者 - 但它的饱和特征不是托管服务的：没有 TLS 握手，没有凭证刷新，没有
+区域延迟。这里的一行讲的是一条记录在这个 crate 里的代价，完全不讲一个服务在某个区域里的代价。
 
-## 数字
+:::
+
+## 数字 {/* #the-numbers */}
 
 三个交错轮次中的最佳值，括号里是中位的一轮。越大越好。
 
@@ -58,7 +65,7 @@
 同一次运行的机器可读形式，框架站点用它构建跨 Broker 的汇总表，在
 [`benchmarks/results.json`](https://powersemmi.github.io/ruststream-kinesis/latest/benchmarks/results.json)。
 
-## crate 自身的代码
+## crate 自身的代码 {/* #the-crates-own-code */}
 
 <div id="benchmark-code"></div>
 
@@ -83,14 +90,14 @@
 `just bench-code` 在分配次数超过场景声明的下限时失败，加上 `--baseline=main` 时，指令数多出百分之二
 以上也算失败；改变开销的合并请求要附上自己的数字。
 
-## 机器
+## 机器 {/* #the-machine */}
 
 <div id="benchmark-environment"></div>
 
 构建标志与数字一起发布，因为它们会改变数字：用 `-C target-cpu=native` 构建的二进制给出的数值，别的
 机器无法复现，所以配方在构建前清掉这个变量。
 
-## 它们不代表什么
+## 它们不代表什么 {/* #what-they-do-not-mean */}
 
 这是一个分片、一个消费端、512 字节的消息体和回环上的模拟器。它测的是一条记录在这个 crate 里的代价，
 不是 Kinesis 能承载多少；这里的一行与为另一个 Broker 发布的一行不可比：各种传输每条记录做的工作不同。
@@ -104,7 +111,7 @@
 这些数字是一台机器在某一天的快照。
 它们由人手工重测，测量期间机器只跑这一项：这一页要讲的差值，比与其他任务共用的机器上的噪声还小。
 
-## 自己跑一遍
+## 自己跑一遍 {/* #running-it-yourself */}
 
 ```bash
 just bench
