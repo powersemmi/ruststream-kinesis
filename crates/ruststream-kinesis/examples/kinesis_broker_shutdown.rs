@@ -5,6 +5,9 @@
 //! cargo test --example kinesis_broker_shutdown --features testing
 //! ```
 
+// A plain build compiles the service; the code that cancels orders exists only in the test build.
+#![cfg_attr(not(test), allow(dead_code))]
+
 use serde::{Deserialize, Serialize};
 
 // --8<-- [start:service]
@@ -14,7 +17,7 @@ use ruststream_kinesis::prelude::*;
 /// The service, and a publisher for the code beside it that publishes outside any handler, such
 /// as an admin endpoint.
 fn service(broker: KinesisBroker) -> (RustStream, KinesisPublisher) {
-    let admin = KinesisBroker::new().publisher();
+    let admin = broker.publisher();
     let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
         b.include(place);
     });
@@ -72,7 +75,10 @@ mod tests {
         tb.shutdown().await?;
         let refused = admin.message(&Cancellation { order: 8 }).publish().await;
         assert!(
-            matches!(refused, Err(PublishError::Publish(KinesisError::NotConnected))),
+            matches!(
+                refused,
+                Err(PublishError::Publish(KinesisError::NotConnected))
+            ),
             "{refused:?}"
         );
         Ok(())

@@ -16,7 +16,7 @@ use ruststream_kinesis::prelude::*;
 #[subscriber(KinesisStream::new("orders"))]
 async fn place(order: &Order) -> HandlerOutcome {
     tracing::info!(order.id, "order placed");
-    HandlerOutcome::drop()
+    HandlerOutcome::ack()
 }
 // --8<-- [end:handler]
 

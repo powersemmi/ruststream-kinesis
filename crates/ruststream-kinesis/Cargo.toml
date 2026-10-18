@@ -243,7 +243,19 @@ required-features = ["testing"]
 test = true
 
 [[example]]
+name = "manual_kinesis_service"
+path = "examples/manual/kinesis_service.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
 name = "kinesis_broker_credentials"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_broker_credentials"
+path = "examples/manual/kinesis_broker_credentials.rs"
 required-features = ["testing"]
 test = true
 
@@ -253,7 +265,19 @@ required-features = ["testing"]
 test = true
 
 [[example]]
+name = "manual_kinesis_broker_endpoint"
+path = "examples/manual/kinesis_broker_endpoint.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
 name = "kinesis_broker_startup"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_broker_startup"
+path = "examples/manual/kinesis_broker_startup.rs"
 required-features = ["testing"]
 test = true
 
@@ -263,11 +287,29 @@ required-features = ["testing"]
 test = true
 
 [[example]]
+name = "manual_kinesis_broker_shutdown"
+path = "examples/manual/kinesis_broker_shutdown.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
 name = "kinesis_broker_prelude"
 required-features = ["testing"]
 test = true
 
 [[example]]
+name = "manual_kinesis_broker_prelude"
+path = "examples/manual/kinesis_broker_prelude.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
 name = "kinesis_broker_errors"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_broker_errors"
+path = "examples/manual/kinesis_broker_errors.rs"
 required-features = ["testing"]
 test = true

@@ -1,4 +1,4 @@
-//! A local stack: `endpoint`, `region` and `test_credentials` point the broker at LocalStack. The
+//! `endpoint`, `region` and `test_credentials` point the broker at a local stack. The
 //! in-process test runs everywhere; the live one runs against the stand at
 //! `KINESIS_TEST_ENDPOINT` and skips without it.
 //!
@@ -31,11 +31,13 @@ fn service(broker: KinesisBroker) -> RustStream {
 }
 
 // --8<-- [start:broker]
-/// The broker on a local stack at `endpoint`, such as LocalStack: the region is named, and the
-/// credentials are dummies the stack accepts.
+/// The broker on the local stack at `endpoint`: the region is named, and the credentials are
+/// dummies the stack accepts.
 fn broker(endpoint: &str) -> KinesisBroker {
-    let _ = endpoint;
     KinesisBroker::new()
+        .endpoint(endpoint)
+        .region("us-east-1")
+        .test_credentials()
 }
 
 #[ruststream::app]

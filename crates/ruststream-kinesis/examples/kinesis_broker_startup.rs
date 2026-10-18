@@ -29,7 +29,7 @@ async fn pay(payout: &Payout) -> HandlerOutcome {
 
 fn service(broker: KinesisBroker) -> RustStream {
     RustStream::new(AppInfo::new("payouts", "0.1.0")).with_broker(broker, |b| {
-        let _ = b;
+        b.include(pay);
     })
 }
 // --8<-- [end:service]
@@ -81,7 +81,8 @@ mod tests {
         let Some(endpoint) = stand::endpoint() else {
             return Ok(());
         };
-        let Err(failed) = TestApp::start_live_within(service(stand::broker(&endpoint)), stand::START).await
+        let Err(failed) =
+            TestApp::start_live_within(service(stand::broker(&endpoint)), stand::START).await
         else {
             panic!("a subscription on a stream the stand lacks must not open");
         };
