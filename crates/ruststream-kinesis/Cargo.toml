@@ -434,3 +434,36 @@ name = "manual_kinesis_publishing_step"
 path = "examples/manual/kinesis_publishing_step.rs"
 required-features = ["testing"]
 test = true
+
+[[example]]
+name = "kinesis_asyncapi"
+required-features = ["asyncapi"]
+test = true
+
+[[example]]
+name = "manual_kinesis_asyncapi"
+path = "examples/manual/kinesis_asyncapi.rs"
+required-features = ["asyncapi"]
+test = true
+
+[[example]]
+name = "kinesis_testing"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_testing"
+path = "examples/manual/kinesis_testing.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_testing_live"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_testing_live"
+path = "examples/manual/kinesis_testing_live.rs"
+required-features = ["testing"]
+test = true
