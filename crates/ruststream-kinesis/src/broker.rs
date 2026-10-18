@@ -13,6 +13,7 @@
 )]
 
 use std::future::{Future, ready};
+use std::hash::{BuildHasher, Hasher, RandomState};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -195,7 +196,11 @@ impl KinesisBroker {
         self
     }
 
-    /// Overrides this instance's lease-owner id (defaults to a process-unique value).
+    /// Overrides this instance's lease-owner id.
+    ///
+    /// The default is `rs-<host>-<pid>-<random>`, unique per broker across processes, hosts and
+    /// restarts. A fixed id names an instance in the lease table; two live instances must not
+    /// share one, or both hold every shard.
     pub fn owner_id(mut self, owner: impl Into<String>) -> Self {
         self.owner = Some(owner.into());
         self
@@ -210,11 +215,27 @@ impl KinesisBroker {
 
 fn default_owner() -> String {
     static SEQ: AtomicU64 = AtomicU64::new(0);
-    format!(
-        "rs-{}-{}",
+    owner_on(
+        std::env::var("HOSTNAME").ok().as_deref(),
         std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
+        SEQ.fetch_add(1, Ordering::Relaxed),
     )
+}
+
+/// The owner id a broker takes from what its process knows about itself: the host name, the
+/// process id and the broker's place in the process.
+///
+/// None of these tells two hosts apart (replicas in containers all run as PID 1, and the host name
+/// may be missing or reused), so the id ends in 64 random bits. They come from std's hasher keys,
+/// which the OS seeds; the id is drawn once per broker, at connect.
+fn owner_on(host: Option<&str>, pid: u32, seq: u64) -> String {
+    let mut hasher = RandomState::new().build_hasher();
+    hasher.write_u64(seq);
+    let nonce = hasher.finish();
+    match host {
+        Some(host) if !host.is_empty() => format!("rs-{host}-{pid}-{nonce:016x}"),
+        _ => format!("rs-{pid}-{nonce:016x}"),
+    }
 }
 
 impl Broker for KinesisBroker {
@@ -519,6 +540,15 @@ impl ConnectedKinesisBroker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two replicas in containers both run as PID 1 and both start their first broker, and a
+    /// lease store tells owners apart by this id alone: equal ids would hold every shard twice.
+    #[test]
+    fn two_hosts_with_the_same_pid_and_sequence_get_different_owner_ids() {
+        let first = owner_on(None, 1, 0);
+        let second = owner_on(None, 1, 0);
+        assert_ne!(first, second);
+    }
 
     /// The generated document is published and shared, so the server it names is a coordinate:
     /// the host and port a client dials, never the endpoint URL the service was configured with.

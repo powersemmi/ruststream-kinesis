@@ -164,7 +164,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
     let leases = Arc::new(DynamoLeaseStore::new(&config, "orders-leases"));
     let broker = KinesisBroker::from_config(config)
         .lease_store(leases)
-        // Names this instance in the lease table; a process-unique value is used when left out.
+        // Names this instance in the lease table; a random id per broker is used when left out.
         .owner_id("instance-a");
 
     RustStream::new(AppInfo::new("orders", "0.1.0"))
