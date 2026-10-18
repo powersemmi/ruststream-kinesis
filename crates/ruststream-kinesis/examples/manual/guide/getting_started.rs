@@ -64,7 +64,6 @@ mod tests {
     use std::error::Error;
 
     use ruststream::testing::TestApp;
-    use ruststream::{FixedName, MessageHeaders, NoHeaders, OutgoingDestination};
     use ruststream_kinesis::prelude::*;
     use serde::Serialize;
 

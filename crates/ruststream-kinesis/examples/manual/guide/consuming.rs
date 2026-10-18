@@ -12,7 +12,6 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use ruststream::runtime::cli::run_main;
-use ruststream::{FixedName, MessageHeaders, NoHeaders, OutgoingDestination};
 use ruststream_kinesis::prelude::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
