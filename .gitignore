@@ -1,8 +1,6 @@
 target/
 **/*.rs.bk
 
-# mkdocs build output
-site/
 .venv/
 __pycache__/
 
@@ -11,4 +9,5 @@ __pycache__/
 *.iml
 .DS_Store
 
+node_modules/
 tmp/

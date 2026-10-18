@@ -27,6 +27,21 @@ use crate::subscriber::KinesisSubscriber;
 /// (a child whose parent was read to its end starts at its own beginning). To open somewhere else, wrap the descriptor in the framework's `start_at(..)` clause with a
 /// [`KinesisPosition`](crate::KinesisPosition).
 ///
+/// A string literal names a stream too: `#[subscriber("orders")]` builds this descriptor with its
+/// defaults. An invalid descriptor (an empty stream name, a zero shard count) fails the mount
+/// before any I/O, and a stream the service does not have fails it when the subscription opens,
+/// unless the descriptor [creates it](Self::create_if_missing).
+///
+/// The subscription lists the stream's shards and lists them again as splits and merges change
+/// the set, takes a lease per shard, and runs one reader per shard it holds. A child of a split
+/// or a merge starts only after its parents are fully consumed, which keeps per-key ordering
+/// across resharding.
+///
+/// A broker reads a stream through one subscription: a second subscription to the same stream
+/// on one broker is refused when it opens. A second [`KinesisBroker`](crate::KinesisBroker) with
+/// a lease store of its own reads the stream again. A KPL-aggregated record is reported as
+/// [`KinesisError::AggregatedRecord`](crate::KinesisError::AggregatedRecord).
+///
 /// Implements [`SubscriptionSource`], so it can sit inline in the `#[subscriber(..)]`
 /// decorator, and [`IntoSource`], so the manual path's
 /// [`subscriber`](ruststream::runtime::subscriber) constructor names a stream with it too:
@@ -55,7 +70,7 @@ use crate::subscriber::KinesisSubscriber;
 ///         _outs: &(),
 ///         _ctx: &mut Context<'_>,
 ///     ) -> Result<(), HandlerOutcome> {
-///         println!("order {}", order.id);
+///         tracing::info!(order.id, "audited");
 ///         Ok(())
 ///     }
 /// }
@@ -84,6 +99,9 @@ pub struct KinesisStream {
 impl KinesisStream {
     /// Names the stream by its name, which is also the stream half of every [`LeaseKey`](crate::LeaseKey) the
     /// subscription's shards are leased under.
+    ///
+    /// A stream is named by its name; every call the subscription makes passes it as the stream
+    /// name.
     pub fn new(stream: impl Into<String>) -> Self {
         Self {
             stream: stream.into(),
@@ -102,8 +120,8 @@ impl KinesisStream {
     }
 
     /// Creates the stream with `shards` provisioned shards on subscribe when it does not
-    /// exist yet. Meant for local development and tests; production streams are usually
-    /// managed as infrastructure.
+    /// exist yet, then waits up to a minute for it to become active. Meant for local development
+    /// and tests; production streams are usually managed as infrastructure.
     ///
     /// Without it a stream the service does not have refuses the subscription when it opens,
     /// so the name is checked while a service is starting rather than after it has started.
@@ -165,7 +183,7 @@ impl KinesisStream {
 ///     batch
 ///         .iter()
 ///         .map(|job| {
-///             println!("job {}", job.id);
+///             tracing::info!(job.id, "done");
 ///             HandlerOutcome::ack()
 ///         })
 ///         .collect()
@@ -231,8 +249,7 @@ impl IntoSource for KinesisStream {
 ///
 /// The `AsyncAPI` specification lists no Kinesis binding, and the protocol keys of a binding object
 /// are a closed list, so this travels as an `x-` extension at the same level. Only what the
-/// descriptor itself holds goes in: the real shard count of an existing stream, its ARN and its
-/// retention are the service's to answer and the document is built before anything connects.
+/// descriptor itself holds goes in, because the document is built before anything connects.
 #[cfg(feature = "asyncapi")]
 #[derive(Debug, Serialize)]
 struct KinesisChannelBinding<'a> {
@@ -294,9 +311,53 @@ impl RedeliveryAddressed<ConnectedKinesisBroker> for KinesisStream {
     /// The stream this descriptor names, which is where a deferred copy and a spent delivery of
     /// this registration are published.
     ///
-    /// The copy arrives at the tip rather than in the place the original held, and its partition
-    /// key picks the shard it lands on, so a deferred record loses its position in the stream's
-    /// order.
+    /// The copy keeps the record's partition key and lands on that key's shard, at the tip rather
+    /// than in the place the original held, so a deferred record loses its position in the
+    /// stream's order. Where that order matters, declare no cap and let `HandlerOutcome::retry()` hold the
+    /// shard: the checkpoint stops at the record, and the shard is read again from it.
+    ///
+    /// `max_attempts(n)` counts the first delivery, and under it `HandlerOutcome::retry()` becomes
+    /// a published copy as well, because only a copy carries the attempt count forward.
+    /// `dead_letter(name)` is the stream a spent record leaves for, payload and headers as it
+    /// arrived; a cap declared without one checkpoints past the spent record, as `drop()` does.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # mod demo {
+    /// use std::time::Duration;
+    ///
+    /// use ruststream_kinesis::prelude::*;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Order {
+    ///     id: u64,
+    /// }
+    ///
+    /// /// Asks for a pause when the order cannot be settled yet, and counts nothing: how many pauses
+    /// /// it gets is the mount site's to say.
+    /// #[subscriber(KinesisStream::new("orders"))]
+    /// async fn reconcile(order: &Order) -> HandlerOutcome {
+    ///     if order.id.is_multiple_of(2) {
+    ///         HandlerOutcome::ack()
+    ///     } else {
+    ///         HandlerOutcome::retry_after(Duration::from_secs(30))
+    ///     }
+    /// }
+    ///
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
+    ///         // Four deliveries per order, then the record leaves for a stream an operator reads.
+    ///         b.include(reconcile)
+    ///             .max_attempts(nonzero!(4))
+    ///             .dead_letter("orders.unsettled");
+    ///     })
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
     fn redelivery_address(
         &self,
         _connected: &ConnectedKinesisBroker,

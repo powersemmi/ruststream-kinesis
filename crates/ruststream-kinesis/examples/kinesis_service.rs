@@ -1,37 +1,62 @@
-//! A minimal Kinesis service: consume a stream with per-shard checkpointing.
+//! A minimal Kinesis service: one `#[subscriber]` handler on the stream `orders`, on a broker
+//! whose region and credentials resolve from the environment when the service starts.
 //!
-//! Run a local stack first (`just brokers-up`), then:
-//! `cargo run --example kinesis_service`
+//! ```text
+//! cargo test --example kinesis_service --features testing
+//! cargo run --example kinesis_service --features testing -- run
+//! ```
+
+use serde::{Deserialize, Serialize};
+
+// --8<-- [start:app]
+use ruststream_kinesis::prelude::*;
 
 // --8<-- [start:handler]
-use ruststream_kinesis::prelude::*;
-use serde::Deserialize;
-
-#[derive(Debug, Deserialize)]
-struct Order {
-    id: u64,
-}
-
-// Without the `start_at` clause each shard would resume from its checkpoint and otherwise
-// open at the tip; the horizon replays everything the stream still retains.
-#[subscriber(KinesisStream::new("orders"), start_at(KinesisPosition::horizon()))]
-async fn handle(order: &Order) -> HandlerOutcome {
-    println!("got order {}", order.id);
+/// Reads every shard of the stream `orders`.
+#[subscriber(KinesisStream::new("orders"))]
+async fn place(order: &Order) -> HandlerOutcome {
+    tracing::info!(order.id, "order placed");
     HandlerOutcome::ack()
 }
 // --8<-- [end:handler]
 
-// --8<-- [start:app]
 #[ruststream::app]
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        KinesisBroker::new()
-            .endpoint("http://localhost:4566")
-            .test_credentials()
-            .region("us-east-1"),
-        |b| {
-            b.include(handle);
-        },
-    )
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
+        b.include(place);
+    })
 }
 // --8<-- [end:app]
+
+#[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]
+#[outgoing(name = "orders")]
+struct Order {
+    id: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+
+    use ruststream::testing::TestApp;
+    use ruststream_kinesis::prelude::*;
+
+    use super::{Order, app};
+
+    #[tokio::test]
+    async fn an_order_on_the_stream_is_placed() -> Result<(), Box<dyn Error>> {
+        let tb = TestApp::start(app()).await?;
+        tb.broker::<KinesisBroker>()
+            .message(&Order { id: 7 })
+            .publish()
+            .await?;
+
+        tb.broker::<KinesisBroker>()
+            .subscriber("orders")
+            .assert_called_once()
+            .with(&Order { id: 7 })
+            .settled(HandlerOutcome::ack());
+        tb.shutdown().await?;
+        Ok(())
+    }
+}

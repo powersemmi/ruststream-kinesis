@@ -10,6 +10,7 @@ edition = "2024"
 rust-version = "1.95"
 license = "Apache-2.0"
 repository = "https://github.com/powersemmi/ruststream-kinesis"
+homepage = "https://powersemmi.github.io/ruststream-kinesis/latest/"
 authors = ["RustStream contributors"]
 
 [workspace.dependencies]
@@ -29,7 +30,8 @@ serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 # `runtime::Id`, which tells a request on the broker's runtime from one elsewhere, is stable from 1.49.
 tokio = { version = "1.49", features = ["rt-multi-thread", "macros", "sync", "time"] }
-tracing = "0.1"
+# Examples log `String` fields as values, which `tracing` accepts from 0.1.36.
+tracing = "0.1.36"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
@@ -49,3 +51,13 @@ module_name_repetitions = "allow"
 missing_const_for_fn = "allow"
 multiple_crate_versions = "allow"
 redundant_pub_crate = "allow"
+
+[profile.release]
+lto = "fat"
+
+# The benchmarks measure what ships, so they are built the way a release is: the profile inherits
+# it whole, and the only addition is the line tables a profile needs to name functions. Debug
+# information is metadata and changes no codegen decision.
+[profile.bench]
+inherits = "release"
+debug = "line-tables-only"

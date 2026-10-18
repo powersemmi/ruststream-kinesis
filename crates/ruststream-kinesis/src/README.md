@@ -1,27 +1,17 @@
-Amazon Kinesis Data Streams for `RustStream`: a sharded, retained log behind the framework's
-subscribers and publishers.
+Amazon Kinesis Data Streams broker for the [RustStream](https://github.com/powersemmi/ruststream)
+messaging framework, backed by the official [`aws-sdk-kinesis`](https://docs.rs/aws-sdk-kinesis)
+client.
 
-A Kinesis stream is a log cut into shards, and a record stays in it until the retention window
-passes. This crate runs the transport over the official
-[`aws-sdk-kinesis`](https://docs.rs/aws-sdk-kinesis) client and adds what the vendor's consumer
-library gives other platforms and the Rust SDK does not: shard discovery across splits and merges,
-shard leasing with fencing, and per-shard checkpointing. Acknowledgement is a checkpoint, one
-instance reads a shard at a time, and delivery is at-least-once.
+A subscription reads every shard of one stream, and a publish is one record on the stream the
+outgoing message names. The crate adds what the vendor's consumer library gives other platforms:
+shard discovery across splits and merges, a lease per shard, and per-shard checkpoints in a
+[`LeaseStore`]. An ack is a checkpoint, one instance reads a shard at a time, and delivery is
+at-least-once.
 
-Handlers, routers, codecs, middleware and the application object are the framework's and are
-documented with it: <https://docs.rs/ruststream>. Installation, the tutorial and the list of
-brokers are on the site: <https://powersemmi.github.io/ruststream/>.
+# A service
 
-```toml
-ruststream = { version = "0.7", features = ["macros", "json"] }
-ruststream-kinesis = "0.7"
-serde = { version = "1", features = ["derive"] }
-```
-
-# The first service
-
-A handler is an `async fn` over a decoded record. [`KinesisStream`] names the stream it reads,
-[`KinesisBroker`] carries the connection settings, and the attribute writes the `main`:
+A handler is an `async fn` over the decoded record, mounted on a broker inside the application
+object, and the attribute writes the `main`:
 
 ```
 # mod demo {
@@ -35,7 +25,7 @@ struct Order {
 
 #[subscriber(KinesisStream::new("orders"))]
 async fn handle(order: &Order) -> HandlerOutcome {
-    println!("got order {}", order.id);
+    tracing::info!(order.id, "accepted");
     HandlerOutcome::ack()
 }
 
@@ -49,758 +39,164 @@ fn app() -> impl App {
 # fn main() {}
 ```
 
-`cargo run -- run` starts it. [`KinesisBroker::new`] is synchronous and records configuration
-only: the region and the credentials resolve from the environment when the runtime connects the
-broker, which is what lets the service compose with the synchronous `#[ruststream::app]` builder.
-[`from_config`](KinesisBroker::from_config) takes an AWS config built elsewhere, and
-[`endpoint`](KinesisBroker::endpoint), [`region`](KinesisBroker::region) and
-[`test_credentials`](KinesisBroker::test_credentials) point the broker at a local stack.
-
-Each lifecycle transition consumes the state before it, so every state is a distinct type:
-`KinesisBroker::new()` is configuration, `connect` yields [`ConnectedKinesisBroker`], and
-`shutdown` consumes that. Subscribing or publishing after `shutdown` does not compile. A publisher
-handed out earlier outlives the connection and reports [`KinesisError::NotConnected`] rather than
-writing into a stream the service no longer consumes.
-
-# Subscribing
-
-## The subscription source
-
-[`KinesisStream::new(name)`](KinesisStream::new) is the descriptor: one stream, named by name or
-by ARN, carrying every setting that subscription form has. It sits inline in the attribute, and a
-service built without the `macros` feature hands the same value to the `subscriber(source,
-handler)` constructor.
-
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| [`poll_interval(d)`](KinesisStream::poll_interval) | 1 second | The pause between reads on an idle shard. The service allows five reads a second per shard, and a shorter pause spends that budget faster. |
-| [`create_if_missing(shards)`](KinesisStream::create_if_missing) | off | Creates the stream with that many shards when it is missing, then waits up to a minute for it to become usable. Meant for local stacks and tests; a production stream is managed as infrastructure. |
-
-Both settings are also mount-site steps, through [`KinesisSubscriberExt`]; the
-[batch example](#batches) below mounts one that way. They transform the descriptor, so they chain
-before `start_at(..)`, which replaces it with the framework's position wrapper.
-
-A string literal names a stream too: `#[subscriber("orders")]` builds the same descriptor with its
-defaults. Reach for the descriptor as soon as a read setting matters.
-
-An invalid descriptor - an empty stream name, a zero shard count - fails the mount before any
-I/O. A stream the service does not have fails it too, at the moment the subscription opens: a
-descriptor that does not create its stream asks the service for it once, so a mistyped name stops
-the service from starting instead of reporting itself on every shard listing for as long as it
-runs. Name `create_if_missing` where a service may start ahead of its infrastructure.
-
-A subscription lists the stream's shards, re-lists them as splits and merges change the set, takes
-a lease per shard, and runs one reader per shard it owns. A child of a split or a merge starts only
-after its parents are fully consumed, which is what keeps per-key ordering across resharding.
-
-Reads go through the stream's shared throughput; enhanced fan-out is not implemented. A
-KPL-aggregated record is reported as [`KinesisError::AggregatedRecord`] rather than handed to a
-handler as opaque protobuf.
-
-## Settling a record
-
-`ack` marks a record handled. A checkpoint covers every record before it, so the shard's watermark
-advances - and is written to the lease store - only when no earlier record on that shard is still
-unhandled.
-
-- `HandlerOutcome::ack()` marks the record handled.
-- `HandlerOutcome::retry()` on a registration that declares `max_attempts(..)` or a dead-letter
-  stream publishes a counted copy of the record back to its stream. Without a declaration it asks
-  for a requeue, which a shard cannot perform: a sharded log repositions, it cannot requeue one
-  record. `nack(requeue = true)` answers `AckError::Unsupported`, and the record stays unhandled.
-  The watermark stops there, so the shard replays from that record when its lease is next taken.
-- `HandlerOutcome::drop()` checkpoints past the record, which is how a poison one is retired.
-
-Delivery is at-least-once: an unacknowledged record holds the watermark where it is, and everything
-from it onward is delivered again after a restart or a lease handover.
-
-## Leases and checkpoints
-
-Checkpoints live in a [`LeaseStore`]. [`acquire`](LeaseStore::acquire) takes a shard for an owner
-and steals a lease that has expired, [`renew`](LeaseStore::renew) heartbeats it,
-[`checkpoint`](LeaseStore::checkpoint) records progress while the owner still holds the lease,
-[`read`](LeaseStore::read) returns the persisted [`LeaseState`], and
-[`release`](LeaseStore::release) hands the shard back without waiting for the expiry. A failed
-renewal means another owner has taken the shard, and that reader stops at once. A fully consumed
-shard is checkpointed as [`SHARD_END`], which is the signal its children may start.
-
-Every call names the shard by a [`LeaseKey`]: the stream, as its [`KinesisStream`] names it, and the
-shard id. Shard ids repeat across streams (every stream's first shard is `shardId-000000000000`), so
-a lease, a checkpoint and a finished mark belong to one stream's shard, and one store serves every
-stream a broker consumes.
-
-A broker reads each stream once. Its leases are taken under its one owner id, so a second
-subscription to a stream the broker already reads is refused when it opens, with
-[`KinesisError::AlreadySubscribed`]; the in-process transport refuses it the same way. Two readings
-of one stream that each see every record take two brokers, the second with a lease store of its
-own.
-
-The default store is [`MemoryLeaseStore`]: in process, correct for a single service instance, and
-empty again after a restart. The `dynamodb-lease` feature adds [`DynamoLeaseStore`], and several
-instances of a service then share the shards. The table needs a string partition key named
-`lease_key` and nothing else; on-demand billing is enough. A row holds one stream's shard under the
-key `stream:shard`. Every write is conditional and bumps a fencing counter, so two instances cannot
-both hold one shard.
-
-```
-# #[cfg(feature = "dynamodb-lease")]
-# mod demo {
-use std::error::Error;
-use std::sync::Arc;
-
-use aws_config::BehaviorVersion;
-use ruststream_kinesis::prelude::*;
-use serde::Deserialize;
-
-#[derive(Deserialize)]
-struct Order {
-    id: u64,
-}
-
-#[subscriber(KinesisStream::new("orders"))]
-async fn handle(order: &Order) -> HandlerOutcome {
-    println!("got order {}", order.id);
-    HandlerOutcome::ack()
-}
-
-// The lease store needs the AWS config too, so the service resolves it and hands the broker the
-// same one instead of letting it build its own.
-pub async fn run() -> Result<(), Box<dyn Error>> {
-    let config = aws_config::defaults(BehaviorVersion::latest()).load().await;
-    let leases = Arc::new(DynamoLeaseStore::new(&config, "orders-leases"));
-    let broker = KinesisBroker::from_config(config)
-        .lease_store(leases)
-        // Names this instance in the lease table; a random id per broker is used when left out.
-        .owner_id("instance-a");
-
-    RustStream::new(AppInfo::new("orders", "0.1.0"))
-        .with_broker(broker, |b| {
-            b.include(handle);
-        })
-        .run()
-        .await?;
-    Ok(())
-}
-# }
-# fn main() {}
-```
-
-### Upgrading a lease table
-
-Versions of this crate before the per-stream key wrote a row per shard id alone, and a table they
-wrote still holds those bare rows. A bare row names no stream, so the store reads it only for the
-stream named by [`DynamoLeaseStore::legacy_stream`]:
-
-```
-# #[cfg(feature = "dynamodb-lease")]
-# mod demo {
-use std::error::Error;
-use std::sync::Arc;
-
-use aws_config::BehaviorVersion;
-use ruststream_kinesis::prelude::*;
-# use serde::Deserialize;
-#
-# #[derive(Deserialize)]
-# struct Order {
-#     id: u64,
-# }
-#
-# #[subscriber(KinesisStream::new("orders"))]
-# async fn handle(order: &Order) -> HandlerOutcome {
-#     println!("got order {}", order.id);
-#     HandlerOutcome::ack()
-# }
-
-pub async fn run() -> Result<(), Box<dyn Error>> {
-    let config = aws_config::defaults(BehaviorVersion::latest()).load().await;
-    // The table was written for the `orders` stream only.
-    let leases = Arc::new(DynamoLeaseStore::new(&config, "orders-leases").legacy_stream("orders"));
-    let broker = KinesisBroker::from_config(config).lease_store(leases);
-
-    RustStream::new(AppInfo::new("orders", "0.1.0"))
-        .with_broker(broker, |b| {
-            b.include(handle);
-        })
-        .run()
-        .await?;
-    Ok(())
-}
-# }
-# fn main() {}
-```
-
-- A shard of the named stream with no checkpoint under its own key resumes from its bare row, and
-  the first read copies that checkpoint under `stream:shard`. Other streams ignore the bare rows.
-- With no stream named, a shard whose bare row holds a checkpoint is refused with a lease error
-  naming the table, the shard and the stream, and it is not read until the operator names the
-  stream or deletes the row.
-- Once the upgraded service has started a subscription on every stream it consumes, each bare row
-  that held progress has its copy. The rows whose `lease_key` holds no `:` can then be deleted, and
-  `legacy_stream` dropped.
-- A table that served several streams before the upgrade holds, in each bare row, whichever stream
-  checkpointed last. No stream can resume from it: delete the bare rows and open each stream with
-  `start_at(..)` at the position it should read from.
-- The two versions lease different rows, so an instance of each can read the same shard at once.
-  Stop the old instances before starting the new ones, or accept the duplicates.
-
-## Delayed redelivery and its cap
-
-Kinesis holds no redelivery timer, no delivery counter and no dead-letter mechanism, so nothing
-here is native: the descriptor answers `Copies = AddressedCopies`, and the framework publishes
-every copy itself. `HandlerOutcome::retry_after(delay)` becomes a copy of the record published once
-the delay is over, with the attempt count in a header.
-
-The copy goes back to the stream the subscription reads, which is the address the descriptor
-reports, so a registration owes no destination of its own. `.max_attempts(n)` is how many
-deliveries one record gets, counting the first, and `.dead_letter(name)` is the stream a spent
-record leaves for, as it arrived, payload and headers. A cap declared without a dead letter
-checkpoints past the spent record instead, which is what `drop()` does by hand.
-
-```
-# mod demo {
-use std::time::Duration;
-
-use ruststream_kinesis::prelude::*;
-use serde::Deserialize;
-
-#[derive(Deserialize)]
-struct Order {
-    id: u64,
-}
-
-/// Asks for a pause when the order cannot be settled yet, and counts nothing: how many pauses it
-/// gets is the mount site's to say.
-#[subscriber(KinesisStream::new("orders"))]
-async fn reconcile(order: &Order) -> HandlerOutcome {
-    if order.id.is_multiple_of(2) {
-        HandlerOutcome::ack()
-    } else {
-        HandlerOutcome::retry_after(Duration::from_secs(30))
-    }
-}
-
-#[ruststream::app]
-fn app() -> impl App {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-        // Four deliveries per order, then the record leaves for a stream an operator reads.
-        b.include(reconcile)
-            .max_attempts(nonzero!(4))
-            .dead_letter("orders.unsettled");
-    })
-}
-# }
-# fn main() {}
-```
-
-Under a declared cap `HandlerOutcome::retry()` becomes a published copy as well: only a copy
-carries the count forward, and a record left on the shard would be read again with the count it
-started with.
-
-The copy arrives at the tip of the stream, not in the place the record held, and its partition key
-picks the shard it lands on, so a deferred record loses its order against the records it was
-published among. Where that order matters, declare no cap and let `HandlerOutcome::retry()` hold
-the shard: the watermark stops at the record, and the shard replays from it.
-
-`.out_retry(policy)` replaces the publisher those copies leave through rather than enabling them.
-The position is an ordinary `Out` slot, so the chain then takes `.codec(..)`, `.transform(..)` and
-this crate's [`partition_key(..)`](KinesisPublishSettings::partition_key). The copy carries the
-record's own bytes, so the codec resolves the position and encodes nothing.
-
-## Batches
-
-A handler that takes a slice consumes a batch, and `.batch(n)` at the mount site names the size.
-Here it becomes the `GetRecords` limit every shard reader asks with, so one read fetches at most
-one batch's worth and no batch carries more records than it named:
-
-```
-# mod demo {
-use std::time::Duration;
-
-use ruststream_kinesis::prelude::*;
-use serde::Deserialize;
-
-#[derive(Deserialize)]
-struct Order {
-    id: u64,
-}
-
-#[subscriber(KinesisStream::new("orders"))]
-async fn digest(batch: &[Order]) -> HandlerOutcome {
-    for order in batch {
-        println!("order {}", order.id);
-    }
-    HandlerOutcome::ack()
-}
-
-#[ruststream::app]
-fn app() -> impl App {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-        // The framework's word first, this crate's read settings after it.
-        b.include(
-            digest
-                .batch(nonzero!(500))
-                .poll_interval(Duration::from_millis(500)),
-        );
-    })
-}
-# }
-# fn main() {}
-```
-
-A batch carries fewer records when that is all the shards had: one still filling is delivered 50 ms
-after its first record. One batch mixes records from every shard this instance owns, and each
-record settles on its own against its shard's watermark, so a body that returns one outcome per
-element checkpoints per record.
-
-The size is a cost decision too: a small batch means small reads against the same five reads a
-second per shard, and [`poll_interval`](KinesisStream::poll_interval) is where that budget is
-spent. A read the service throttles is not a delivery failure - the reader waits one interval and
-reads again from where it stopped, so a handler sees a pause rather than an error.
-
-## Positions and seeking
-
-[`KinesisPosition`] is the whole vocabulary for where a subscription reads from. By default each
-shard resumes from its stored checkpoint, and a shard without one opens at the tip. Opening a
-subscription returns once every shard it took has its reader and its starting cursor, so the tip
-is the moment the subscription opened: a record published after that is read. A child of a split
-or a merge whose parent was read to its end opens at its own beginning instead, so what landed on
-it before its reader started is read too. A reader that loses its iterator before a record is
-settled goes back to the first record it read, not to the tip, so a failure costs a redelivery,
-never a skipped record.
-
-| Position | Scope | Meaning |
-| --- | --- | --- |
-| [`KinesisPosition::horizon()`](KinesisPosition::horizon) | Stream-wide | The trim horizon: everything the stream still retains. |
-| [`KinesisPosition::latest()`](KinesisPosition::latest) | Stream-wide | The tip: only records published after the reposition. |
-| [`KinesisPosition::timestamp(millis)`](KinesisPosition::timestamp) | Stream-wide | Each shard opens at its first record from that instant, in milliseconds since the Unix epoch. |
-| [`KinesisPosition::sequence(shard, seq)`](KinesisPosition::sequence) | One shard | Exactly one record. |
-
-The instant a timestamp names is matched against the arrival timestamp the service stamped on
-each record, and the service calls that stamp approximate: records that arrived around the same
-moment are not separated exactly.
-
-A stream-wide position moves every shard this instance reads when the seek lands. A shard whose
-reader starts later resumes from its checkpoint and opens at the position only when it has none; a
-child continuing a parent that was read to its end opens at its own beginning, or at the instant a
-timestamp names. The shard-scoped form is the pinned position the
-framework captures from a delivered record (`Positioned::position`): seeking to it redelivers that
-record and moves no other shard. It needs a live reader for that shard in this instance, and errors
-for a shard this instance does not own or has already finished.
-
-`start_at(..)` opens the subscription at a position you name, ahead of any stored checkpoint, for
-the shards it opens with. A shard this instance takes on later (a lease another instance released
-or let lapse, a child of a split) resumes from its checkpoint. A running subscription repositions from a handler: this broker fills the delivery context with the
-record's position and the subscription's seeker, and [`Ctx<SeekHandle>`](SeekHandle) binds that
-seeker as a handler parameter.
-
-```
-# mod demo {
-use ruststream_kinesis::prelude::*;
-use serde::Deserialize;
-
-#[derive(Deserialize)]
-struct Job {
-    id: u64,
-}
-
-/// Replays the retained backlog; on the marker record it abandons the rest of it and follows the
-/// tip instead.
-#[subscriber(KinesisStream::new("jobs"), start_at(KinesisPosition::horizon()))]
-async fn replay(job: &Job, Ctx(seeker): Ctx<SeekHandle>) -> HandlerOutcome {
-    if job.id == 999 && seeker.seek(KinesisPosition::latest()).await.is_err() {
-        return HandlerOutcome::retry();
-    }
-    println!("replayed job {}", job.id);
-    HandlerOutcome::ack()
-}
-
-#[ruststream::app]
-fn app() -> impl App {
-    RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-        b.include(replay);
-    })
-}
-# }
-# fn main() {}
-```
-
-A reposition drops the watermark bookkeeping of every shard it moves, so an acknowledgement of a
-record delivered before the seek cannot pull the cursor back over the position just taken. Records
-from the new position onward are delivered again, which at-least-once permits. The capability itself is
-[seeking](https://docs.rs/ruststream/latest/ruststream/runtime/index.html#seeking) in the
-framework's own overview.
-
-## The delivery context
-
-[`KinesisContext`] is what a single delivery carries, and it has two keys:
-[`Position`] reads the record's own pinned [`KinesisPosition`], and [`SeekHandle`] reads the
-subscription's [`KinesisSeeker`]. `Ctx(value): Ctx<Key>` binds one of them; a handler that wants
-both names `KinesisContext` as its context type and reads the keys with `ctx.context(..)`.
-
-A batch handler gets [`KinesisBatchContext`]. It carries the same [`SeekHandle`], because a seek
-moves the whole subscription, and no position, because a batch spans many records; a body that
-reacts to a position reads the [`SEQUENCE_HEADER`] and [`SHARD_HEADER`] headers of its elements.
-
-Every delivery carries three headers: `kinesis-sequence-number` ([`SEQUENCE_HEADER`]),
-`kinesis-shard-id` ([`SHARD_HEADER`]) and `partition-key` ([`PARTITION_KEY_HEADER`], where
-`IncomingMessage::partition_key` and the framework's per-key dispatch find the key).
-
-# Publishing
-
-[`KinesisPublish`] is the publish policy, named [`Publish`](prelude::Publish) in the prelude. It is
-pure declaration, constructible anywhere, and the runtime pairs it into a [`KinesisPublisher`] on
-the connected broker. It is also this broker's default policy, so a replying handler mounted
-without an explicit policy replies through it.
-
-- `.out_reply(Publish::default())` names it for a reply.
-- `.out(marker, Publish::default()).build()` binds the publisher of an injected slot.
-- `.out_retry(Publish::default())` names it for the deferred retry copy.
-
-The publish builder is the framework's - `message(..)`, `to(..)` with the stream name or ARN,
-`with_headers(..)`, `publish()`, all of it documented under
-[publishing](https://docs.rs/ruststream/latest/ruststream/runtime/index.html#publishing) - and
-this crate adds one step to it. There is no `RequestReply`
-here: Kinesis has no reply address and no correlation primitive, so a request/reply exchange would
-be a second stream the crate would have to invent. There are no transactions either, neither owned
-nor borrowed: a publish is one `PutRecord` call and the service has nothing to commit.
-
-## The partition key
-
-The partition key picks the shard a record lands on, and with it the order that record keeps
-against its neighbours. It belongs to one record rather than to a publisher, so it is a step on the
-publish, [`partition_key(..)`](KinesisPublishSteps::partition_key), standing among the framework's
-own steps. Per-message settings are the one thing a handler body says a broker's name for: a body
-that names the key imports this crate's prelude and bounds its slot on
-[`KinesisPublishOptions`].
-
-```
-# mod demo {
-use ruststream_kinesis::prelude::*;
-use serde::{Deserialize, Serialize};
-
-#[derive(Deserialize)]
-struct Order {
-    id: u64,
-}
-
-#[derive(Serialize, Outgoing)]
-struct Journalled {
-    order: u64,
-}
-
-/// The slot the journal entries leave through.
-#[derive(OutSlot)]
-#[publishes(Journalled)]
-struct Journal;
-
-/// The bound on the options type is what puts the step within reach, and it says in the signature
-/// that this body is written for Kinesis.
-#[subscriber(KinesisStream::new("orders"))]
-async fn record(
-    order: &Order,
-    Out(journal): Out<impl Publisher<Options = KinesisPublishOptions>, Journal>,
-) -> HandlerOutcome {
-    let sent = journal
-        .message(&Journalled { order: order.id })
-        .to("orders.journal")
-        .partition_key("tenant-acme")
-        .publish()
-        .await;
-    if sent.is_err() {
-        return HandlerOutcome::retry();
-    }
-    HandlerOutcome::ack()
-}
-
-#[ruststream::app]
-fn app() -> impl App {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-        b.include(record).out(Journal, Publish::default()).build();
-    })
-}
-# }
-# fn main() {}
-```
-
-The step is a position on the builder and not a publisher wrapped around another, so the record
-still leaves through the entry the mount site named: that entry's codec still encodes it, the
-transforms on it still run, and a test still attributes the publish to that entry's slot. A body
-that names no key keeps the framework's prelude and the plain `Out<impl Publisher, _>` bound, and
-moves between brokers untouched.
-
-Four places can name the key, and they resolve in one order:
-
-1. The [`partition_key(..)`](KinesisPublishSteps::partition_key) step of this publish.
-2. The `partition-key` header the call wrote by hand - the portable spelling, and what a record
-   carries when it arrives from another broker of this framework.
-3. The key the mount site named on the policy.
-4. A process-unique key, which spreads the records: a Kinesis record cannot go out without one.
-
-The key travels in the record's own partition-key field, and the header is its portable name at
-both ends: the publisher writes the resolved key into that field and leaves the header out of the
-envelope, and a delivery reports the key back under that header.
-
-## Replies
-
-A reply has no call site to put a step on: a replying handler returns a value and the runtime
-publishes it. Its key is named on the policy instead, at the mount site, through
-[`KinesisPublishSettings`]:
-
-```
-# mod demo {
-use ruststream_kinesis::prelude::*;
-use serde::{Deserialize, Serialize};
-
-#[derive(Deserialize)]
-struct Order {
-    id: u64,
-}
-
-/// A receipt always goes to the receipts stream, so the type is where that stream is named.
-#[derive(Serialize, Outgoing)]
-#[outgoing(name = "receipts")]
-struct Receipt {
-    order: u64,
-}
-
-#[subscriber(KinesisStream::new("orders"), reply)]
-async fn confirm(order: &Order) -> Receipt {
-    Receipt { order: order.id }
-}
-
-#[ruststream::app]
-fn app() -> impl App {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-        // One key means one shard: every receipt is ordered against every other, at the cost of
-        // a single shard's throughput. Leave it off to spread them instead.
-        b.include(confirm)
-            .out_reply(Publish::default())
-            .partition_key("receipts-v1");
-    })
-}
-# }
-# fn main() {}
-```
-
-## The header envelope
-
-A Kinesis record carries a data blob and a partition key and nothing else, so user headers beyond
-the partition key are written into a small envelope around the payload, and only when such headers
-exist. A record published with no user headers is the plain payload, which any Kinesis consumer
-reads, and a record written by another producer is read back as headerless. Otherwise the blob is
-the four-byte magic `RSK2`, a big-endian `u32` header-block length, the header block, and the
-payload. The block holds each header as a big-endian `u32` name length, the name, a big-endian
-`u32` value length and the value, so a value comes back byte for byte, whatever bytes it holds.
-Records written in the earlier `RSK1` text envelope still read back with their headers.
-
-# The prelude
-
-`use ruststream_kinesis::prelude::*;` is the one glob a mounting file writes: the framework's own
-prelude, plus [`KinesisBroker`], [`KinesisStream`] with [`KinesisSubscriberExt`],
-[`KinesisPosition`] with `Seeker` and `Positioned`, the delivery contexts with the [`Position`] and
-[`SeekHandle`] keys, [`DynamoLeaseStore`] under its feature, and the publish surface -
-[`KinesisPublish`] under the uniform name [`Publish`](prelude::Publish), plus
-[`KinesisPublishSettings`], [`KinesisPublishSteps`] and [`KinesisPublishOptions`]. Each prefixed
-original stays at the crate root, for a file that mounts two brokers and has to say which `Publish`
-it means.
-
-A handler body imports the framework alone (`use ruststream::prelude::*`) and bounds an injected
-publisher with a capability trait, so it never learns which broker it runs on. The one exception is
-the body that names a per-message setting: it imports this glob for
-[`partition_key`](KinesisPublishSteps::partition_key) and bounds its slot as
-`Out<impl Publisher<Options = KinesisPublishOptions>, Marker>`.
-
-# The generated document
-
-`DescribeServer` puts the broker in the `servers` section under the `kinesis` protocol. What it
-reports is a coordinate - the host and port a client dials, never credentials:
-
-- With [`endpoint(..)`](KinesisBroker::endpoint), the host and port of that URL; the scheme and any
-  user name and password come off it, because the document is generated to be published.
-- Otherwise `kinesis.<region>.amazonaws.com` when [`region(..)`](KinesisBroker::region) named one.
-- Otherwise `kinesis.amazonaws.com`, because a broker resolving its region from the environment has
-  not resolved it when the document is built.
-
-The `asyncapi` feature adds what only this broker knows, under the extension key
-`x-ruststream-kinesis`: the specification lists no Kinesis binding, and the protocol keys it does
-define are a closed list. A subscription describes its channel with the stream it reads, the pause
-between reads, and the shards it provisions where it creates the stream. A publishing position
-describes its own channel with the stream the records land in - the policy holds no destination, so
-that stream is the one the mount site resolved. A policy that fixed a partition key describes the
-records that leave through it, on the message object, since a key routes one record and never names
-a stream.
-
-```
-# #[cfg(feature = "asyncapi")]
-# mod demo {
-use ruststream::asyncapi::{Spec, build_spec};
-use ruststream_kinesis::prelude::*;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-
-#[derive(Deserialize, JsonSchema)]
-struct Order {
-    id: u64,
-}
-
-#[derive(Serialize, Outgoing, JsonSchema)]
-#[outgoing(name = "receipts")]
-struct Receipt {
-    order: u64,
-}
-
-#[subscriber(KinesisStream::new("orders").create_if_missing(2), reply)]
-async fn confirm(order: &Order) -> Receipt {
-    Receipt { order: order.id }
-}
-
-pub fn document() -> Spec {
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
-        KinesisBroker::new(),
-        |b| {
-            b.include(confirm)
-                .out_reply(Publish::default())
-                .partition_key("tenant-acme");
-        },
-    );
-    build_spec(&app)
-}
-# }
-# fn main() {
-#     #[cfg(feature = "asyncapi")]
-#     let _ = demo::document();
-# }
-```
-
-Only what the descriptor and the policy hold is reported. The document is built before anything
-connects, so an existing stream's real shard count and its ARN are not in it, and neither is a key
-named on a single publish call. There is no reply address either, because this broker has none.
-
-# Testing
-
-A test runs the service's own app: the builder `main` runs, on [`KinesisBroker`], handed to the
-framework's `TestApp` harness unchanged. With the `testing` feature in `[dev-dependencies]`,
-`TestApp::start` connects the broker in process instead of dialling the service, and the test
-addresses it by its production type, `tb.broker::<KinesisBroker>()`. `TestApp::start_live` runs
-the same test body against a running stack. The harness's usage is the core's:
-<https://docs.rs/ruststream/latest/ruststream/testing/index.html>.
-
-```
-# #[cfg(feature = "testing")]
-# mod demo {
-use std::error::Error;
-
-use ruststream::testing::TestApp;
-use ruststream_kinesis::prelude::*;
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]
-#[outgoing(name = "orders")]
-pub struct Order {
-    pub id: u64,
-}
-
-#[subscriber(KinesisStream::new("orders"))]
-async fn handle(order: &Order) -> HandlerOutcome {
-    println!("got order {}", order.id);
-    HandlerOutcome::ack()
-}
-
-/// The app `main` runs.
-pub fn app() -> RustStream {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-        b.include(handle);
-    })
-}
-
-pub async fn accepts_an_order() -> Result<(), Box<dyn Error>> {
-    let tb = TestApp::start(app()).await?;
-
-    // The publish returns once the handler it woke has settled.
-    tb.broker::<KinesisBroker>()
-        .message(&Order { id: 7 })
-        .publish()
-        .await?;
-
-    tb.broker::<KinesisBroker>()
-        .subscriber("orders")
-        .assert_called_once()
-        .with(&Order { id: 7 })
-        .settled(HandlerOutcome::ack());
-
-    tb.shutdown().await?;
-    Ok(())
-}
-# }
-# #[cfg(feature = "testing")]
-# fn main() -> Result<(), Box<dyn std::error::Error>> {
-#     tokio::runtime::Builder::new_multi_thread()
-#         .enable_all()
-#         .build()?
-#         .block_on(demo::accepts_an_order())
-# }
-# #[cfg(not(feature = "testing"))]
-# fn main() {}
-```
-
-In process, the connected broker carries an in-process transport in place of the SDK client, and
-so do its subscriptions, its publisher and its deliveries: the descriptors and the publish policy
-of the routes file are the production ones. The transport has no settings of its own. A record is
-written the way the publisher writes it for the service: the partition key resolved by the same
-four-step ladder, the headers in the same envelope. It is read back by the same decoding, so a
-delivery carries the position, the three headers and the context a record from a shard carries.
-
-It never succeeds where the service fails. A stream name the service does not accept, an empty
-partition key or one longer than 256 characters, and a record over 10 MiB (the most a stream can be
-configured to take) are refused. A handle used
-after `shutdown` reports [`KinesisError::NotConnected`], and a KPL-aggregated record is reported as
-[`KinesisError::AggregatedRecord`]. A subscription opens at the tip, and `start_at(..)` and a
-handler's [`SeekHandle`] re-read the retained log from the position they name. A record a handler
-leaves unhandled (`HandlerOutcome::retry()`) is read again, together with every record after it.
-
-What only the service has belongs to the live mode, over the same test body. In process a stream
-has one shard, so every record is ordered against every other; leases, checkpoints, retention and
-resharding are the service's; and every stream a service names is there. An unhandled record comes
-back at once in process, while the service reads it again when the shard's lease is next taken. The
-crate's live suites run against the stack in `docker-compose.test.yml` (`just test-brokers`).
-
-# Operations
-
-- Credentials and region resolve from the environment through the AWS default chain when the
-  runtime connects. [`from_config`](KinesisBroker::from_config) takes a config the service built
-  itself, which is also what a shared [`DynamoLeaseStore`] needs.
-- TLS comes from the SDK's default HTTPS client; the crate adds no transport configuration of its
-  own. [`test_credentials`](KinesisBroker::test_credentials) supplies dummy static credentials for
-  a local stack that wants them present and ignores their values.
-- Each runtime keeps its own connections. Requests from the runtime the broker connected on share
-  the client built at connect; a handler on a dedicated thread publishes and checkpoints through a
-  client built for that thread from the same config, so a connection it opens never serves the
-  broker's runtime and a busy thread never holds up another's request.
-- A local stack is three settings: `endpoint`, `test_credentials` and `region`. `just brokers-up`
-  starts the one this repository's compose file defines, and `just test-brokers` runs the live
-  suites against it.
-- Reads are billed per shard: five a second, shared with every other consumer of that stream.
-  [`poll_interval`](KinesisStream::poll_interval) and the batch size are where that budget is
-  spent.
-- Enhanced fan-out is not implemented, so a subscription competes for the stream's shared
-  throughput with every other reader.
-- KPL-aggregated records are rejected with [`KinesisError::AggregatedRecord`]; this crate does not
-  deaggregate them.
-- One publish is one `PutRecord` call. The crate does not group records into `PutRecords`, so the
-  client-side batching a high-rate producer wants is not here.
-- [`KinesisError`] is the crate's one error enum, variants by source; the SDK's layered error types
-  are boxed and formatted with their cause chain rather than leaked.
+`cargo run -- run` starts it. [`KinesisBroker::new`] only records the configuration; the region
+and the credentials resolve from the environment when the runtime connects the broker, and the
+runtime shuts it down when the service stops.
+
+# Where things are
+
+The [guides][guides] take a Kinesis service from installation to production, in this order:
+[getting started][g-start], [consuming a stream][g-consuming],
+[shards, partition keys and ordering][g-ordering],
+[checkpoints and delivery guarantees][g-checkpoints],
+[retries and dead-letter streams][g-retries], [replay and seeking][g-replay],
+[several instances][g-leases], [testing][g-testing] and
+[running in production][g-production]. The [architecture][architecture] pages show how the crate
+sits between the SDK client and the runtime, and the [benchmarks][benchmarks] what it costs.
+
+Each topic below links to its component page on the site, which shows it in a service; the
+item's own documentation keeps the detail.
+
+## Broker
+
+- [KinesisBroker][c-broker]: [`KinesisBroker`], connected into [`ConnectedKinesisBroker`].
+- [Credentials][c-credentials]: the AWS default chain at connect, or a config built elsewhere
+  through [`KinesisBroker::from_config`].
+- [Endpoint][c-endpoint]: [`KinesisBroker::endpoint`], [`KinesisBroker::region`] and
+  [`KinesisBroker::test_credentials`], for a local stack.
+- [Startup][c-startup]: a subscription opens once every shard it took has a reader.
+- [Shutdown][c-shutdown]: a handle used after shutdown reports [`KinesisError::NotConnected`].
+- [Prelude][c-prelude]: [`prelude`], the one glob a Kinesis service imports.
+- [Errors][c-errors]: [`KinesisError`].
+
+## Subscriptions
+
+- [Subscriptions][c-subscriptions]: a bare stream name reads every shard of the stream.
+- [KinesisStream][c-kinesis-stream]: [`KinesisStream`], one stream with every setting of its
+  subscription.
+- [poll_interval][c-poll-interval]: [`KinesisStream::poll_interval`], the pause between reads of
+  an idle shard.
+- [create_if_missing][c-create-if-missing]: [`KinesisStream::create_if_missing`], a stream created
+  when it is missing.
+- [KinesisSubscriberExt][c-subscriber-ext]: [`KinesisSubscriberExt`], the same settings on the
+  mount chain.
+- [Shards][c-shards]: a lease and a reader per shard, and a split's children after their parents.
+- [Batches][c-batches]: a slice handler over [`KinesisSubscriber`] batches.
+
+## Settlement
+
+- [Checkpoint][c-settlement]: [`KinesisMessage`], what an ack, a drop and a requeue do on a
+  shard.
+- [retry_after][c-retry-after]: a deferred copy of the record back to its stream.
+- [out_retry][c-out-retry]: the publisher the retry copies leave through.
+- [Dead letters][c-dead-letters]: `max_attempts` and `dead_letter`, the stream a spent record
+  goes to.
+
+## Leases
+
+- [LeaseStore][c-leases]: [`LeaseStore`], [`LeaseState`] and [`SHARD_END`], where shard owners
+  and checkpoints live.
+- [MemoryLeaseStore][c-memory-lease-store]: [`MemoryLeaseStore`], the default store for one
+  instance.
+- [DynamoLeaseStore][c-dynamo-lease-store]: [`DynamoLeaseStore`], a `DynamoDB` table several
+  instances share (feature `dynamodb-lease`).
+- [LeaseKey][c-lease-key]: [`LeaseKey`], one shard of one stream.
+- [owner_id][c-owner-id]: [`KinesisBroker::owner_id`], the name this instance holds its leases
+  under.
+- [legacy_stream][c-legacy-stream]: [`DynamoLeaseStore::legacy_stream`], a lease table an
+  earlier version wrote.
+
+## Context
+
+- [KinesisContext][c-context]: [`KinesisContext`] and its keys [`Position`] and [`SeekHandle`].
+- [KinesisBatchContext][c-batch-context]: [`KinesisBatchContext`], a batch handler's context.
+- [Headers][c-headers]: [`SEQUENCE_HEADER`], [`SHARD_HEADER`] and [`PARTITION_KEY_HEADER`] on
+  every delivery.
+- [Envelope][c-envelope]: how user headers travel inside a record.
+
+## Positions
+
+- [KinesisPosition][c-positions]: [`KinesisPosition`], a place in the stream.
+- [start_at][c-start-at]: opening a subscription at a position on every startup.
+- [Seek][c-seek]: [`KinesisSeeker`] through the [`SeekHandle`] key, moving a running
+  subscription.
+
+## Publishing
+
+- [KinesisPublish][c-publishing]: [`KinesisPublish`], the publish policy, and its live
+  [`KinesisPublisher`].
+- [Keys][c-keys]: the four places that name a record's partition key.
+- [partition_key][c-partition-key]: [`KinesisPublishSteps::partition_key`] and
+  [`KinesisPublishOptions`] key one record.
+- [KinesisPublishSettings][c-publish-settings]: [`KinesisPublishSettings::partition_key`] keys
+  every record of a position.
+
+## Tooling
+
+- [AsyncAPI][c-asyncapi]: the Kinesis bindings of the generated document (feature `asyncapi`):
+  the [server][c-asyncapi-server], the [channels][c-asyncapi-channels] and the
+  [messages][c-asyncapi-messages].
+- [Testing][c-testing]: the in-process Kinesis
+  [`TestApp`](https://docs.rs/ruststream/latest/ruststream/testing/struct.TestApp.html) connects
+  the broker to (feature `testing`), and [Live][c-live] runs against `LocalStack` or AWS.
 
 # Cargo features
 
-Strictly additive, and all three are off by default.
+All three are additive and off by default. `asyncapi` contributes the Kinesis bindings to the
+generated document, `dynamodb-lease` adds [`DynamoLeaseStore`], and `testing` adds the in-process
+mode `TestApp::start` connects the broker through. The codecs are the core's: a service enables
+`json`, `msgpack` or `cbor` on `ruststream`.
 
-- `asyncapi`: the `x-ruststream-kinesis` binding objects this crate writes into the generated
-  document.
-- `dynamodb-lease`: [`DynamoLeaseStore`], so several service instances share the shards.
-- `testing`: the in-process mode of [`KinesisBroker`], which the framework's `TestApp` connects
-  in a test.
-
-Examples for every topic above are in
-[`examples/`](https://github.com/powersemmi/ruststream-kinesis/tree/main/crates/ruststream-kinesis/examples).
+[guides]: https://powersemmi.github.io/ruststream-kinesis/latest/
+[g-start]: https://powersemmi.github.io/ruststream-kinesis/latest/guides/getting-started/
+[g-consuming]: https://powersemmi.github.io/ruststream-kinesis/latest/guides/consuming/
+[g-ordering]: https://powersemmi.github.io/ruststream-kinesis/latest/guides/ordering/
+[g-checkpoints]: https://powersemmi.github.io/ruststream-kinesis/latest/guides/checkpoints/
+[g-retries]: https://powersemmi.github.io/ruststream-kinesis/latest/guides/retries/
+[g-replay]: https://powersemmi.github.io/ruststream-kinesis/latest/guides/replay/
+[g-leases]: https://powersemmi.github.io/ruststream-kinesis/latest/guides/leases/
+[g-testing]: https://powersemmi.github.io/ruststream-kinesis/latest/guides/testing/
+[g-production]: https://powersemmi.github.io/ruststream-kinesis/latest/guides/production/
+[architecture]: https://powersemmi.github.io/ruststream-kinesis/latest/architecture/
+[benchmarks]: https://powersemmi.github.io/ruststream-kinesis/latest/architecture/benchmarks/
+[c-broker]: https://powersemmi.github.io/ruststream-kinesis/latest/components/broker/
+[c-credentials]: https://powersemmi.github.io/ruststream-kinesis/latest/components/broker/credentials/
+[c-endpoint]: https://powersemmi.github.io/ruststream-kinesis/latest/components/broker/endpoint/
+[c-startup]: https://powersemmi.github.io/ruststream-kinesis/latest/components/broker/startup/
+[c-shutdown]: https://powersemmi.github.io/ruststream-kinesis/latest/components/broker/shutdown/
+[c-prelude]: https://powersemmi.github.io/ruststream-kinesis/latest/components/broker/prelude/
+[c-errors]: https://powersemmi.github.io/ruststream-kinesis/latest/components/broker/errors/
+[c-subscriptions]: https://powersemmi.github.io/ruststream-kinesis/latest/components/subscriptions/
+[c-kinesis-stream]: https://powersemmi.github.io/ruststream-kinesis/latest/components/subscriptions/kinesis-stream/
+[c-poll-interval]: https://powersemmi.github.io/ruststream-kinesis/latest/components/subscriptions/poll-interval/
+[c-create-if-missing]: https://powersemmi.github.io/ruststream-kinesis/latest/components/subscriptions/create-if-missing/
+[c-subscriber-ext]: https://powersemmi.github.io/ruststream-kinesis/latest/components/subscriptions/subscriber-ext/
+[c-shards]: https://powersemmi.github.io/ruststream-kinesis/latest/components/subscriptions/shards/
+[c-batches]: https://powersemmi.github.io/ruststream-kinesis/latest/components/subscriptions/batches/
+[c-settlement]: https://powersemmi.github.io/ruststream-kinesis/latest/components/settlement/
+[c-retry-after]: https://powersemmi.github.io/ruststream-kinesis/latest/components/settlement/retry-after/
+[c-out-retry]: https://powersemmi.github.io/ruststream-kinesis/latest/components/settlement/out-retry/
+[c-dead-letters]: https://powersemmi.github.io/ruststream-kinesis/latest/components/settlement/dead-letters/
+[c-leases]: https://powersemmi.github.io/ruststream-kinesis/latest/components/leases/
+[c-memory-lease-store]: https://powersemmi.github.io/ruststream-kinesis/latest/components/leases/memory-lease-store/
+[c-dynamo-lease-store]: https://powersemmi.github.io/ruststream-kinesis/latest/components/leases/dynamo-lease-store/
+[c-lease-key]: https://powersemmi.github.io/ruststream-kinesis/latest/components/leases/lease-key/
+[c-owner-id]: https://powersemmi.github.io/ruststream-kinesis/latest/components/leases/owner-id/
+[c-legacy-stream]: https://powersemmi.github.io/ruststream-kinesis/latest/components/leases/legacy-stream/
+[c-context]: https://powersemmi.github.io/ruststream-kinesis/latest/components/context/
+[c-batch-context]: https://powersemmi.github.io/ruststream-kinesis/latest/components/context/batch-context/
+[c-headers]: https://powersemmi.github.io/ruststream-kinesis/latest/components/context/headers/
+[c-envelope]: https://powersemmi.github.io/ruststream-kinesis/latest/components/context/envelope/
+[c-positions]: https://powersemmi.github.io/ruststream-kinesis/latest/components/positions/
+[c-start-at]: https://powersemmi.github.io/ruststream-kinesis/latest/components/positions/start-at/
+[c-seek]: https://powersemmi.github.io/ruststream-kinesis/latest/components/positions/seek/
+[c-publishing]: https://powersemmi.github.io/ruststream-kinesis/latest/components/publishing/
+[c-keys]: https://powersemmi.github.io/ruststream-kinesis/latest/components/publishing/keys/
+[c-partition-key]: https://powersemmi.github.io/ruststream-kinesis/latest/components/publishing/partition-key/
+[c-publish-settings]: https://powersemmi.github.io/ruststream-kinesis/latest/components/publishing/publish-settings/
+[c-asyncapi]: https://powersemmi.github.io/ruststream-kinesis/latest/components/asyncapi/
+[c-asyncapi-server]: https://powersemmi.github.io/ruststream-kinesis/latest/components/asyncapi/server/
+[c-asyncapi-channels]: https://powersemmi.github.io/ruststream-kinesis/latest/components/asyncapi/channels/
+[c-asyncapi-messages]: https://powersemmi.github.io/ruststream-kinesis/latest/components/asyncapi/messages/
+[c-testing]: https://powersemmi.github.io/ruststream-kinesis/latest/components/testing/
+[c-live]: https://powersemmi.github.io/ruststream-kinesis/latest/components/testing/live/
