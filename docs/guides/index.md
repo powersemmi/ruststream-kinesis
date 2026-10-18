@@ -11,3 +11,4 @@ description: "Guides to building Amazon Kinesis Data Streams services with rusts
 [`aws-sdk-kinesis`](https://docs.rs/aws-sdk-kinesis) client. A service reads and writes Kinesis
 streams: the crate discovers a stream's shards, leases each shard to one service instance and
 checkpoints its progress. The guides take a Kinesis service from installation to production.
+Start with [Getting started](getting-started.md).
