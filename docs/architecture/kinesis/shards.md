@@ -45,7 +45,8 @@ writes `SHARD_END` only after every delivery of its shard has settled.
 
 The subscription lists the shards again every 10 seconds, so a child opens within that time once
 its parents are done. A child's reader resumes from the child's checkpoint, as
-[Reading](reading.md) draws. `create_if_missing(shards)` creates a
+[Reading](reading.md) draws. A child with no checkpoint opens at its oldest record, so what was
+written to it before its reader started is read too. `create_if_missing(shards)` creates a
 missing stream in provisioned mode with that many shards and waits up to a minute for it to become
 usable.
 

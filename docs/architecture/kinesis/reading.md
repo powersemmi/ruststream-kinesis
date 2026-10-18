@@ -42,7 +42,7 @@ shard. A stored checkpoint opens the shard after the record it names. A shard wi
 opens at `LATEST`, unless `start_at(..)` names another position. `start_at(..)` applies at
 startup, to the shards the subscription opens with, ahead of their checkpoints. A reader started
 later, for a child shard or for a shard taken over from another instance, resumes from the
-checkpoint.
+checkpoint; a child shard with no checkpoint opens at `TRIM_HORIZON`.
 
 A `GetRecords` call returns up to 10,000 records or 10 MB. The crate asks for 1,000, or for the
 batch size of a batch subscription. Every answer carries the next iterator, and the reader uses it
