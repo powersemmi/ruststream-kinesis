@@ -16,18 +16,19 @@ use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use aws_sdk_kinesis::operation::get_records::GetRecordsError;
-use aws_sdk_kinesis::operation::get_shard_iterator::builders::GetShardIteratorFluentBuilder;
-use aws_sdk_kinesis::primitives::DateTime;
-use aws_sdk_kinesis::types::{Shard, ShardIteratorType};
+use aws_sdk_kinesis::types::Shard;
+use futures::FutureExt;
 use futures::Stream;
 #[cfg(feature = "testing")]
 use futures::future::Either;
 use ruststream::{BatchSubscriber, BufferedSubscriber, Subscriber};
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
 
 use crate::broker::Core;
 use crate::claim::StreamClaim;
+use crate::cursor::{Lineage, ShardStart, StreamStart, iterator_at, reopen_at, rewind_to};
 use crate::error::{KinesisError, sdk_err};
 #[cfg(feature = "testing")]
 use crate::in_process::{LogDeliveries, LogSeeker};
@@ -52,27 +53,6 @@ const MAX_READ_LIMIT: i32 = 10_000;
 /// the size is the mount site's and the deadline is the broker's; it is short next to the
 /// second the reader waits between reads of an idle shard.
 const BATCH_FILL_WINDOW: Duration = Duration::from_millis(50);
-
-/// A position every shard of the subscription can open at: the stream-wide half of
-/// [`KinesisPosition`]. Kept apart from the shard-scoped forms so that "install this for the
-/// whole subscription" cannot be handed a position that only one shard understands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StreamStart {
-    Horizon,
-    Latest,
-    Timestamp(u64),
-}
-
-/// The cursor one shard's reader opens with, in the shapes the service's iterator types take.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ShardStart {
-    /// A position shared by the whole subscription.
-    Stream(StreamStart),
-    /// Redelivers exactly this record: a captured, pinned position.
-    At(String),
-    /// Resumes after this record: a stored checkpoint.
-    After(String),
-}
 
 /// A repositioning request delivered to one shard's reader.
 pub(crate) struct ShardSeek {
@@ -716,14 +696,16 @@ async fn coordinate(subscription: Arc<Subscription>, reading: oneshot::Sender<()
     let stream = descriptor.stream();
     // Leases are the stream's and the shard's together: shard ids repeat across streams.
     let stream_key: Arc<str> = Arc::from(stream);
-    let mut readers: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+    let mut readers: HashMap<String, JoinHandle<Option<ShardStart>>> = HashMap::new();
+    // Where a reader that gave up had started reading its shard, for the shard's next reader.
+    let mut rewinds: HashMap<String, ShardStart> = HashMap::new();
     let mut reading = Some(reading);
     // Filled on the first pass only: the readers' starting cursors, and the errors held back
     // until `subscribe` has returned.
     let mut positioned = Vec::new();
     let mut held = Vec::new();
     loop {
-        readers.retain(|_, handle| !handle.is_finished());
+        forget_finished(&mut readers, &mut rewinds);
         let first = reading.is_some();
 
         match list_all_shards(client, stream).await {
@@ -763,6 +745,7 @@ async fn coordinate(subscription: Arc<Subscription>, reading: oneshot::Sender<()
                                 positioned.push(cursor);
                                 started
                             });
+                            let rewind = rewinds.remove(&id);
                             readers.insert(
                                 id,
                                 runtime.spawn(read_shard(
@@ -771,6 +754,7 @@ async fn coordinate(subscription: Arc<Subscription>, reading: oneshot::Sender<()
                                     handle.gate,
                                     seek_rx,
                                     lineage,
+                                    rewind,
                                     started,
                                 )),
                             );
@@ -805,6 +789,22 @@ async fn coordinate(subscription: Arc<Subscription>, reading: oneshot::Sender<()
     // Readers watch the same channel and stop on their own.
 }
 
+/// Drops the readers that stopped, keeping where each one that gave up had started reading.
+fn forget_finished(
+    readers: &mut HashMap<String, JoinHandle<Option<ShardStart>>>,
+    rewinds: &mut HashMap<String, ShardStart>,
+) {
+    readers.retain(|shard, handle| {
+        if !handle.is_finished() {
+            return true;
+        }
+        if let Some(Ok(Some(rewind))) = handle.now_or_never() {
+            rewinds.insert(shard.clone(), rewind);
+        }
+        false
+    });
+}
+
 /// Reports a coordinator error on the subscription's stream, or, on the first pass, holds it until
 /// `subscribe` has returned: the stream has no reader before that, and a full channel would stall
 /// the pass `subscribe` waits for.
@@ -835,19 +835,6 @@ enum Parents {
     Skipped,
 }
 
-/// Whether a shard's reader picks up a reading its parents left off, or opens one of its own.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Lineage {
-    /// The shard opens at the subscription's position: the stored checkpoint, a sought position,
-    /// or the tip.
-    Opens,
-    /// A parent was read to its end, so whatever landed on this shard since the split follows
-    /// what was delivered. Without a checkpoint the shard opens at its own beginning, as the
-    /// vendor's consumer library opens a child: opening it at the tip would skip every record
-    /// written to it before its reader started.
-    Continues,
-}
-
 async fn parents(
     bus: &SeekState,
     stream: &Arc<str>,
@@ -874,32 +861,6 @@ async fn parents(
     outcome
 }
 
-/// Points a `GetShardIterator` request at a cursor.
-fn iterator_at(
-    request: GetShardIteratorFluentBuilder,
-    start: &ShardStart,
-) -> GetShardIteratorFluentBuilder {
-    match start {
-        ShardStart::Stream(StreamStart::Latest) => {
-            request.shard_iterator_type(ShardIteratorType::Latest)
-        }
-        ShardStart::Stream(StreamStart::Horizon) => {
-            request.shard_iterator_type(ShardIteratorType::TrimHorizon)
-        }
-        ShardStart::Stream(StreamStart::Timestamp(millis)) => request
-            .shard_iterator_type(ShardIteratorType::AtTimestamp)
-            .timestamp(DateTime::from_millis(
-                i64::try_from(*millis).unwrap_or(i64::MAX),
-            )),
-        ShardStart::At(sequence) => request
-            .shard_iterator_type(ShardIteratorType::AtSequenceNumber)
-            .starting_sequence_number(sequence),
-        ShardStart::After(sequence) => request
-            .shard_iterator_type(ShardIteratorType::AfterSequenceNumber)
-            .starting_sequence_number(sequence),
-    }
-}
-
 /// The crate's error for a lease store failure on `key`, naming the stream and the shard.
 fn lease_error(key: &LeaseKey, source: LeaseError) -> KinesisError {
     KinesisError::Lease {
@@ -915,13 +876,16 @@ fn lease_error(key: &LeaseKey, source: LeaseError) -> KinesisError {
 /// the seek lands, `start_at(..)` included, since a subscription opens only once every reader of
 /// its first pass has its cursor; a reader that starts later, on a shard taken over from another
 /// instance or after a reader gave up, continues where the shard's last owner stopped instead of
-/// replaying the shard or skipping what was left unread.
+/// replaying the shard or skipping what was left unread. Without a checkpoint, `rewind` is where
+/// this instance started reading the shard (see [`reopen_at`]); it is updated to the cursor the
+/// new iterator opens at.
 async fn initial_iterator(
     client: &aws_sdk_kinesis::Client,
     key: &LeaseKey,
     bus: &SeekState,
     store: &dyn LeaseStore,
     lineage: Lineage,
+    rewind: &mut Option<ShardStart>,
 ) -> Result<Option<String>, KinesisError> {
     let (stream, shard) = (key.stream(), key.shard());
     let checkpoint = store
@@ -932,16 +896,7 @@ async fn initial_iterator(
     if checkpoint.as_deref() == Some(SHARD_END) {
         return Ok(None);
     }
-    let start = match (checkpoint, lineage, bus.installed()) {
-        (Some(sequence), _, _) => ShardStart::After(sequence),
-        (None, Lineage::Continues, Some(StreamStart::Timestamp(millis))) => {
-            ShardStart::Stream(StreamStart::Timestamp(millis))
-        }
-        (None, Lineage::Continues, _) => ShardStart::Stream(StreamStart::Horizon),
-        (None, Lineage::Opens, installed) => {
-            ShardStart::Stream(installed.unwrap_or(StreamStart::Latest))
-        }
-    };
+    let start = reopen_at(checkpoint, rewind.as_ref(), lineage, bus.installed());
     let request = iterator_at(
         client
             .get_shard_iterator()
@@ -954,6 +909,7 @@ async fn initial_iterator(
         shard: shard.to_owned(),
         source: sdk_err(&e),
     })?;
+    *rewind = rewind_to(&start);
     Ok(output.shard_iterator().map(str::to_owned))
 }
 
@@ -965,6 +921,7 @@ async fn apply_shard_seek(
     seek: ShardSeek,
     iterator: &mut String,
     tracker: &mut Arc<Watermark>,
+    rewind: &mut Option<ShardStart>,
 ) {
     let fresh = iterator_at(
         client
@@ -987,6 +944,7 @@ async fn apply_shard_seek(
             |new_iterator| {
                 new_iterator.clone_into(iterator);
                 *tracker = Arc::new(Watermark::default());
+                *rewind = rewind_to(&seek.start);
                 Ok(())
             },
         ),
@@ -1006,8 +964,9 @@ async fn read_shard(
     gate: Arc<AtomicU64>,
     mut seek_rx: mpsc::UnboundedReceiver<ShardSeek>,
     lineage: Lineage,
+    mut rewind: Option<ShardStart>,
     started: Option<oneshot::Sender<()>>,
-) {
+) -> Option<ShardStart> {
     // Every exit path must deregister this shard's seek surface.
     struct BusGuard {
         bus: SeekBus,
@@ -1038,15 +997,15 @@ async fn read_shard(
     let seeker = KinesisSeeker::shards(Arc::clone(bus));
     let stream = descriptor.stream();
     let mut tracker = Arc::new(Watermark::default());
-    let initial = initial_iterator(client, &lease, bus, store.as_ref(), lineage).await;
+    let initial = initial_iterator(client, &lease, bus, store.as_ref(), lineage, &mut rewind).await;
     // The cursor is fixed, so the tip this shard opens at is the one `subscribe` promised.
     drop(started);
     let mut iterator = match initial {
         Ok(Some(iterator)) => iterator,
-        Ok(None) => return, // already at SHARD_END
+        Ok(None) => return None, // already at SHARD_END
         Err(err) => {
             let _ = out.send(Stamped::unstamped(Err(err))).await;
-            return;
+            return rewind;
         }
     };
     let mut last_renew = tokio::time::Instant::now();
@@ -1055,20 +1014,29 @@ async fn read_shard(
     loop {
         if out.is_closed() {
             let _ = store.release(&lease, owner).await;
-            return;
+            return None;
         }
         // A reposition replaces the iterator and resets the watermark; deliveries stamped
         // under the previous generation are discarded by their settlements and were already
         // filtered from checkpointing by the gate bump at enqueue.
         while let Ok(seek) = seek_rx.try_recv() {
-            apply_shard_seek(client, stream, shard, seek, &mut iterator, &mut tracker).await;
+            apply_shard_seek(
+                client,
+                stream,
+                shard,
+                seek,
+                &mut iterator,
+                &mut tracker,
+                &mut rewind,
+            )
+            .await;
         }
         if last_renew.elapsed() >= RENEW_EVERY {
             match store.renew(&lease, owner, LEASE_TTL).await {
                 Ok(true) => last_renew = tokio::time::Instant::now(),
                 // Fenced: stop immediately, without checkpointing - the new owner replays
                 // from the last checkpoint, which at-least-once permits.
-                Ok(false) | Err(_) => return,
+                Ok(false) | Err(_) => return rewind,
             }
         }
 
@@ -1085,6 +1053,10 @@ async fn read_shard(
             Ok(output) => {
                 failures = 0;
                 for record in output.records() {
+                    if rewind.is_none() {
+                        // Opened at the tip: the first record read is where it started.
+                        rewind = Some(ShardStart::At(record.sequence_number().to_owned()));
+                    }
                     let data = record.data().as_ref();
                     if data.len() > 4 && data[0..4] == KPL_MAGIC {
                         if out
@@ -1098,7 +1070,7 @@ async fn read_shard(
                             .await
                             .is_err()
                         {
-                            return;
+                            return None;
                         }
                         continue;
                     }
@@ -1126,7 +1098,7 @@ async fn read_shard(
                         .is_err()
                     {
                         let _ = store.release(&lease, owner).await;
-                        return;
+                        return None;
                     }
                 }
 
@@ -1140,7 +1112,7 @@ async fn read_shard(
                         let _ = store.checkpoint(&lease, owner, SHARD_END).await;
                     }
                     let _ = store.release(&lease, owner).await;
-                    return;
+                    return None;
                 };
                 iterator = next.to_owned();
                 if output.records().is_empty() {
@@ -1149,7 +1121,13 @@ async fn read_shard(
                         seek = seek_rx.recv() => {
                             if let Some(seek) = seek {
                                 apply_shard_seek(
-                                    client, stream, shard, seek, &mut iterator, &mut tracker,
+                                    client,
+                                    stream,
+                                    shard,
+                                    seek,
+                                    &mut iterator,
+                                    &mut tracker,
+                                    &mut rewind,
                                 )
                                 .await;
                             }
@@ -1188,24 +1166,38 @@ async fn read_shard(
                         .await
                         .is_err()
                 {
-                    return;
+                    return None;
                 }
                 if fatal {
                     let _ = store.release(&lease, owner).await;
-                    return;
+                    return None;
                 }
                 failures += 1;
                 if failures > 10 {
                     let _ = store.release(&lease, owner).await;
-                    return;
+                    // The coordinator hands this to the shard's next reader, which would
+                    // otherwise open at the tip and skip what this one read and left unsettled.
+                    return rewind;
                 }
-                // Expired iterators are refetched from the checkpoint (never Latest, which
-                // would silently skip data); everything else backs off and retries.
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                match initial_iterator(client, &lease, bus, store.as_ref(), lineage).await {
-                    Ok(Some(fresh)) => iterator = fresh,
-                    Ok(None) => return,
-                    Err(_) => {}
+                // A failed read leaves the iterator good, so the reader retries it. An expired
+                // one is refetched from the checkpoint, or without one from where this reader
+                // started reading: never the tip, which would skip what was not yet read.
+                if expired {
+                    match initial_iterator(
+                        client,
+                        &lease,
+                        bus,
+                        store.as_ref(),
+                        lineage,
+                        &mut rewind,
+                    )
+                    .await
+                    {
+                        Ok(Some(fresh)) => iterator = fresh,
+                        Ok(None) => return None,
+                        Err(_) => {}
+                    }
                 }
             }
         }
