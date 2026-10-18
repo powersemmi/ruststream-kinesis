@@ -28,7 +28,11 @@ async fn confirm(order: &Order) -> Receipt {
 #[ruststream::app]
 fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-        b.include(confirm).out_reply(Publish::default());
+        // One key means one shard: every receipt is ordered against every other, at the cost of
+        // a single shard's throughput. Leave it off to spread them instead.
+        b.include(confirm)
+            .out_reply(Publish::default())
+            .partition_key("receipts-v1");
     })
 }
 // --8<-- [end:replies]

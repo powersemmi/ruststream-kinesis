@@ -390,3 +390,47 @@ name = "manual_kinesis_context_envelope"
 path = "examples/manual/kinesis_context_envelope.rs"
 required-features = ["testing"]
 test = true
+
+[[example]]
+name = "kinesis_replies"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_replies"
+path = "examples/manual/kinesis_replies.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_publishing_publish"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_publishing_publish"
+path = "examples/manual/kinesis_publishing_publish.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_publishing_keys"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_publishing_keys"
+path = "examples/manual/kinesis_publishing_keys.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_publishing_step"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_publishing_step"
+path = "examples/manual/kinesis_publishing_step.rs"
+required-features = ["testing"]
+test = true
