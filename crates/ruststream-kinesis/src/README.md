@@ -750,7 +750,8 @@ four-step ladder, the headers in the same envelope. It is read back by the same 
 delivery carries the position, the three headers and the context a record from a shard carries.
 
 It never succeeds where the service fails. A stream name the service does not accept, an empty
-partition key or one longer than 256 characters, and a record over 1 MiB are refused. A handle used
+partition key or one longer than 256 characters, and a record over 10 MiB (the most a stream can be
+configured to take) are refused. A handle used
 after `shutdown` reports [`KinesisError::NotConnected`], and a KPL-aggregated record is reported as
 [`KinesisError::AggregatedRecord`]. A subscription opens at the tip, and `start_at(..)` and a
 handler's [`SeekHandle`] re-read the retained log from the position they name. A record a handler

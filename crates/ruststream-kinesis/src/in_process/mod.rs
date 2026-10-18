@@ -48,8 +48,9 @@ const MAX_STREAM_NAME: usize = 128;
 /// The longest partition key the service accepts, in characters.
 const MAX_PARTITION_KEY: usize = 256;
 
-/// The most one record may carry: its data blob and its partition key together.
-const MAX_RECORD: usize = 1024 * 1024;
+/// The most one record may carry: its data blob and its partition key together. A stream takes
+/// 1 MiB unless it is configured for more, up to this; the stream's setting is its owner's.
+const MAX_RECORD: usize = 10 * 1024 * 1024;
 
 /// The in-process transport of one connected broker: the streams, the harness coordinator, and
 /// whether the broker has shut down.
@@ -215,7 +216,7 @@ fn check_stream(stream: &str) -> Result<(), String> {
 
 /// Refuses a record the service refuses: a stream name it does not accept, a partition key that
 /// is empty or longer than 256 characters, or a record whose data and partition key together
-/// exceed 1 MiB.
+/// exceed 10 MiB.
 fn check_record(stream: &str, partition_key: &str, data: usize) -> Result<(), String> {
     check_stream(stream)?;
     let key_chars = partition_key.chars().count();
