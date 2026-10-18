@@ -66,7 +66,7 @@ So a handler that can see a record twice is written to be idempotent: booking th
 The checkpoint lives in the lease store, and the store decides what survives a restart.
 The default [`MemoryLeaseStore`](../components/leases/memory-lease-store.md) lives in the process and starts empty, so a restarted service opens each shard at its tip and reads only what is published from then on.
 [`DynamoLeaseStore`](../components/leases/dynamo-lease-store.md) keeps the checkpoints in a table, and a restarted service resumes where the last one stopped.
-A shard with no checkpoint opens where [`start_at`](api:ruststream::runtime::SubscriberSettings::start_at) says, and at the tip when nothing says otherwise ([Replay and seeking](replay.md)).
+A shard with no checkpoint opens where [`start_at`](../components/positions/start-at.md) says, and at the tip when nothing says otherwise ([Replay and seeking](replay.md)).
 
 A held record does not come back while the same reader holds the shard.
 To read it again without a restart, a handler [seeks](replay.md) back to it.
@@ -83,5 +83,5 @@ A held record in a closed shard therefore holds its children back as well.
 ## Testing the outcomes
 
 The tests in the example file run the app in process and check how each shipment settled.
-The [in-process Kinesis](api:ruststream::testing::TestApp) keeps no checkpoints, so a held record does not come back there either.
+The [in-process Kinesis](../components/testing/index.md) keeps no checkpoints, so a held record does not come back there either.
 What a restart reads again runs against a stack, in the test of the [Settlement](../components/settlement/index.md) example: it restarts the service over a store that outlives the first run and sees the held record first.

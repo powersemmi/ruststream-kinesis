@@ -50,9 +50,9 @@ A single subscription asks for up to 1000 records per read.
 Four empty reads a second leave one read a second of the shard's budget to the other consumers.
 The setting is also a [mount-site step](../components/subscriptions/subscriber-ext.md), `.poll_interval(..)` after `b.include(..)`.
 
-`Ctx<Position>` reads the record's place in the stream: its shard and sequence number, as a [`KinesisPosition`](api:ruststream_kinesis::KinesisPosition).
+[`Ctx<Position>`](../components/context/index.md) reads the record's place in the stream: its shard and sequence number, as a [`KinesisPosition`](../components/positions/index.md).
 A seek to that position reads the shard again from that record ([Replay and seeking](replay.md)).
-Every delivery also carries three headers:
+Every delivery also carries three [headers](../components/context/headers.md):
 
 | Header | Value |
 |---|---|
@@ -112,7 +112,7 @@ A handler runs one delivery at a time by default.
 `workers(n)` in the attribute, or the `workers` step of the manual form, runs up to `n` side by side; [Shards, partition keys and ordering](ordering.md) shows how to keep the order of each key while doing so.
 
 The crate reads through the stream's shared throughput, with `GetRecords`.
-A record that the Kinesis Producer Library aggregated is not handed to a handler: the subscription reports it as [`KinesisError::AggregatedRecord`](api:ruststream_kinesis::KinesisError::AggregatedRecord) and reads on.
+A record that the Kinesis Producer Library aggregated is not handed to a handler: the subscription reports it as [`KinesisError::AggregatedRecord`](../components/broker/errors.md) and reads on.
 
 The tests in the example file run the app in process.
 The batch test starts on a paused clock, so the 50 ms a partial batch waits pass at once.

@@ -8,7 +8,7 @@ import TabItem from '@theme/TabItem';
 
 # Testing a Kinesis service
 
-A test runs the service's own app with [`TestApp`](api:ruststream::testing::TestApp), against an in-process Kinesis or against a stack.
+A test runs the service's own app with [`TestApp`](api:ruststream::testing::TestApp), against an [in-process Kinesis](../components/testing/index.md) or against a stack.
 
 The service under test charges card payments.
 A payment arrives on `card-payments`, and its partition key is the account to charge.
@@ -95,11 +95,11 @@ The in-process Kinesis writes and reads records the way the service does for the
 The same partition-key rules apply, user headers ride the same envelope, and a delivery carries the same headers and context as one from a shard:
 
 - Every subscription on a stream reads every record of it, and opens at the tip.
-- [`start_at`](api:ruststream::runtime::SubscriberSettings::start_at) and the handler's seek handle read the stream's log again from the position they name ([Replay and seeking](replay.md)).
+- [`start_at`](../components/positions/start-at.md) and the handler's seek handle read the stream's log again from the position they name ([Replay and seeking](replay.md)).
 - `retry` with no cap is answered as Kinesis answers it, unsupported, and the record does not come back.
 - A deferred retry comes back as a counted copy, and a spent record goes to the dead-letter stream.
 - A record the service refuses is refused: a stream name over 128 characters or outside `[a-zA-Z0-9_.-]`, a partition key that is empty or over 256 characters, a record over 10 MiB, the most a stream can be configured to take. A test that publishes one fails with the service's error.
-- A publisher or a seek handle used after `shutdown` reports [`KinesisError::NotConnected`](api:ruststream_kinesis::KinesisError::NotConnected).
+- A publisher or a seek handle used after `shutdown` reports [`KinesisError::NotConnected`](../components/broker/shutdown.md).
 
 Every stream has one shard there, so every record is ordered against every other, and every stream a service names exists.
 Several shards, leases and checkpoints, retention and resharding need a stack.
@@ -121,7 +121,7 @@ Several shards, leases and checkpoints, retention and resharding need a stack.
 </TabItem>
 </Tabs>
 
-[`TestApp::start_live`](api:ruststream::testing::TestApp::start_live) connects the same app to a running Kinesis, here LocalStack.
+[`TestApp::start_live`](../components/testing/live.md) connects the same app to a running Kinesis, here LocalStack.
 A publish waits up to ten seconds for the reaction to settle; [`start_live_within`](api:ruststream::testing::TestApp::start_live_within) sets a longer deadline.
 The test reads the endpoint from `KINESIS_TEST_ENDPOINT` with `support::endpoint`, a helper of the examples, and skips when it is unset.
 The service creates `card-payments` when its subscription opens; the test creates `card-receipts`, which only receives.

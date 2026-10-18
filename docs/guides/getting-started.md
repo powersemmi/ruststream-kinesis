@@ -26,14 +26,14 @@ tokio = { version = "1", features = ["macros", "rt"] }
 
 `ruststream` is the framework: `macros` gives the attributes, `json` the default codec, and `logging` prints the service's log to the terminal.
 `ruststream-kinesis` is the Kinesis broker, built on the official `aws-sdk-kinesis` client.
-Its `testing` feature adds the [in-process Kinesis](api:ruststream::testing::TestApp) that tests run on.
+Its `testing` feature adds the [in-process Kinesis](../components/testing/index.md) that tests run on.
 
 The broker crate has these features, all off by default:
 
 | Feature | What it gives |
 |---|---|
 | `dynamodb-lease` | [`DynamoLeaseStore`](../components/leases/dynamo-lease-store.md), so several instances of a service share the shards ([Several instances](leases.md)) |
-| `asyncapi` | the Kinesis details of each channel in the generated [AsyncAPI](api:ruststream::asyncapi) document |
+| `asyncapi` | the Kinesis details of each channel in the generated [AsyncAPI](../components/asyncapi/index.md) document |
 | `testing` | the in-process Kinesis behind `TestApp` |
 
 ## A local Kinesis
@@ -79,8 +79,8 @@ The stack answers on `http://localhost:4566` and starts with no streams.
 It acknowledges an order with an amount and drops one without.
 [`KinesisStream`](../components/subscriptions/kinesis-stream.md) names the stream, and [`create_if_missing(1)`](../components/subscriptions/create-if-missing.md) creates it with one shard when the subscription opens.
 A production service leaves that step out and takes its streams from its infrastructure.
-[`KinesisBroker::new`](api:ruststream_kinesis::KinesisBroker::new) only records the configuration.
-[`endpoint`](api:ruststream_kinesis::KinesisBroker::endpoint), [`region`](api:ruststream_kinesis::KinesisBroker::region) and [`test_credentials`](api:ruststream_kinesis::KinesisBroker::test_credentials) point it at the local stack.
+[`KinesisBroker::new`](../components/broker/index.md) only records the configuration.
+[`endpoint`](../components/broker/endpoint.md), [`region`](api:ruststream_kinesis::KinesisBroker::region) and [`test_credentials`](api:ruststream_kinesis::KinesisBroker::test_credentials) point it at the local stack.
 The SDK client is built when the service starts.
 `#[ruststream::app]` turns `app` into `main`; in the manual form, [`run_main`](api:ruststream::runtime::cli::run_main) does the same.
 
@@ -122,11 +122,11 @@ Here is where each part goes in RustStream:
 
 | aws-sdk-kinesis | RustStream |
 |---|---|
-| `aws_config::load_from_env` and `Client::new` | [`KinesisBroker::new`](api:ruststream_kinesis::KinesisBroker::new), or [`from_config`](api:ruststream_kinesis::KinesisBroker::from_config) with an `SdkConfig` of your own ([Running in production](production.md)) |
+| `aws_config::load_from_env` and `Client::new` | [`KinesisBroker::new`](api:ruststream_kinesis::KinesisBroker::new), or [`from_config`](../components/broker/credentials.md) with an `SdkConfig` of your own ([Running in production](production.md)) |
 | `ListShards` and a `GetShardIterator` per shard | the stream name in [`KinesisStream::new`](../components/subscriptions/kinesis-stream.md); the subscription finds the [shards](../components/subscriptions/shards.md) and follows splits and merges |
 | a `GetRecords` loop per shard | a `#[subscriber]` handler ([Consuming a stream](consuming.md)) |
 | decoding `record.data()` | the handler's parameter type, decoded by the codec |
 | a checkpoint written after the work | the handler's outcome ([Checkpoints and delivery guarantees](checkpoints.md)) |
 | a lease table so that several instances share the shards | [`DynamoLeaseStore`](../components/leases/dynamo-lease-store.md) ([Several instances](leases.md)) |
-| `GetShardIterator` with `TRIM_HORIZON` or `AT_TIMESTAMP` | [`start_at`](api:ruststream::runtime::SubscriberSettings::start_at) at the mount site, or the seek handle in the handler ([Replay and seeking](replay.md)) |
-| `PutRecord` with a partition key | a reply or an `Out` parameter, sent through [`KinesisPublish`](api:ruststream_kinesis::KinesisPublish) ([Shards, partition keys and ordering](ordering.md)) |
+| `GetShardIterator` with `TRIM_HORIZON` or `AT_TIMESTAMP` | [`start_at`](../components/positions/start-at.md) at the mount site, or the seek handle in the handler ([Replay and seeking](replay.md)) |
+| `PutRecord` with a partition key | a reply or an `Out` parameter, sent through [`KinesisPublish`](../components/publishing/index.md) ([Shards, partition keys and ordering](ordering.md)) |

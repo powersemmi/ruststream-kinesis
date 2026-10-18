@@ -54,11 +54,11 @@ The balances live in memory, so after a restart they are built again from the wh
 </TabItem>
 </Tabs>
 
-`start_at(KinesisPosition::horizon())` opens every shard at its trim horizon, the oldest record the stream still keeps.
+[`start_at(KinesisPosition::horizon())`](../components/positions/start-at.md) opens every shard at its trim horizon, the oldest record the stream still keeps.
 It applies on every start, to the shards the subscription opens with, ahead of any stored [checkpoint](checkpoints.md).
 Without `start_at`, a shard resumes after its checkpoint and opens at its tip when it has none.
 
-[`KinesisPosition`](api:ruststream_kinesis::KinesisPosition) has four positions:
+[`KinesisPosition`](../components/positions/index.md) has four positions:
 
 | Position | Where the subscription reads from |
 |---|---|
@@ -73,7 +73,7 @@ What is past the retention period is gone, and the trim horizon moves forward wi
 ## Seek from a handler
 
 The same handler rebuilds the balances when a posting of a newer revision arrives.
-`Ctx<SeekHandle>` gives the handler the [`KinesisSeeker`](api:ruststream_kinesis::KinesisSeeker) of its own subscription.
+[`Ctx<SeekHandle>`](../components/positions/seek.md) gives the handler the [`KinesisSeeker`](api:ruststream_kinesis::KinesisSeeker) of its own subscription.
 [`seek`](api:ruststream::Seeker::seek) moves the subscription to the oldest record, and the handler reads every posting again.
 The posting that started the rebuild comes back as well, and this time the projection applies it.
 
@@ -101,7 +101,7 @@ Card postings arrive in volume, so the spend is built in [batches](../components
 </TabItem>
 </Tabs>
 
-A batch handler declares [`KinesisBatchContext`](api:ruststream_kinesis::KinesisBatchContext) instead of the per-delivery context.
+A batch handler declares [`KinesisBatchContext`](../components/context/batch-context.md) instead of the per-delivery context.
 It carries the same `SeekHandle` key and no position, because a batch spans many records.
 A body that needs the place of one record reads its `kinesis-shard-id` and `kinesis-sequence-number` headers.
 
@@ -153,4 +153,4 @@ A later checkpoint therefore never passes a record that the seek replayed and no
 A seek moves this instance only: other instances keep reading the shards they hold, and an instance that takes a shard over resumes from its checkpoint.
 
 The tests in the example file run the app in process.
-The [in-process Kinesis](api:ruststream::testing::TestApp) keeps the whole log of each stream, so a seek reads it again there too.
+The [in-process Kinesis](../components/testing/index.md) keeps the whole log of each stream, so a seek reads it again there too.

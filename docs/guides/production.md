@@ -13,7 +13,7 @@ This guide runs a Kinesis service on AWS: where its credentials and region come 
 ## Credentials and region from the environment
 
 `KinesisBroker::new()` takes nothing from the code.
-The AWS SDK's [default chain](https://docs.aws.amazon.com/sdk-for-rust/latest/dg/credproviders.html) finds the region and the credentials when the service starts: environment variables, the shared `~/.aws` files, SSO, and the role of the container or the instance.
+The AWS SDK's [default chain](../components/broker/credentials.md) finds the region and the credentials when the service starts: environment variables, the shared `~/.aws` files, SSO, and the role of the container or the instance.
 A service that runs under an IAM role on ECS, EKS or EC2 needs no configuration at all.
 The broker builds its configuration with the SDK's newest behaviour version.
 
@@ -42,7 +42,7 @@ That request is the check of the first subscription's stream, at startup, so a s
 So the example builds it with `SdkConfig::builder()`, which does no I/O.
 The profile provider reads the `orders-service` profile on the first request; a profile with a `role_arn` assumes that role.
 The pinned behaviour version keeps the SDK's defaults from changing under the service when the SDK is updated.
-The broker uses the configuration as it is: `endpoint`, `region` and `test_credentials` apply to `KinesisBroker::new()` only, and a configuration of your own names them with `endpoint_url`, `region` and `credentials_provider` on the builder.
+The broker uses the configuration as it is: [`endpoint`, `region` and `test_credentials`](../components/broker/endpoint.md) apply to `KinesisBroker::new()` only, and a configuration of your own names them with `endpoint_url`, `region` and `credentials_provider` on the builder.
 A [`DynamoLeaseStore`](../components/leases/dynamo-lease-store.md) takes the same configuration ([Several instances](leases.md)).
 The example needs two more dependencies:
 
@@ -109,7 +109,7 @@ Each feature adds its own:
 
 ## What the AsyncAPI document shows
 
-With the `asyncapi` feature, the service's AsyncAPI document names one server: the host of the broker's `endpoint`, `kinesis.<region>.amazonaws.com` when `region` names one, or `kinesis.amazonaws.com`.
+With the `asyncapi` feature, the service's AsyncAPI document names one [server](../components/asyncapi/server.md): the host of the broker's `endpoint`, `kinesis.<region>.amazonaws.com` when `region` names one, or `kinesis.amazonaws.com`.
 The document never holds a credential, so it can be published.
 
 The tests in the example file start the same app in process; the in-process Kinesis signs nothing and reads no profile.

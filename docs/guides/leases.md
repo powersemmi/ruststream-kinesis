@@ -63,7 +63,7 @@ One table serves every stream of a service: a row holds one shard of one stream,
 
 The store and the broker take one AWS configuration, so both reach the same account and region.
 `aws_config::defaults(..).load()` reads it from the environment, and it is `async`, so `main` loads it before it builds the app and runs it with `run`.
-[`KinesisBroker::from_config`](api:ruststream_kinesis::KinesisBroker::from_config) takes the configuration, and [`lease_store`](api:ruststream_kinesis::KinesisBroker::lease_store) the store.
+[`KinesisBroker::from_config`](../components/broker/credentials.md) takes the configuration, and [`lease_store`](api:ruststream_kinesis::KinesisBroker::lease_store) the store.
 Run two copies of the service with the same environment, and they share the shards of `warehouse-orders`.
 
 ## How the shards are shared
@@ -99,7 +99,7 @@ A store on another database implements [`LeaseStore`](api:ruststream_kinesis::Le
 ## Testing
 
 The first test starts the app in process with a configuration built without I/O.
-The [in-process Kinesis](api:ruststream::testing::TestApp) consults no lease store, so it tests the handler.
+The [in-process Kinesis](../components/testing/index.md) consults no lease store, so it tests the handler.
 The second test runs against a stack: it starts two instances on one new table, stops the first and sees the second take the shard over after the first one's checkpoint.
 
 ```bash

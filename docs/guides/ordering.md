@@ -44,14 +44,14 @@ The shop publishes every order with the customer as its partition key, so the or
 The `customer-orders` stream has two shards, and the subscription reads both side by side.
 
 `workers(4, by_key)` runs four lanes; deliveries with the same key run one after another on one lane.
-The key of a delivery is its partition key, which it carries in the `partition-key` header ([`PARTITION_KEY_HEADER`](api:ruststream_kinesis::PARTITION_KEY_HEADER)).
+The key of a delivery is its partition key, which it carries in the `partition-key` [header](../components/context/headers.md) ([`PARTITION_KEY_HEADER`](api:ruststream_kinesis::PARTITION_KEY_HEADER)).
 So `post` handles four orders at once and never two orders of one customer at the same time.
 In the manual form the same setting is [`workers_by_key`](api:ruststream::runtime::SubscriberSettings::workers_by_key).
 Plain `workers(4)` runs four deliveries at once with no regard to keys, and two orders of one customer can then finish in either order.
 
 ## Naming the key of a record
 
-`post` writes each journal entry with [`partition_key(..)`](api:ruststream_kinesis::KinesisPublishSteps::partition_key), a step on the publish.
+`post` writes each journal entry with [`partition_key(..)`](../components/publishing/partition-key.md), a step on the publish.
 The journal entry lands on the shard of its customer, so readers of the journal see each customer in order too.
 The step is a Kinesis setting, so the slot is bounded `Publisher<Options = KinesisPublishOptions>` to offer it.
 
@@ -85,10 +85,10 @@ The step is a Kinesis setting, so the slot is bounded `Publisher<Options = Kines
 </TabItem>
 </Tabs>
 
-A reply has no call to put a step on, so the mount site names its key on the policy: [`.out_reply(Publish::default()).partition_key("receipts")`](api:ruststream_kinesis::KinesisPublishSettings::partition_key).
+A reply has no call to put a step on, so the mount site names its key on the policy: [`.out_reply(Publish::default()).partition_key("receipts")`](../components/publishing/publish-settings.md).
 Every receipt then lands on one shard, and readers see the receipts in one order, at the cost of that shard's throughput.
 
-A publish resolves its key in this order:
+A publish resolves its [key](../components/publishing/keys.md) in this order:
 
 1. The `partition_key(..)` step of the publish.
 2. The `partition-key` header the publish carries: written by hand, or brought along by a record from another broker of RustStream.
@@ -113,7 +113,7 @@ A [deferred retry](retries.md) publishes a copy of the record at the tip of the 
 ## The tests
 
 The tests in the example file run the app in process.
-The [in-process Kinesis](api:ruststream::testing::TestApp) gives every stream one shard, so the test that reads the orders over two shards runs against a stack:
+The [in-process Kinesis](../components/testing/index.md) gives every stream one shard, so the test that reads the orders over two shards runs against a stack:
 
 ```bash
 cargo test
