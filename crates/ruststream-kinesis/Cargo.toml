@@ -299,3 +299,15 @@ name = "manual_guide_retries"
 path = "examples/manual/guide/retries.rs"
 required-features = ["testing"]
 test = true
+
+[[example]]
+name = "guide_replay"
+path = "examples/guide/replay.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_replay"
+path = "examples/manual/guide/replay.rs"
+required-features = ["testing"]
+test = true
