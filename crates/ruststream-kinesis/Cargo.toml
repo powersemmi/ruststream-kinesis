@@ -234,3 +234,236 @@ name = "manual_kinesis_leases_key"
 path = "examples/manual/kinesis_leases_key.rs"
 required-features = ["testing"]
 test = true
+
+# --- examples: broker, positions, context, publishing, asyncapi, testing ---
+
+[[example]]
+name = "kinesis_service"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_service"
+path = "examples/manual/kinesis_service.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_broker_credentials"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_broker_credentials"
+path = "examples/manual/kinesis_broker_credentials.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_broker_endpoint"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_broker_endpoint"
+path = "examples/manual/kinesis_broker_endpoint.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_broker_startup"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_broker_startup"
+path = "examples/manual/kinesis_broker_startup.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_broker_shutdown"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_broker_shutdown"
+path = "examples/manual/kinesis_broker_shutdown.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_broker_prelude"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_broker_prelude"
+path = "examples/manual/kinesis_broker_prelude.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_broker_errors"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_broker_errors"
+path = "examples/manual/kinesis_broker_errors.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_positions_timestamp"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_positions_timestamp"
+path = "examples/manual/kinesis_positions_timestamp.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_positions_start_at"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_positions_start_at"
+path = "examples/manual/kinesis_positions_start_at.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_seek"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_seek"
+path = "examples/manual/kinesis_seek.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_context"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_context"
+path = "examples/manual/kinesis_context.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_context_batch"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_context_batch"
+path = "examples/manual/kinesis_context_batch.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_context_headers"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_context_headers"
+path = "examples/manual/kinesis_context_headers.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_context_envelope"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_context_envelope"
+path = "examples/manual/kinesis_context_envelope.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_replies"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_replies"
+path = "examples/manual/kinesis_replies.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_publishing_publish"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_publishing_publish"
+path = "examples/manual/kinesis_publishing_publish.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_publishing_keys"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_publishing_keys"
+path = "examples/manual/kinesis_publishing_keys.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_publishing_step"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_publishing_step"
+path = "examples/manual/kinesis_publishing_step.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_asyncapi"
+required-features = ["asyncapi"]
+test = true
+
+[[example]]
+name = "manual_kinesis_asyncapi"
+path = "examples/manual/kinesis_asyncapi.rs"
+required-features = ["asyncapi"]
+test = true
+
+[[example]]
+name = "kinesis_testing"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_testing"
+path = "examples/manual/kinesis_testing.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_testing_live"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_testing_live"
+path = "examples/manual/kinesis_testing_live.rs"
+required-features = ["testing"]
+test = true

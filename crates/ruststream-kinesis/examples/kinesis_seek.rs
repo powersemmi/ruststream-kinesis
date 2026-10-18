@@ -1,42 +1,27 @@
-//! Repositioning a running subscription, and publishing with an explicit partition key.
+//! Repositioning a running subscription through the `SeekHandle` context key, and seeding the
+//! stream from the `after_startup` hook with a partition key on the publish.
 //!
-//! The `start_at` clause opens every shard at the trim horizon, so the retained backlog
-//! replays first. The `SeekHandle` context key moves the subscription to the tip once the backlog
-//! is no longer wanted, and the seeding publish rides the scope's `after_startup` hook, naming its
-//! partition key with the `partition_key(..)` step on the publish builder.
-//!
-//! Run a local stack first (`just brokers-up`), then:
-//! `cargo run --example kinesis_seek -- run`
+//! ```text
+//! cargo test --example kinesis_seek --features testing
+//! cargo run --example kinesis_seek --features testing -- run
+//! ```
 
-use ruststream::{Outgoing, Serialized};
+use serde::{Deserialize, Serialize};
+
 use ruststream_kinesis::prelude::*;
-use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
-struct Job {
-    id: u64,
-}
-
-/// The seeding record is already encoded, so it declares itself serialized: it reaches the
-/// stream byte for byte, and the generated document still names it.
-#[derive(Outgoing, Serialized)]
-struct SeedJob(Vec<u8>);
+/// The job a producer writes to say the rest of the backlog is no longer wanted.
+const MARKER: u64 = 999;
 
 // --8<-- [start:seek]
-/// Replays the retained backlog; on the marker record it abandons the rest of it and
-/// follows the tip instead. The seeker is a field of the delivery context, read by the
-/// `SeekHandle` key.
+/// Replays the retained backlog; on the marker job it abandons the rest of it and follows the
+/// tip instead.
 #[subscriber(KinesisStream::new("jobs"), start_at(KinesisPosition::horizon()))]
 async fn replay(job: &Job, Ctx(seeker): Ctx<SeekHandle>) -> HandlerOutcome {
-    if job.id == 999 {
-        // `latest` is stream-wide: every shard of the subscription moves, including shards
-        // discovered later.
-        if seeker.seek(KinesisPosition::latest()).await.is_err() {
-            return HandlerOutcome::retry();
-        }
-        return HandlerOutcome::ack();
+    if job.id == MARKER && seeker.seek(KinesisPosition::latest()).await.is_err() {
+        return HandlerOutcome::retry();
     }
-    println!("replayed job {}", job.id);
+    tracing::info!(job.id, "job replayed");
     HandlerOutcome::ack()
 }
 // --8<-- [end:seek]
@@ -44,25 +29,65 @@ async fn replay(job: &Job, Ctx(seeker): Ctx<SeekHandle>) -> HandlerOutcome {
 // --8<-- [start:publish]
 #[ruststream::app]
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(
-        KinesisBroker::new()
-            .endpoint("http://localhost:4566")
-            .test_credentials()
-            .region("us-east-1"),
-        |b| {
-            b.after_startup(Publish::default(), async move |publisher| {
-                // The partition key decides the shard, and with it per-key ordering. It is a
-                // setting of this one record, so it is a step on the publish rather than a
-                // publisher of its own.
-                publisher
-                    .message(&SeedJob(br#"{"id":1}"#.to_vec()))
-                    .to("jobs")
-                    .partition_key("tenant-acme")
-                    .publish()
-                    .await
-            });
-            b.include(replay);
-        },
-    )
+    RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
+        b.after_startup(Publish::default(), async move |publisher| {
+            // The partition key picks the shard, and with it the order this job keeps.
+            publisher
+                .message(&Job { id: 1 })
+                .to("jobs")
+                .partition_key("tenant-acme")
+                .publish()
+                .await
+        });
+        b.include(replay);
+    })
 }
 // --8<-- [end:publish]
+
+/// A job; the stream is the call's to name.
+#[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]
+struct Job {
+    id: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+
+    use futures::future::join_all;
+    use ruststream::testing::TestApp;
+    use ruststream_kinesis::prelude::*;
+
+    use super::{Job, MARKER, app};
+
+    #[tokio::test]
+    async fn the_marker_skips_the_rest_of_the_backlog() -> Result<(), Box<dyn Error>> {
+        let tb = TestApp::start(app()).await?;
+        // The seed job of the startup hook.
+        tb.settle().await?;
+
+        // All four are in the stream before the handler reads the marker.
+        let broker = tb.broker::<KinesisBroker>();
+        let backlog = [2, MARKER, 3, 4].map(|id| Job { id });
+        for published in join_all(
+            backlog
+                .iter()
+                .map(|job| broker.message(job).to("jobs").publish()),
+        )
+        .await
+        {
+            published?;
+        }
+        broker.message(&Job { id: 5 }).to("jobs").publish().await?;
+
+        let replayed: Vec<u64> = broker
+            .subscriber("jobs")
+            .received::<Job>()
+            .iter()
+            .map(|job| job.id)
+            .collect();
+        assert_eq!(replayed, [1, 2, MARKER, 5]);
+        tb.shutdown().await?;
+        Ok(())
+    }
+}
