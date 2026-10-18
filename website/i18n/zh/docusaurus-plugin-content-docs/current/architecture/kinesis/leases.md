@@ -24,11 +24,11 @@ export const words = {
 
 <Diagram name="leases" words={words} />
 
-Kinesis 不记录谁在读取某个分片，也不记录读到了哪里。Kinesis Client Library 把这些信息保存在一张 DynamoDB 表中，每个分片一行，它的工作进程会接管无人续约的行。本 crate 通过 [`LeaseStore`](api:ruststream_kinesis::LeaseStore) 做同样的事。存储可以为某个所有者获取分片、续约、记录检查点、读取一行以及释放它。每一行都以流和分片共同作为键，因为分片 id 在不同的流之间会重复。
+Kinesis 不记录谁在读取某个分片，也不记录读到了哪里。Kinesis Client Library 把这些信息保存在一张 DynamoDB 表中，每个分片一行，它的工作进程会接管无人续约的行。本 crate 通过 [`LeaseStore`](api:ruststream_kinesis::LeaseStore) 做同样的事。存储可以为某个所有者获取分片、续约、记录检查点和读取的起点、读取一行以及释放它。每一行都以流和分片共同作为键，因为分片 id 在不同的流之间会重复。
 
-租约持续 10 秒，它的读取者每 3 秒续约一次。续约失败的读取者已经把分片让给了另一个所有者，它立即停止，不写入检查点。新的所有者从最后一个检查点开始读取，因此少数记录可能被投递两次。投递是至少一次的。
+租约持续 10 秒，它的读取者每 3 秒续约一次。续约失败的读取者已经把分片让给了另一个所有者，它立即停止，不写入检查点。新的所有者从最后一个检查点开始读取，因此少数记录可能被投递两次。没有检查点的分片从它上一次读取所读到的第一条记录打开，每次读取在交出这条记录之前先把它记录下来，所以接管不会跳过任何记录。投递是至少一次的。
 
-[`DynamoLeaseStore`](api:ruststream_kinesis::DynamoLeaseStore) 由 `dynamodb-lease` 特性启用，它把这些行保存在一张 DynamoDB 表中。该表只有一个字符串键 `lease_key`，写作 `stream:shard`。一行包含 `lease_owner`、`lease_expiry`、`lease_counter` 和 `checkpoint`。每次写入都是条件写入。当这一行没有所有者、所有者就是自己，或者租约已经过期时，获取成功。续约、检查点和释放只在本所有者持有这一行时成功。读取是强一致的。每个 Broker 都有自己的租约所有者 id，默认唯一，因此两个实例绝不会同时持有一个分片。
+[`DynamoLeaseStore`](api:ruststream_kinesis::DynamoLeaseStore) 由 `dynamodb-lease` 特性启用，它把这些行保存在一张 DynamoDB 表中。该表只有一个字符串键 `lease_key`，写作 `stream:shard`。一行包含 `lease_owner`、`lease_expiry`、`lease_counter`、`checkpoint` 和 `opened_at`。每次写入都是条件写入。当这一行没有所有者、所有者就是自己，或者租约已经过期时，获取成功。续约、检查点、读取起点和释放只在本所有者持有这一行时成功。0.7.1 及更早版本写入的行没有 `opened_at`，读作一个还没有人读过的分片。读取是强一致的。每个 Broker 都有自己的租约所有者 id，默认唯一，因此两个实例绝不会同时持有一个分片。
 
 [`MemoryLeaseStore`](api:ruststream_kinesis::MemoryLeaseStore) 是默认的存储。它存在于进程中：对单个实例是正确的，重启后又变为空。于是重启后的服务没有检查点，每个分片都从最新处打开，除非 `start_at(..)` 指定了另一个位置。
 

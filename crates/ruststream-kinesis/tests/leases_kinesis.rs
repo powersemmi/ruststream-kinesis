@@ -391,6 +391,61 @@ async fn a_subscription_records_its_progress_in_the_table() {
     connected.shutdown().await.expect("shutdown succeeds");
 }
 
+/// Where a reading opened is the shard's, like its checkpoint: only the lease holder writes it, and
+/// it outlives the release, so the next owner finds it. A row written before the field existed
+/// reads as a shard with no recorded opening.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn where_a_reading_opened_is_conditional_on_the_lease_and_outlives_the_release() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    let config = config(&endpoint).await;
+    let table = unique("opened");
+    let client = provision_table(&config, &table).await;
+    let store = DynamoLeaseStore::new(&config, &table);
+    let shard_a = LeaseKey::new("orders", "shard-a");
+
+    // A row as 0.7.1 writes it: a lease, and no opening.
+    assert!(
+        store
+            .acquire(&shard_a, "owner-a", TTL)
+            .await
+            .expect("acquire")
+    );
+    assert_eq!(
+        store.read(&shard_a).await.expect("read").opened_at,
+        None,
+        "a row without the attribute has no recorded opening",
+    );
+
+    assert!(
+        store
+            .record_opened_at(&shard_a, "owner-a", "seq-1")
+            .await
+            .expect("record"),
+        "the holder records where its reading opened",
+    );
+    assert!(
+        !store
+            .record_opened_at(&shard_a, "owner-b", "seq-9")
+            .await
+            .expect("record"),
+        "an owner without the lease is refused",
+    );
+    store
+        .release(&shard_a, "owner-a")
+        .await
+        .expect("the owner hands the shard back");
+    assert_eq!(
+        text(&item(&client, &table, "orders:shard-a").await, "opened_at"),
+        Some("seq-1".to_owned()),
+        "the opening belongs to the shard and outlives the lease",
+    );
+    let state = store.read(&shard_a).await.expect("read");
+    assert_eq!(state.opened_at.as_deref(), Some("seq-1"));
+    assert_eq!(state.checkpoint, None);
+}
+
 /// Every stream's first shard has the same id, so a table serving two streams must hold two rows
 /// for it: one stream's lease, progress and finished mark never reach the other's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -638,4 +693,114 @@ async fn a_table_from_an_earlier_version_resumes_from_its_bare_row() {
     );
 
     connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// Two instances of a service that reads from the tip, on one lease table: the first reads a
+/// record and stops before it checkpoints, and the second, already running, takes the shard over.
+/// The records the first one read and never settled are delivered by the second, not skipped by a
+/// reader that opens at the tip again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_takeover_without_a_checkpoint_resumes_where_the_previous_owner_started_reading() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    let config = config(&endpoint).await;
+    let table = unique("takeover");
+    let client = provision_table(&config, &table).await;
+    let stream_name = unique("takeover");
+    let instance = async |owner: &str| -> ConnectedKinesisBroker {
+        KinesisBroker::from_config(config.clone())
+            .lease_store(Arc::new(DynamoLeaseStore::new(&config, &table)) as Arc<dyn LeaseStore>)
+            .owner_id(owner)
+            .connect()
+            .await
+            .expect("broker connects")
+    };
+    let from_the_tip = || {
+        StartAt::new(
+            KinesisStream::new(stream_name.as_str())
+                .create_if_missing(1)
+                .poll_interval(Duration::from_millis(200)),
+            KinesisPosition::latest(),
+        )
+    };
+
+    let first = instance("instance-a").await;
+    let mut first_subscriber = from_the_tip()
+        .subscribe(&first)
+        .await
+        .expect("subscription opens");
+    // The second instance starts while the first holds the shard, so it reads nothing yet.
+    let second = instance("instance-b").await;
+    let mut second_subscriber = from_the_tip()
+        .subscribe(&second)
+        .await
+        .expect("subscription opens");
+
+    let publisher = first.publisher();
+    for payload in [b"read".as_slice(), b"unread".as_slice()] {
+        publisher
+            .publish(OutgoingMessage::new(&stream_name, payload), None)
+            .await
+            .expect("publish succeeds");
+    }
+    let row = {
+        let mut stream = pin!(first_subscriber.stream());
+        let read = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+            .await
+            .expect("delivery arrives")
+            .expect("stream is open")
+            .expect("delivery is ok");
+        assert_eq!(read.payload(), b"read");
+        let shard = read
+            .headers()
+            .get_str(SHARD_HEADER)
+            .expect("every delivery names its shard")
+            .to_owned();
+        format!("{stream_name}:{shard}")
+    };
+    // The first instance stops here: it read a record, and checkpointed nothing.
+    drop(first_subscriber);
+    first.shutdown().await.expect("shutdown succeeds");
+    let deadline = tokio::time::Instant::now() + RECV_TIMEOUT;
+    while item(&client, &table, &row)
+        .await
+        .contains_key("lease_owner")
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the stopped instance must release its lease",
+        );
+    }
+    assert!(
+        !item(&client, &table, &row).await.contains_key("checkpoint"),
+        "the first instance must leave no checkpoint behind",
+    );
+
+    second
+        .publisher()
+        .publish(
+            OutgoingMessage::new(&stream_name, b"after".as_slice()),
+            None,
+        )
+        .await
+        .expect("publish succeeds");
+    // The second instance takes the free shard at its next listing, within ten seconds.
+    let mut stream = pin!(second_subscriber.stream());
+    let mut received = Vec::new();
+    while received.last().map(String::as_str) != Some("after") {
+        let Ok(delivery) = tokio::time::timeout(RECV_TIMEOUT, stream.next()).await else {
+            break;
+        };
+        let delivery = delivery.expect("stream is open").expect("delivery is ok");
+        received.push(String::from_utf8_lossy(delivery.payload()).into_owned());
+        delivery.ack().await.expect("ack succeeds");
+    }
+    assert_eq!(
+        received,
+        ["read", "unread", "after"],
+        "the new owner resumes at the first record the previous owner read",
+    );
+
+    second.shutdown().await.expect("shutdown succeeds");
 }

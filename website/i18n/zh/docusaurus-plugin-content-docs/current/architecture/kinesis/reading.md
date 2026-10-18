@@ -32,7 +32,7 @@ export const words = {
 
 迭代器类型决定第一次读取从哪里开始。`TRIM_HORIZON` 从分片仍保存的最旧记录开始。`LATEST` 从最新的记录之后开始，因此读取者只看到此后到达的记录。`AT_TIMESTAMP` 按到达时间戳，从某个时间点或其后到达的第一条记录开始。`AT_SEQUENCE_NUMBER` 从某一条记录开始，`AFTER_SEQUENCE_NUMBER` 从紧随其后的记录开始。
 
-每个 [`KinesisPosition`](api:ruststream_kinesis::KinesisPosition) 都是其中一种类型：`horizon()`、`latest()`、`timestamp(ms)` 和 `sequence(shard, seq)`，最后一个指定某个分片中的某一条记录。已存储的检查点让分片从它所指记录之后打开。没有检查点的分片从 `LATEST` 打开，除非 `start_at(..)` 指定了另一个位置。`start_at(..)` 在启动时生效，作用于订阅开始时打开的分片，并优先于它们的检查点。之后启动的读取者，无论是为子分片还是为从另一个实例接管的分片启动，都从检查点继续读取；没有检查点的子分片从 `TRIM_HORIZON` 打开。
+每个 [`KinesisPosition`](api:ruststream_kinesis::KinesisPosition) 都是其中一种类型：`horizon()`、`latest()`、`timestamp(ms)` 和 `sequence(shard, seq)`，最后一个指定某个分片中的某一条记录。已存储的检查点让分片从它所指记录之后打开。没有检查点的分片从 `LATEST` 打开，除非 `start_at(..)` 指定了另一个位置。`start_at(..)` 在启动时生效，作用于订阅开始时打开的分片，并优先于它们的检查点。之后启动的读取者，无论是为子分片还是为从另一个实例接管的分片启动，都从检查点继续读取。没有检查点时，它以 `AT_SEQUENCE_NUMBER` 从该分片上一次读取所读到的第一条记录打开：每次读取在把这条记录交给处理器之前，先把它记入该分片的租约行，所以接管分片的实例会重新投递上一个持有者读过的记录，不会跳过任何记录。还没有人读过的子分片从 `TRIM_HORIZON` 打开。
 
 一次 `GetRecords` 调用最多返回 10,000 条记录或 10 MB。本 crate 请求 1,000 条，批订阅则请求它的批大小。每个应答都带有下一个迭代器，读取者用它进行下一次调用。应答中没有记录时，读取者先等待描述符的 [`poll_interval`](api:ruststream_kinesis::KinesisStream::poll_interval)（默认一秒），再读取下一次。这样读取者就不会超出其分片允许的每秒五次读取。
 

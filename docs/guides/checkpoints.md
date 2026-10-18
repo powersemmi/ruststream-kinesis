@@ -66,7 +66,8 @@ So a handler that can see a record twice is written to be idempotent: booking th
 The checkpoint lives in the lease store, and the store decides what survives a restart.
 The default [`MemoryLeaseStore`](../components/leases/memory-lease-store.md) lives in the process and starts empty, so a restarted service opens each shard at its tip and reads only what is published from then on.
 [`DynamoLeaseStore`](../components/leases/dynamo-lease-store.md) keeps the checkpoints in a table, and a restarted service resumes where the last one stopped.
-A shard with no checkpoint opens where [`start_at`](../components/positions/start-at.md) says, and at the tip when nothing says otherwise ([Replay and seeking](replay.md)).
+A shard with no checkpoint opens at the first record its last reading read, which the store keeps beside the checkpoint.
+A shard nobody has read opens where [`start_at`](../components/positions/start-at.md) says, and at the tip when nothing says otherwise ([Replay and seeking](replay.md)).
 
 A held record does not come back while the same reader holds the shard.
 To read it again without a restart, a handler [seeks](replay.md) back to it.

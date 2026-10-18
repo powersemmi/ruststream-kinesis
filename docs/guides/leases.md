@@ -81,6 +81,8 @@ An instance whose renewal fails stops reading that shard at once, without writin
 
 The instance that takes a shard over resumes after the checkpoint the last holder wrote.
 Records the last holder handled after its last checkpoint are delivered again, and so is a record it [held](checkpoints.md) and everything behind it.
+A shard the last holder read but never checkpointed resumes at the first record that holder read, which the table keeps in the row's `opened_at` column.
+So a takeover delivers again what the last holder read and had not settled, and skips nothing, whatever position `start_at` names.
 A restarted instance resumes the same way, since the checkpoints live in the table.
 
 ## Naming each instance
@@ -94,7 +96,7 @@ A fixed name must never be shared by two instances that run at the same time: bo
 
 A table written by an earlier version of the crate keys its rows by the shard id alone.
 [`legacy_stream`](../components/leases/legacy-stream.md) names the stream those rows belong to, so the upgraded service resumes from them.
-A store on another database implements [`LeaseStore`](api:ruststream_kinesis::LeaseStore): five calls that acquire, renew, checkpoint, read and release a lease.
+A store on another database implements [`LeaseStore`](api:ruststream_kinesis::LeaseStore): six calls that acquire, renew, checkpoint, record where a reading opened, read and release a lease.
 
 ## Testing
 
