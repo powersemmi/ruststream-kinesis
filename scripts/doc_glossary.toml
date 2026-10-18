@@ -117,9 +117,9 @@ zh = "编解码器"
 
 [[term]]
 en = "back-pressure"
-en_match = "back[- ]?pressure"
+en_match = "back[-\\s]?pressure"
 ru = "обратное давление"
-ru_match = "обратн\\w* давлени"
+ru_match = "обратн\\w*\\s+давлени"
 zh = "背压"
 
 [[term]]
@@ -134,14 +134,14 @@ zh = "至多一次"
 
 [[term]]
 en = "cancel safety"
-en_match = "cancel[- ]safe(ty)?"
+en_match = "cancel[-\\s]safe(ty)?"
 ru = "безопасность при отмене"
-ru_match = "безопасн\\w* при отмене"
+ru_match = "безопасн\\w*\\s+при\\s+отмене"
 zh = "取消安全"
 
 [[term]]
 en = "compile time"
-en_match = "compile[- ]time"
+en_match = "compile[-\\s]time"
 ru = "время компиляции"
 ru_match = "компиляци"
 zh = "编译期"
@@ -172,6 +172,10 @@ ru = "typestate"
 zh = "typestate"
 
 # Kinesis's own vocabulary, as AWS writes it in Russian and Chinese.
+#
+# Every multi-word pattern matches across whitespace rather than on a literal space: the pages
+# are hard-wrapped, so a term of two words lands on two lines often enough that a pattern
+# requiring a space would report a page that says exactly the right thing.
 
 [[term]]
 en = "stream"
@@ -196,18 +200,18 @@ zh = "记录"
 
 [[term]]
 en = "partition key"
-en_match = "partition[- ]keys?"
+en_match = "partition[-\\s]keys?"
 ru = "ключ сегмента"
-ru_match = "ключ\\w* сегмента"
+ru_match = "ключ\\w*\\s+сегмента"
 zh = "分区键"
 
 # Never used in prose today - the pages name the sequence number through the header constants -
 # but the rendering is settled, so a page that starts saying it says it the same way.
 [[term]]
 en = "sequence number"
-en_match = "sequence numbers?"
+en_match = "sequence\\s+numbers?"
 ru = "порядковый номер"
-ru_match = "порядков\\w* номер"
+ru_match = "порядков\\w*\\s+номер"
 zh = "序列号"
 
 [[term]]
@@ -221,7 +225,7 @@ zh = "租约"
 en = "checkpoint"
 en_match = "checkpoint(s|ing|ed)?"
 ru = "контрольная точка"
-ru_match = "контрольн\\w* точ"
+ru_match = "контрольн\\w*\\s+точ"
 zh = "检查点"
 
 [[term]]
@@ -243,9 +247,9 @@ zh = "水位线"
 # and what a broker adds to the document is a "биндинг" / 绑定.
 [[term]]
 en = "dead letter"
-en_match = "dead[- ]letters?"
+en_match = "dead[-\\s]letters?"
 ru = "мёртвые письма"
-ru_match = "мёртв\\w* пис"
+ru_match = "мёртв\\w*\\s+пис"
 zh = "死信"
 
 [[term]]
