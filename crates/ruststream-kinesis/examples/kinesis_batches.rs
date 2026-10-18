@@ -1,51 +1,132 @@
-//! Consuming a Kinesis stream in batches.
+//! Consuming a Kinesis stream in batches: a slice handler, the batch size at the mount site, and
+//! one outcome per record. Each scenario is a test, and `cargo run` starts the service against a
+//! local stack.
 //!
-//! A batch handler takes a slice, and its mount site names the one number the framework carries
-//! down to a broker: the batch size. On this broker it becomes the `GetRecords` limit every
-//! shard reader asks with, so a read never fetches more than one batch's worth and a batch never
-//! carries more records than it named. Everything that prices a read stays this crate's own
-//! vocabulary and chains after it.
-//!
-//! Run a local stack first (`just brokers-up`), then:
-//! `cargo run --example kinesis_batches`
+//! ```text
+//! cargo test --example kinesis_batches --features testing
+//! ```
 
-// --8<-- [start:batches]
 use std::time::Duration;
 
 use ruststream_kinesis::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]
+#[outgoing(name = "orders")]
 struct Order {
     id: u64,
 }
 
-/// Settles the whole batch with one outcome: on this broker an acknowledgement is a per-shard
-/// checkpoint, so the records ahead of an unhandled one keep the watermark where it is.
+#[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]
+#[outgoing(name = "refunds")]
+struct Refund {
+    id: u64,
+    approved: bool,
+}
+
+/// How long an unapproved refund waits before it is checked again.
+const RECHECK: Duration = Duration::from_secs(30);
+
+// --8<-- [start:batches]
+/// Stores a batch of orders in one round-trip and settles the whole batch with one outcome.
 #[subscriber(KinesisStream::new("orders"))]
 async fn digest(batch: &[Order]) -> HandlerOutcome {
-    println!("got a batch of {}", batch.len());
-    for order in batch {
-        println!("  order {}", order.id);
-    }
+    tracing::info!(count = batch.len(), "orders stored");
     HandlerOutcome::ack()
 }
 
+fn service(broker: KinesisBroker) -> RustStream {
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+        // The framework's step first, this crate's read setting after it.
+        b.include(
+            digest
+                .batch(nonzero!(500))
+                .poll_interval(Duration::from_millis(500)),
+        );
+        b.include(review.batch(nonzero!(100)));
+    })
+}
+// --8<-- [end:batches]
+
+// --8<-- [start:per_record]
+/// One outcome per refund, in slice order: only the unapproved ones come back.
+#[subscriber(KinesisStream::new("refunds"))]
+async fn review(batch: &[Refund]) -> Vec<HandlerOutcome> {
+    batch
+        .iter()
+        .map(|refund| {
+            if refund.approved {
+                HandlerOutcome::ack()
+            } else {
+                HandlerOutcome::retry_after(RECHECK)
+            }
+        })
+        .collect()
+}
+// --8<-- [end:per_record]
+
 #[ruststream::app]
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+    service(
         KinesisBroker::new()
             .endpoint("http://localhost:4566")
             .test_credentials()
             .region("us-east-1"),
-        |b| {
-            // The framework's word first, this crate's after it.
-            b.include(
-                digest
-                    .batch(nonzero!(500))
-                    .poll_interval(Duration::from_millis(500)),
-            );
-        },
     )
 }
-// --8<-- [end:batches]
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+
+    use futures::future::try_join_all;
+    use ruststream::testing::TestApp;
+
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn orders_published_together_arrive_in_one_batch() -> Result<(), Box<dyn Error>> {
+        let tb = TestApp::start(service(KinesisBroker::new())).await?;
+
+        let orders: Vec<Order> = (1..=3).map(|id| Order { id }).collect();
+        let broker = tb.broker::<KinesisBroker>();
+        try_join_all(orders.iter().map(|order| broker.message(order).publish())).await?;
+
+        tb.broker::<KinesisBroker>()
+            .subscriber("orders")
+            .assert_called_once()
+            .assert_batch_sizes(&[3])
+            .settled(HandlerOutcome::ack());
+        tb.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn only_the_unapproved_refund_comes_back() -> Result<(), Box<dyn Error>> {
+        let tb = TestApp::start(service(KinesisBroker::new())).await?;
+
+        let refunds: Vec<Refund> = [(1, true), (2, false), (3, true)]
+            .into_iter()
+            .map(|(id, approved)| Refund { id, approved })
+            .collect();
+        let broker = tb.broker::<KinesisBroker>();
+        try_join_all(
+            refunds
+                .iter()
+                .map(|refund| broker.message(refund).publish()),
+        )
+        .await?;
+        tb.advance(RECHECK).await?;
+
+        let ids: Vec<Vec<u64>> = tb
+            .broker::<KinesisBroker>()
+            .subscriber("refunds")
+            .batches::<Refund>()
+            .iter()
+            .map(|batch| batch.iter().map(|refund| refund.id).collect())
+            .collect();
+        assert_eq!(ids, [vec![1, 2, 3], vec![2]]);
+        tb.shutdown().await?;
+        Ok(())
+    }
+}
