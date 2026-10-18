@@ -25,9 +25,7 @@ ruststream-kinesis = { version = "0.7", features = ["testing"] }
 tokio = { version = "1", features = ["macros", "rt"] }
 ```
 
-`ruststream` 是框架本身：`macros` 提供属性宏，`json` 提供默认编解码器，`logging` 把服务的日志打印到终端。
-`ruststream-kinesis` 是 Kinesis Broker，基于官方客户端 `aws-sdk-kinesis` 构建。
-它的 `testing` feature 加入测试所用的[进程内 Kinesis](../components/testing/index.md)。
+`ruststream` 是框架本身：`macros` 提供属性宏，`json` 提供默认编解码器，`logging` 把服务的日志打印到终端。`ruststream-kinesis` 是 Kinesis Broker，基于官方客户端 `aws-sdk-kinesis` 构建。它的 `testing` feature 加入测试所用的[进程内 Kinesis](../components/testing/index.md)。
 
 这个 Broker crate 有以下 feature，默认全部关闭：
 
@@ -56,8 +54,7 @@ services:
 docker compose up -d
 ```
 
-LocalStack 在 `http://localhost:4566` 上应答，启动时没有任何流。
-LocalStack 默认给每次 Kinesis 调用加上延迟，`KINESIS_LATENCY: 0` 关闭这一延迟。
+LocalStack 在 `http://localhost:4566` 上应答，启动时没有任何流。LocalStack 默认给每次 Kinesis 调用加上延迟，`KINESIS_LATENCY: 0` 关闭这一延迟。
 
 ## 第一个服务 {/* #the-first-service */}
 
@@ -76,14 +73,7 @@ LocalStack 默认给每次 Kinesis 调用加上延迟，`KINESIS_LATENCY: 0` 关
 </TabItem>
 </Tabs>
 
-`take_order` 从 `orders` 流读取 JSON 订单。
-带金额的订单被 ack，没有金额的订单被丢弃。
-[`KinesisStream`](../components/subscriptions/kinesis-stream.md) 指定流，[`create_if_missing(1)`](../components/subscriptions/create-if-missing.md) 在订阅打开时创建只有一个分片的流。
-生产服务省去这一步，由基础设施提供它的流。
-[`KinesisBroker::new`](../components/broker/index.md) 只记录配置。
-[`endpoint`](../components/broker/endpoint.md)、[`region`](api:ruststream_kinesis::KinesisBroker::region) 和 [`test_credentials`](api:ruststream_kinesis::KinesisBroker::test_credentials) 让它指向本地的 LocalStack。
-SDK 客户端在服务启动时才构建。
-`#[ruststream::app]` 把 `app` 变成 `main`；在手写形式中，[`run_main`](api:ruststream::runtime::cli::run_main) 做同样的事。
+`take_order` 从 `orders` 流读取 JSON 订单。带金额的订单被 ack，没有金额的订单被丢弃。[`KinesisStream`](../components/subscriptions/kinesis-stream.md) 指定流，[`create_if_missing(1)`](../components/subscriptions/create-if-missing.md) 在订阅打开时创建只有一个分片的流。生产服务省去这一步，由基础设施提供它的流。[`KinesisBroker::new`](../components/broker/index.md) 只记录配置。[`endpoint`](../components/broker/endpoint.md)、[`region`](api:ruststream_kinesis::KinesisBroker::region) 和 [`test_credentials`](api:ruststream_kinesis::KinesisBroker::test_credentials) 让它指向本地的 LocalStack。SDK 客户端在服务启动时才构建。`#[ruststream::app]` 把 `app` 变成 `main`；在手写形式中，[`run_main`](api:ruststream::runtime::cli::run_main) 做同样的事。
 
 运行服务：
 
@@ -91,8 +81,7 @@ SDK 客户端在服务启动时才构建。
 cargo run -- run
 ```
 
-订阅在流的最新处打开，所以它读取服务启动之后发布的记录。
-在另一个终端里，用 AWS CLI 发布一个订单：
+订阅在流的最新处打开，所以它读取服务启动之后发布的记录。在另一个终端里，用 AWS CLI 发布一个订单：
 
 ```bash
 export AWS_ENDPOINT_URL=http://localhost:4566 AWS_REGION=us-east-1 \
@@ -101,14 +90,11 @@ aws kinesis put-record --stream-name orders --partition-key customer-7 \
   --cli-binary-format raw-in-base64-out --data '{"id":1,"amount_cents":1250}'
 ```
 
-服务记录一条带订单 id 的 `order taken` 日志。
-<kbd>Ctrl</kbd>+<kbd>C</kbd> 停止服务。
+服务记录一条带订单 id 的 `order taken` 日志。<kbd>Ctrl</kbd>+<kbd>C</kbd> 停止服务。
 
 ## 第一个测试 {/* #the-first-test */}
 
-示例文件里还有两个测试。
-每个测试都用 `TestApp::start` 启动同一个 `app`，发布一个订单，然后检查 `take_order` 如何结算它。
-在测试中，`KinesisBroker` 连接的是进程内 Kinesis，所以测试不需要 LocalStack：
+示例文件里还有两个测试。每个测试都用 `TestApp::start` 启动同一个 `app`，发布一个订单，然后检查 `take_order` 如何结算它。在测试中，`KinesisBroker` 连接的是进程内 Kinesis，所以测试不需要 LocalStack：
 
 ```bash
 cargo test
@@ -118,8 +104,7 @@ cargo test
 
 ## 从 aws-sdk-kinesis 迁移 {/* #coming-from-aws-sdk-kinesis */}
 
-Rust SDK 一次只读取一个分片、发起一次调用，基于它的服务要围绕这些调用自己编写消费者。
-下表列出每一部分在 RustStream 中的位置：
+Rust SDK 一次只读取一个分片、发起一次调用，基于它的服务要围绕这些调用自己编写消费者。下表列出每一部分在 RustStream 中的位置：
 
 | aws-sdk-kinesis | RustStream |
 |---|---|
