@@ -311,3 +311,15 @@ name = "manual_guide_replay"
 path = "examples/manual/guide/replay.rs"
 required-features = ["testing"]
 test = true
+
+[[example]]
+name = "guide_leases"
+path = "examples/guide/leases.rs"
+required-features = ["testing", "dynamodb-lease"]
+test = true
+
+[[example]]
+name = "manual_guide_leases"
+path = "examples/manual/guide/leases.rs"
+required-features = ["testing", "dynamodb-lease"]
+test = true
