@@ -53,14 +53,12 @@ longer consumes.
 `KinesisStream::new(name)` is the subscription descriptor. It takes a stream name or ARN and sits
 inline in the `#[subscriber(..)]` decorator:
 
-```rust
---8<-- "crates/ruststream-kinesis/examples/kinesis_service.rs:handler"
+```rust reference="examples/kinesis_service.rs#handler"
 ```
 
 Mount it on the broker; the `with_broker` / `include` part is identical to the in-memory broker.
 
-```rust
---8<-- "crates/ruststream-kinesis/examples/kinesis_service.rs:app"
+```rust reference="examples/kinesis_service.rs#app"
 ```
 
 The descriptor carries the consumer economics, because on Kinesis they are a cost decision rather
@@ -116,8 +114,7 @@ the shards. The table needs a string partition key named `lease_key` and nothing
 billing is enough. Every mutation is a conditional write with a fencing counter, so two instances
 cannot both believe they own a shard.
 
-```rust
---8<-- "crates/ruststream-kinesis/examples/kinesis_leases.rs:leases"
+```rust reference="examples/kinesis_leases.rs#leases"
 ```
 
 `owner_id` names this instance in the table; without it a process-unique value is used.
@@ -144,8 +141,7 @@ partition.
 `start_at(..)` on the decorator opens the subscription somewhere explicit and beats a stored
 checkpoint. A running subscription repositions through the injected `Seek` parameter:
 
-```rust
---8<-- "crates/ruststream-kinesis/examples/kinesis_seek.rs:seek"
+```rust reference="examples/kinesis_seek.rs#seek"
 ```
 
 Repositioning drops the watermark bookkeeping of every shard it moves, so an acknowledgement of a
@@ -166,8 +162,7 @@ same header is set on every delivered record, and it feeds the framework's `Part
 capability, so the convention matches the in-memory broker and a service can switch brokers without
 changing its headers.
 
-```rust
---8<-- "crates/ruststream-kinesis/examples/kinesis_seek.rs:publish"
+```rust reference="examples/kinesis_seek.rs#publish"
 ```
 
 Deliveries additionally expose `kinesis-sequence-number` and `kinesis-shard-id`

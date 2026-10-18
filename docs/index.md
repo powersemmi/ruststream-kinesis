@@ -15,19 +15,14 @@ ruststream-kinesis = "0.6"
 serde = { version = "1", features = ["derive"] }
 ```
 
-```rust
---8<-- "crates/ruststream-kinesis/examples/kinesis_service.rs:app"
+```rust reference="examples/kinesis_service.rs#app"
 ```
 
 ## Where to go next
 
-<div class="grid cards" markdown>
-
-- :material-transit-connection-variant: **[Kinesis guide](kinesis.md)** - subscriptions, leases and checkpoints, positions, publishing, and testing.
-- :material-book-open-variant: **[RustStream docs](https://powersemmi.github.io/ruststream/)** - the framework itself: subscribers, routing, codecs, middleware, the CLI.
-- :material-language-rust: **[API reference](https://docs.rs/ruststream-kinesis)** - the crate's rustdoc on docs.rs.
-
-</div>
+- **[Kinesis guide](kinesis.md)** - subscriptions, leases and checkpoints, positions, publishing, and testing.
+- **[RustStream docs](https://powersemmi.github.io/ruststream/)** - the framework itself: subscribers, routing, codecs, middleware, the CLI.
+- **[API reference](https://docs.rs/ruststream-kinesis)** - the crate's rustdoc on docs.rs.
 
 ## How this site relates to the RustStream docs
 
