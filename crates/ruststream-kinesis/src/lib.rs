@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 mod broker;
+mod claim;
 mod clients;
 mod context;
 mod cursor;

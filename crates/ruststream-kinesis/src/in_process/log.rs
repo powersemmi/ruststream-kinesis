@@ -3,8 +3,8 @@
 //!
 //! A record is kept in the form it has on the wire - the partition key and the data blob the
 //! publisher built, the header envelope included - so a delivery is decoded by the same code a
-//! record from the service is. A publish reaches every subscription on its stream, which is what
-//! the service does for consumers that each read every shard. The log is kept because a Kinesis
+//! record from the service is. A publish reaches the subscription reading its stream, which reads
+//! every shard of it. The log is kept because a Kinesis
 //! handler can observe it without a server: a subscription can be repositioned in it and read the
 //! same records again.
 

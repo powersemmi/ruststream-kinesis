@@ -27,6 +27,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::broker::Core;
+use crate::claim::StreamClaim;
 use crate::cursor::{Lineage, ShardStart, StreamStart, iterator_at, reopen_at, rewind_to};
 use crate::error::{KinesisError, sdk_err};
 #[cfg(feature = "testing")]
@@ -163,6 +164,8 @@ pub struct KinesisSubscriber {
     /// size reaches the wire: [`BatchSubscriber::batches`] stores it before the first batch.
     limit: Arc<AtomicI32>,
     deliveries: BufferedSubscriber<Deliveries>,
+    /// Given back when the subscription is dropped, so the broker may open the stream again.
+    _claim: StreamClaim,
 }
 
 impl std::fmt::Debug for KinesisSubscriber {
@@ -184,7 +187,11 @@ impl KinesisSubscriber {
     /// coordinator's first pass has a reader with its starting cursor, so a record published
     /// after this returns is one the subscription reads, and a seek made now reaches the reader
     /// of the shard it names.
-    pub(crate) async fn open(core: &Arc<Core>, descriptor: KinesisStream) -> Self {
+    pub(crate) async fn open(
+        core: &Arc<Core>,
+        descriptor: KinesisStream,
+        claim: StreamClaim,
+    ) -> Self {
         let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
         let stream = descriptor.stream().to_owned();
         let bus: SeekBus = Arc::new(SeekState::new(Arc::clone(core)));
@@ -214,18 +221,24 @@ impl KinesisSubscriber {
             limit,
             deliveries: BufferedSubscriber::new(Deliveries::Shards(ShardDeliveries { rx, bus }))
                 .max_wait(BATCH_FILL_WINDOW),
+            _claim: claim,
         }
     }
 
     /// A subscription on the in-process transport, batching on the client with the same deadline
     /// the service's subscription uses.
     #[cfg(feature = "testing")]
-    pub(crate) fn in_process(stream: String, deliveries: LogDeliveries) -> Self {
+    pub(crate) fn in_process(
+        stream: String,
+        deliveries: LogDeliveries,
+        claim: StreamClaim,
+    ) -> Self {
         Self {
             stream,
             limit: Arc::new(AtomicI32::new(DEFAULT_READ_LIMIT)),
             deliveries: BufferedSubscriber::new(Deliveries::InProcess(deliveries))
                 .max_wait(BATCH_FILL_WINDOW),
+            _claim: claim,
         }
     }
 }

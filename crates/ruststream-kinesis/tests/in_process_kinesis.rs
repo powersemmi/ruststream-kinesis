@@ -106,8 +106,9 @@ async fn a_stream_name_the_service_refuses_is_refused() {
     );
 }
 
-// A partition key is 1 to 256 characters, and a record carries at most 1 MiB of data and key
-// together. The service refuses a record outside either limit.
+// A partition key is 1 to 256 characters, and a record carries at most 10 MiB of data and key
+// together, the largest record a stream can be configured to take. The service refuses a record
+// outside either limit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_record_the_service_refuses_is_refused() {
     let broker = connected().await;
@@ -137,16 +138,25 @@ async fn a_record_the_service_refuses_is_refused() {
 
     let refused = publisher
         .publish(
-            OutgoingMessage::produced("orders", BytesMut::zeroed(1024 * 1024)),
+            OutgoingMessage::produced("orders", BytesMut::zeroed(10 * 1024 * 1024)),
             None,
         )
         .await
-        .expect_err("a record over 1 MiB is refused");
+        .expect_err("a record over 10 MiB is refused");
     assert!(
         matches!(refused, KinesisError::Publish { .. }),
         "got {refused}"
     );
     assert_eq!(broker.published("orders"), Vec::new());
+
+    // A stream raised past the 1 MiB default takes a record of several MiB.
+    publisher
+        .publish(
+            OutgoingMessage::produced("orders", BytesMut::zeroed(2 * 1024 * 1024)),
+            None,
+        )
+        .await
+        .expect("a record of 2 MiB is accepted");
 }
 
 /// Bytes the case already holds encoded, published as they are.
@@ -291,23 +301,20 @@ async fn a_seek_handle_reports_the_closed_connection_after_shutdown() {
     );
 }
 
-// Every subscription on a stream reads every record written to it, and a subscription on another
+// The subscription on a stream reads every record written to it, and a subscription on another
 // stream reads none: the rule the harness waits on when it runs the same test live.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_record_reaches_every_subscription_on_its_stream() {
+async fn a_record_reaches_the_subscription_on_its_stream() {
     let broker = connected().await;
-    let mut first = subscribe(&broker, "orders").await;
-    let mut second = subscribe(&broker, "orders").await;
+    let mut orders = subscribe(&broker, "orders").await;
     let mut other = subscribe(&broker, "payments").await;
     publish(&broker, "orders", b"one").await;
 
-    for subscriber in [&mut first, &mut second] {
-        let mut deliveries = Box::pin(subscriber.stream());
-        let delivery = next(&mut deliveries)
-            .await
-            .expect("the record is delivered");
-        assert_eq!(delivery.payload(), b"one");
-    }
+    let mut deliveries = Box::pin(orders.stream());
+    let delivery = next(&mut deliveries)
+        .await
+        .expect("the record is delivered");
+    assert_eq!(delivery.payload(), b"one");
     nothing_more(&mut Box::pin(other.stream())).await;
 
     assert_eq!(

@@ -129,6 +129,12 @@ shard id. Shard ids repeat across streams (every stream's first shard is `shardI
 a lease, a checkpoint and a finished mark belong to one stream's shard, and one store serves every
 stream a broker consumes.
 
+A broker reads each stream once. Its leases are taken under its one owner id, so a second
+subscription to a stream the broker already reads is refused when it opens, with
+[`KinesisError::AlreadySubscribed`]; the in-process transport refuses it the same way. Two readings
+of one stream that each see every record take two brokers, the second with a lease store of its
+own.
+
 The default store is [`MemoryLeaseStore`]: in process, correct for a single service instance, and
 empty again after a restart. The `dynamodb-lease` feature adds [`DynamoLeaseStore`], and several
 instances of a service then share the shards. The table needs a string partition key named
@@ -164,7 +170,7 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
     let leases = Arc::new(DynamoLeaseStore::new(&config, "orders-leases"));
     let broker = KinesisBroker::from_config(config)
         .lease_store(leases)
-        // Names this instance in the lease table; a process-unique value is used when left out.
+        // Names this instance in the lease table; a random id per broker is used when left out.
         .owner_id("instance-a");
 
     RustStream::new(AppInfo::new("orders", "0.1.0"))
@@ -746,7 +752,8 @@ four-step ladder, the headers in the same envelope. It is read back by the same 
 delivery carries the position, the three headers and the context a record from a shard carries.
 
 It never succeeds where the service fails. A stream name the service does not accept, an empty
-partition key or one longer than 256 characters, and a record over 1 MiB are refused. A handle used
+partition key or one longer than 256 characters, and a record over 10 MiB (the most a stream can be
+configured to take) are refused. A handle used
 after `shutdown` reports [`KinesisError::NotConnected`], and a KPL-aggregated record is reported as
 [`KinesisError::AggregatedRecord`]. A subscription opens at the tip, and `start_at(..)` and a
 handler's [`SeekHandle`] re-read the retained log from the position they name. A record a handler
