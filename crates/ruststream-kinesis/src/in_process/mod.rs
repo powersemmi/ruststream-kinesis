@@ -11,8 +11,9 @@
 //! partition key or a record size the service refuses is refused here with the same error, and so
 //! is every handle used after `shutdown`.
 //!
-//! What it models: one retained log per stream, read by every subscription on that stream; a
-//! subscription opening at the tip; the stream-wide and shard-scoped positions of `start_at(..)`
+//! What it models: one retained log per stream, read by the broker's one subscription to that
+//! stream (a second one is refused, as the service's broker refuses it); a subscription opening at
+//! the tip; the stream-wide and shard-scoped positions of `start_at(..)`
 //! and the seek handle; and the answers of every settlement, `AckError::Unsupported` for a requeue
 //! included. What belongs to the service and is left to the live mode: a stream's shards (a stream
 //! here has one, so every record is ordered against every other), leases and checkpoints, and so
@@ -33,6 +34,7 @@ use ruststream::{BytesMut, OutgoingFor, OutgoingMessage, RawMessage, Str, Take};
 pub(crate) use deliveries::{LogDeliveries, Release};
 pub(crate) use seek::LogSeeker;
 
+use crate::claim::StreamClaim;
 use crate::error::KinesisError;
 use crate::message::{PARTITION_KEY_HEADER, decode_envelope, encode_envelope};
 use crate::publisher::{KinesisPublishOptions, resolve_partition_key};
@@ -46,8 +48,9 @@ const MAX_STREAM_NAME: usize = 128;
 /// The longest partition key the service accepts, in characters.
 const MAX_PARTITION_KEY: usize = 256;
 
-/// The most one record may carry: its data blob and its partition key together.
-const MAX_RECORD: usize = 1024 * 1024;
+/// The most one record may carry: its data blob and its partition key together. A stream takes
+/// 1 MiB unless it is configured for more, up to this; the stream's setting is its owner's.
+const MAX_RECORD: usize = 10 * 1024 * 1024;
 
 /// The in-process transport of one connected broker: the streams, the harness coordinator, and
 /// whether the broker has shut down.
@@ -102,6 +105,7 @@ impl Bus {
     pub(crate) fn subscribe(
         self: &Arc<Self>,
         descriptor: &KinesisStream,
+        claim: StreamClaim,
     ) -> Result<KinesisSubscriber, KinesisError> {
         self.ensure_open()?;
         let stream = descriptor.stream();
@@ -112,6 +116,7 @@ impl Bus {
         Ok(KinesisSubscriber::in_process(
             stream.to_owned(),
             LogDeliveries::open(self, stream),
+            claim,
         ))
     }
 
@@ -211,7 +216,7 @@ fn check_stream(stream: &str) -> Result<(), String> {
 
 /// Refuses a record the service refuses: a stream name it does not accept, a partition key that
 /// is empty or longer than 256 characters, or a record whose data and partition key together
-/// exceed 1 MiB.
+/// exceed 10 MiB.
 fn check_record(stream: &str, partition_key: &str, data: usize) -> Result<(), String> {
     check_stream(stream)?;
     let key_chars = partition_key.chars().count();

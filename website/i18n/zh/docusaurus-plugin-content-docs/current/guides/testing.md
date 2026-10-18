@@ -74,7 +74,7 @@ import TabItem from '@theme/TabItem';
 
 进程内 Kinesis 像 Kinesis 服务端为 Broker 所做的那样写入和读取记录。分区键的规则相同，用户消息头使用同样的信封，一次投递带有的消息头和上下文与从分片读出的投递相同：
 
-- 一个流上的每个订阅都读取该流的每条记录，并在最新处打开。
+- Broker 通过一个订阅读取一个流：它读取该流的每条记录，并在最新处打开。对同一个流的第二个订阅会被拒绝，与服务的 Broker 一样。
 - [`start_at`](../components/positions/start-at.md) 和处理器的 seek 句柄从它们指定的位置重新读取流的日志（[重放与 seek](replay.md)）。
 - 没有上限的 `retry` 得到与 Kinesis 相同的答复，即不受支持，记录不会回来。
 - 延迟重试以计数的副本回来，用尽尝试的记录进入死信流。

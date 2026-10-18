@@ -94,7 +94,7 @@ Each held delivery is recorded as `Outcome::Nack`.
 The in-process Kinesis writes and reads records the way the service does for the broker.
 The same partition-key rules apply, user headers ride the same envelope, and a delivery carries the same headers and context as one from a shard:
 
-- Every subscription on a stream reads every record of it, and opens at the tip.
+- A broker reads a stream through one subscription, which reads every record of it and opens at the tip; a second subscription to the stream is refused, as the service's broker refuses it.
 - [`start_at`](../components/positions/start-at.md) and the handler's seek handle read the stream's log again from the position they name ([Replay and seeking](replay.md)).
 - `retry` with no cap is answered as Kinesis answers it, unsupported, and the record does not come back.
 - A deferred retry comes back as a counted copy, and a spent record goes to the dead-letter stream.

@@ -51,11 +51,12 @@ for its next call. An answer with no records makes the reader wait the descripto
 before it reads again. That keeps the reader inside the five reads a second its shard allows.
 
 An iterator expires five minutes after it was issued. A reader whose iterator expired fetches a new
-one from its checkpoint, never from `LATEST`, so no record is skipped. A throttled read waits one
-poll interval and tries again with the same iterator. Any other failed read is reported on the
-subscription's stream, and the reader waits a second and resumes from its checkpoint. After eleven
-failures in a row the reader stops and releases its lease, and the subscription takes the shard
-again when it next lists the shards.
+one from its checkpoint, or, before anything is settled, from the first record it read; never from
+`LATEST`, so no record is skipped. A throttled read waits one poll interval and tries again with
+the same iterator. Any other failed read is reported on the subscription's stream, and the reader
+waits a second and retries its iterator, which is still good. After eleven failures in a row the
+reader stops and releases its lease; the subscription takes the shard again when it next lists the
+shards, and the new reader starts where the old one did.
 
 The crate reads with the stream's shared throughput, the five reads a second every consumer of a
 shard shares. Enhanced fan-out, a dedicated 2 MB a second per consumer over `SubscribeToShard`, is

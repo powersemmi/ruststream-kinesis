@@ -70,6 +70,22 @@ pub enum KinesisError {
     #[error("kinesis broker is not connected")]
     NotConnected,
 
+    /// The broker already reads this stream.
+    ///
+    /// A broker leases and checkpoints a stream's shards under its one owner id, so a second
+    /// subscription to the stream on the same broker would share those leases with the first and
+    /// lose records. A service that reads one stream twice reads it through a second
+    /// `KinesisBroker` with a lease store of its own.
+    #[error(
+        "kinesis broker already reads stream '{stream}': a second subscription would share its \
+         shard leases and checkpoints; read the stream again through a second `KinesisBroker` \
+         with a lease store of its own"
+    )]
+    AlreadySubscribed {
+        /// The stream the refused subscription named.
+        stream: String,
+    },
+
     /// A stream descriptor is invalid.
     #[error("invalid kinesis descriptor: {0}")]
     Invalid(String),
