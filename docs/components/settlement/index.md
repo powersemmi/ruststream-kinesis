@@ -1,5 +1,5 @@
 ---
-title: Settlement
+title: Checkpoint
 description: "An ack is a per-shard checkpoint: it moves only when every earlier record is handled; drop retires a record, and a requeue is unsupported."
 ---
 
