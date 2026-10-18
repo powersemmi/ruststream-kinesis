@@ -42,7 +42,7 @@ That request is the check of the first subscription's stream, at startup, so a s
 So the example builds it with `SdkConfig::builder()`, which does no I/O.
 The profile provider reads the `orders-service` profile on the first request; a profile with a `role_arn` assumes that role.
 The pinned behaviour version keeps the SDK's defaults from changing under the service when the SDK is updated.
-The broker uses the configuration as it is: [`endpoint`, `region` and `test_credentials`](../components/broker/endpoint.md) apply to `KinesisBroker::new()` only, and a configuration of your own names them with `endpoint_url`, `region` and `credentials_provider` on the builder.
+The broker keeps every setting of the configuration except an [`endpoint` or a `region`](../components/broker/endpoint.md) named on the broker itself, which replace the configuration's own.
 A [`DynamoLeaseStore`](../components/leases/dynamo-lease-store.md) takes the same configuration ([Several instances](leases.md)).
 The example needs two more dependencies:
 
@@ -109,7 +109,8 @@ Each feature adds its own:
 
 ## What the AsyncAPI document shows
 
-With the `asyncapi` feature, the service's AsyncAPI document names one [server](../components/asyncapi/server.md): the host of the broker's `endpoint`, `kinesis.<region>.amazonaws.com` when `region` names one, or `kinesis.amazonaws.com`.
+With the `asyncapi` feature, the service's AsyncAPI document names one [server](../components/asyncapi/server.md): the host of the broker's endpoint, or else the regional host of its region, such as `kinesis.eu-west-1.amazonaws.com`.
+A region the SDK resolves from the environment is known only at connect, after the document is built, so such a broker reports `kinesis.amazonaws.com`.
 The document never holds a credential, so it can be published.
 
 The tests in the example file start the same app in process; the in-process Kinesis signs nothing and reads no profile.

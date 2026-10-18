@@ -37,7 +37,8 @@ I/O, so the service's builder stays synchronous. A clone of the broker shares it
 publisher taken from the broker before connect works once the runtime has connected it.
 
 Connect loads the AWS configuration through the SDK's default chain, with the endpoint and region
-the broker names. A broker built with `from_config` takes its `SdkConfig` as it is. Then connect
+the broker names. A broker built with `from_config` keeps its `SdkConfig`, except an endpoint or a region the
+broker names. Then connect
 builds the Kinesis client. Without `lease_store` the broker keeps its leases in a
 [`MemoryLeaseStore`](api:ruststream_kinesis::MemoryLeaseStore), and without `owner_id` it takes a
 lease-owner id that is unique to it. The SDK fetches credentials lazily, on the first request. In a

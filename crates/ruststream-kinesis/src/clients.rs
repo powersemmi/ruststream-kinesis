@@ -10,8 +10,8 @@
 //!
 //! The home runtime keeps the client built at connect, so a multi-thread runtime shares one pool
 //! across its workers. Any other runtime gets a client built for its thread, once, from the same
-//! [`SdkConfig`]: the credentials provider and its cache are shared, only the HTTP client and its
-//! pool differ.
+//! [`SdkConfig`] and the same [`Overrides`]: the credentials provider and its cache are shared, only
+//! the HTTP client and its pool differ.
 
 use std::cell::RefCell;
 use std::fmt;
@@ -19,8 +19,20 @@ use std::rc::Rc;
 use std::sync::{Arc, OnceLock, Weak};
 use std::thread::LocalKey;
 
-use aws_config::SdkConfig;
+use aws_config::{Region, SdkConfig};
 use tokio::runtime::{Handle, Id};
+
+/// What the broker names over the `SdkConfig`: each value it names replaces the config's own in
+/// every client, and a value it leaves out stays as the config has it.
+///
+/// The values go onto the service's client config rather than into the `SdkConfig`, because the
+/// service config built from an `SdkConfig` prefers a service-specific endpoint from the
+/// environment (`AWS_ENDPOINT_URL_KINESIS`) to the shared one, and the broker's own word is final.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Overrides {
+    pub(crate) endpoint: Option<String>,
+    pub(crate) region: Option<Region>,
+}
 
 /// What this thread uses for one [`RuntimeClients`]: `None` is the home client, `Some` the
 /// thread's own.
@@ -36,18 +48,26 @@ pub(crate) struct Slot<Client> {
 
 /// An SDK client a thread can keep a copy of.
 pub(crate) trait SdkClient: Sized + 'static {
-    /// Builds a client with a pool of its own from the shared configuration.
-    fn build(config: &SdkConfig) -> Self;
+    /// Builds a client with a pool of its own from the shared configuration, with what
+    /// `overrides` names over it.
+    fn build(config: &SdkConfig, overrides: &Overrides) -> Self;
 
     /// This client type's per-thread slots.
     fn slots() -> &'static LocalKey<RefCell<Vec<Slot<Self>>>>;
 }
 
 macro_rules! sdk_client {
-    ($client:ty) => {
+    ($client:ty, $config:ty) => {
         impl SdkClient for $client {
-            fn build(config: &SdkConfig) -> Self {
-                Self::new(config)
+            fn build(config: &SdkConfig, overrides: &Overrides) -> Self {
+                let mut builder = <$config>::from(config);
+                if let Some(endpoint) = &overrides.endpoint {
+                    builder.set_endpoint_url(Some(endpoint.clone()));
+                }
+                if let Some(region) = &overrides.region {
+                    builder.set_region(Some(region.clone()));
+                }
+                Self::from_conf(builder.build())
             }
 
             fn slots() -> &'static LocalKey<RefCell<Vec<Slot<Self>>>> {
@@ -60,9 +80,9 @@ macro_rules! sdk_client {
     };
 }
 
-sdk_client!(aws_sdk_kinesis::Client);
+sdk_client!(aws_sdk_kinesis::Client, aws_sdk_kinesis::config::Builder);
 #[cfg(feature = "dynamodb-lease")]
-sdk_client!(aws_sdk_dynamodb::Client);
+sdk_client!(aws_sdk_dynamodb::Client, aws_sdk_dynamodb::config::Builder);
 
 /// The SDK client a request uses, chosen by the runtime the request runs on.
 ///
@@ -78,13 +98,15 @@ pub(crate) struct RuntimeClients<Client> {
     home: OnceLock<Id>,
     client: Client,
     config: SdkConfig,
+    overrides: Overrides,
     token: Arc<()>,
 }
 
 impl<Client: SdkClient> RuntimeClients<Client> {
-    /// A selection whose home is the runtime `runtime` names.
-    pub(crate) fn homed(config: SdkConfig, runtime: &Handle) -> Self {
-        let clients = Self::new(config);
+    /// A selection whose home is the runtime `runtime` names, its clients built from `config`
+    /// with what `overrides` names over it.
+    pub(crate) fn homed(config: SdkConfig, overrides: Overrides, runtime: &Handle) -> Self {
+        let clients = Self::with_overrides(config, overrides);
         clients.home.get_or_init(|| runtime.id());
         clients
     }
@@ -93,11 +115,18 @@ impl<Client: SdkClient> RuntimeClients<Client> {
     ///
     /// Which runtime is home decides only which one shares the client built here; correctness does
     /// not depend on it, since every other runtime gets a pool of its own either way.
+    // The lease store is its one user outside the tests, and it is behind its feature.
+    #[cfg(any(test, feature = "dynamodb-lease"))]
     pub(crate) fn new(config: SdkConfig) -> Self {
+        Self::with_overrides(config, Overrides::default())
+    }
+
+    fn with_overrides(config: SdkConfig, overrides: Overrides) -> Self {
         Self {
             home: OnceLock::new(),
-            client: Client::build(&config),
+            client: Client::build(&config, &overrides),
             config,
+            overrides,
             token: Arc::new(()),
         }
     }
@@ -123,7 +152,7 @@ impl<Client: SdkClient> RuntimeClients<Client> {
             // remember: the home client serves, and the next call inside a runtime decides.
             let current = Handle::try_current().ok()?.id();
             let own = (*self.home.get_or_init(|| current) != current)
-                .then(|| Rc::new(Client::build(&self.config)));
+                .then(|| Rc::new(Client::build(&self.config, &self.overrides)));
             // Slots of brokers that are gone would keep their clients alive for the thread's life.
             slots.retain(|slot| slot.owner.strong_count() > 0);
             slots.push(Slot {
@@ -185,7 +214,11 @@ mod tests {
             .worker_threads(2)
             .build()
             .expect("a multi-thread runtime builds");
-        let clients = Arc::new(RuntimeClients::<Kinesis>::homed(config(), runtime.handle()));
+        let clients = Arc::new(RuntimeClients::<Kinesis>::homed(
+            config(),
+            Overrides::default(),
+            runtime.handle(),
+        ));
         let home = ptr::from_ref(clients.home()) as usize;
         let workers = runtime.block_on(async {
             let tasks: Vec<_> = (0..8)
@@ -207,7 +240,8 @@ mod tests {
     #[test]
     fn another_runtime_gets_its_own_client_once() {
         let home_runtime = current_thread();
-        let clients = RuntimeClients::<Kinesis>::homed(config(), home_runtime.handle());
+        let clients =
+            RuntimeClients::<Kinesis>::homed(config(), Overrides::default(), home_runtime.handle());
         let home = ptr::from_ref(clients.home()) as usize;
         assert_eq!(
             home_runtime.block_on(async { chosen(&clients) as usize }),
@@ -233,8 +267,10 @@ mod tests {
     #[test]
     fn two_selections_on_one_thread_do_not_share_a_slot() {
         let home_runtime = current_thread();
-        let one = RuntimeClients::<Kinesis>::homed(config(), home_runtime.handle());
-        let two = RuntimeClients::<Kinesis>::homed(config(), home_runtime.handle());
+        let one =
+            RuntimeClients::<Kinesis>::homed(config(), Overrides::default(), home_runtime.handle());
+        let two =
+            RuntimeClients::<Kinesis>::homed(config(), Overrides::default(), home_runtime.handle());
         let (from_one, from_two) = thread::scope(|scope| {
             scope
                 .spawn(|| {

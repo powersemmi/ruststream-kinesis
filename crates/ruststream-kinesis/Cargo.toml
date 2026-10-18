@@ -55,7 +55,7 @@ ruststream = { workspace = true, features = ["conformance", "testing", "macros",
 schemars.workspace = true
 serde.workspace = true
 serde_json = "1"
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 
 # --- examples: subscriptions, settlement, leases ---
 

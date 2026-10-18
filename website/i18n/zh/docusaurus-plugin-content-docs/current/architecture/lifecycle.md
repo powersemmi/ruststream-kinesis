@@ -32,7 +32,7 @@ export const words = {
 
 `new`、`from_config`、`endpoint`、`region`、`test_credentials`、`lease_store` 和 `owner_id` 都不做 I/O，所以服务的构建函数保持同步。Broker 的克隆共用它的连接。在 connect 之前从 Broker 取得的发布者，在运行时连接 Broker 之后即可工作。
 
-connect 通过 SDK 的默认链加载 AWS 配置，使用 Broker 指定的端点和区域。用 `from_config` 构建的 Broker 原样采用它的 `SdkConfig`。随后 connect 构建 Kinesis 客户端。未设置 `lease_store` 时，Broker 把租约保存在 [`MemoryLeaseStore`](api:ruststream_kinesis::MemoryLeaseStore) 中；未设置 `owner_id` 时，它采用一个自己独有的租约所有者 id。SDK 延迟获取凭证，在第一次请求时才获取。在服务中，这个请求就是第一个订阅的 `DescribeStreamSummary`，因此凭证错误会让启动在订阅这一步失败。
+connect 通过 SDK 的默认链加载 AWS 配置，使用 Broker 指定的端点和区域。用 `from_config` 构建的 Broker 保留它的 `SdkConfig`，只有 Broker 指定的端点和区域会取代配置中的值。随后 connect 构建 Kinesis 客户端。未设置 `lease_store` 时，Broker 把租约保存在 [`MemoryLeaseStore`](api:ruststream_kinesis::MemoryLeaseStore) 中；未设置 `owner_id` 时，它采用一个自己独有的租约所有者 id。SDK 延迟获取凭证，在第一次请求时才获取。在服务中，这个请求就是第一个订阅的 `DescribeStreamSummary`，因此凭证错误会让启动在订阅这一步失败。
 
 每个订阅的 [`KinesisStream`](api:ruststream_kinesis::KinesisStream) 先接受检查：名称为空，或者设置了 `create_if_missing` 却没有指定分片数，都会在调用 AWS 之前返回 [`KinesisError::Invalid`](api:ruststream_kinesis::KinesisError::Invalid)。Broker 已经通过另一个订阅读取的流也会被拒绝。随后订阅用 `DescribeStreamSummary` 查询这个流。流不存在时返回 [`KinesisError::Stream`](api:ruststream_kinesis::KinesisError::Stream)，除非 `create_if_missing` 创建了它，并最多等待一分钟。
 
