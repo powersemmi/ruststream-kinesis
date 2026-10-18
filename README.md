@@ -134,8 +134,16 @@ tb.broker::<KinesisBroker>()
 
 ## Documentation
 
-- This crate: <https://docs.rs/ruststream-kinesis>
-- The framework: <https://powersemmi.github.io/ruststream/latest>
+- [Getting started](https://powersemmi.github.io/ruststream-kinesis/latest/guides/getting-started/) - installation and a first service against a
+  local Kinesis.
+- [Guides](https://powersemmi.github.io/ruststream-kinesis/latest/) - consuming a stream, shards and ordering, checkpoints, retries, replay,
+  several instances, testing and production.
+- [Components](https://powersemmi.github.io/ruststream-kinesis/latest/components/) - one page per part of the crate: the broker, subscriptions,
+  settlement, leases, positions, publishing and testing.
+- [Architecture](https://powersemmi.github.io/ruststream-kinesis/latest/architecture/) - how the crate sits between the AWS SDK and the runtime.
+- [Benchmarks](https://powersemmi.github.io/ruststream-kinesis/latest/architecture/benchmarks/) - what the crate costs over the raw client.
+- [API reference](https://docs.rs/ruststream-kinesis) - every item on docs.rs.
+- The framework: <https://powersemmi.github.io/ruststream/latest/>
 
 ## Minimum supported Rust version
 

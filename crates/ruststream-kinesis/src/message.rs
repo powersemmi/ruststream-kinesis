@@ -20,14 +20,17 @@ use crate::track::Watermark;
 
 /// Header carrying the partition key, mapped onto the record's own partition key.
 ///
+/// Every delivery carries it, and it is where `IncomingMessage::partition_key` and the
+/// framework's per-key dispatch find the key. On a publish it is the portable way to name the key.
+///
 /// Mirrors the in-memory broker's convention, so services can switch brokers without changing
 /// their headers.
 pub const PARTITION_KEY_HEADER: &str = "partition-key";
 
-/// Header exposing the record's sequence number on received messages.
+/// Header exposing the record's sequence number; every delivery carries it.
 pub const SEQUENCE_HEADER: &str = "kinesis-sequence-number";
 
-/// Header exposing the shard a record arrived on.
+/// Header exposing the shard a record arrived on; every delivery carries it.
 pub const SHARD_HEADER: &str = "kinesis-shard-id";
 
 /// The KPL aggregation magic prefix; such records are refused loudly (deaggregation is a
@@ -79,7 +82,7 @@ pub(crate) fn encode_envelope(headers: &HeaderMap, payload: BytesMut) -> Vec<u8>
     out
 }
 
-/// A length as the envelope writes it. A record is at most 1 MiB, so every length fits; one
+/// A length as the envelope writes it. A record is at most 10 MiB, so every length fits; one
 /// that does not writes zero, and the service refuses the record for its size anyway.
 fn field_len(len: usize) -> [u8; FIELD_LEN] {
     u32::try_from(len).unwrap_or(0).to_be_bytes()
@@ -159,7 +162,13 @@ fn decode_text(block: &[u8]) -> HeaderMap {
 /// onward are delivered again, which at-least-once permits.
 ///
 /// Without a position a subscription resumes from the stored checkpoint of each shard, and
-/// starts at the tip on a shard that has none.
+/// starts at the tip on a shard that has none. A position given to `start_at(..)` applies to
+/// the shards the subscription opens with; a shard it takes on later resumes from its
+/// checkpoint.
+///
+/// Opening a subscription returns once every shard it took has its reader and its starting
+/// cursor, so the tip is the moment the subscription opened: a record published after that is
+/// read.
 ///
 /// # Examples
 ///
@@ -176,7 +185,7 @@ fn decode_text(block: &[u8]) -> HeaderMap {
 /// /// Rebuilds a read model from every record the stream still retains, on every shard.
 /// #[subscriber(KinesisStream::new("orders"), start_at(KinesisPosition::horizon()))]
 /// async fn backfill(order: &Order) -> HandlerOutcome {
-///     println!("order {}", order.id);
+///     tracing::info!(order.id, "backfilled");
 ///     HandlerOutcome::ack()
 /// }
 ///
@@ -193,12 +202,14 @@ fn decode_text(block: &[u8]) -> HeaderMap {
 pub enum KinesisPosition {
     /// The trim horizon: everything the stream still retains.
     ///
-    /// Stream-wide - it applies to every shard of the subscription, including shards
-    /// discovered later (the children of a split or merge).
+    /// Stream-wide - it applies to every shard the subscription reads when it lands, and to a
+    /// shard whose reader starts later without a checkpoint.
     Horizon,
     /// The tip: only records published after the reposition.
     ///
-    /// Stream-wide, and the position a shard without a checkpoint starts at by default.
+    /// Stream-wide, and the position a shard without a checkpoint starts at by default. A child
+    /// of a split or a merge whose parent was read to its end opens at its own beginning
+    /// instead, so nothing written to it before its reader started is skipped.
     Latest,
     /// The first record at or after this timestamp, in milliseconds since the Unix epoch.
     ///
@@ -305,6 +316,10 @@ impl Settle {
 /// stays unhandled, so the watermark stops advancing, and the records from it onward are delivered
 /// again when the shard's lease is next taken. `nack(requeue = false)` skips the record
 /// (checkpoints past it).
+///
+/// In a handler, `HandlerOutcome::ack()` is the ack, `HandlerOutcome::drop()` the skip, and
+/// `HandlerOutcome::retry()` the requeue, unless the registration declares `max_attempts(..)` or
+/// a dead-letter stream: then the retry publishes a counted copy of the record back to its stream.
 pub struct KinesisMessage {
     payload: Bytes,
     headers: HeaderMap,

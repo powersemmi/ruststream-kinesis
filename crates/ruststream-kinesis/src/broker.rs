@@ -101,6 +101,11 @@ pub(crate) type CoreCell = Arc<OnceCell<Link>>;
 /// builds the client once at startup via the consuming [`Broker::connect`]. That is what lets
 /// a service compose with the synchronous `#[ruststream::app]` builder.
 ///
+/// TLS comes from the SDK's default HTTPS client. Each runtime keeps its own connections: requests
+/// from the runtime the broker connected on share the client built at connect, and a handler on a
+/// dedicated thread publishes and checkpoints through a client built for that thread from the same
+/// config, so a busy thread never holds up another's request.
+///
 /// # Examples
 ///
 /// ```
@@ -115,7 +120,7 @@ pub(crate) type CoreCell = Arc<OnceCell<Link>>;
 ///
 /// #[subscriber(KinesisStream::new("orders"))]
 /// async fn handle(order: &Order) -> HandlerOutcome {
-///     println!("got order {}", order.id);
+///     tracing::info!(order.id, "accepted");
 ///     HandlerOutcome::ack()
 /// }
 ///
@@ -162,6 +167,10 @@ impl KinesisBroker {
     }
 
     /// Uses an already built AWS config instead of resolving one from the environment.
+    ///
+    /// The config is used as it is: [`endpoint`](Self::endpoint), [`region`](Self::region) and
+    /// [`test_credentials`](Self::test_credentials) apply to a broker built with
+    /// [`new`](Self::new), so a service that builds its own config sets them on that config.
     pub fn from_config(config: SdkConfig) -> Self {
         Self {
             sdk_config: Some(config),
@@ -169,20 +178,23 @@ impl KinesisBroker {
         }
     }
 
-    /// Overrides the service endpoint (a local stack for development).
+    /// Overrides the service endpoint (a local stack for development). Applies to a broker built
+    /// with [`new`](Self::new); a [`from_config`](Self::from_config) broker uses its config's.
     pub fn endpoint(mut self, endpoint: impl Into<String>) -> Self {
         self.endpoint = Some(endpoint.into());
         self
     }
 
-    /// Overrides the region.
+    /// Overrides the region. Applies to a broker built with [`new`](Self::new); a
+    /// [`from_config`](Self::from_config) broker uses its config's.
     pub fn region(mut self, region: impl Into<String>) -> Self {
         self.region = Some(region.into());
         self
     }
 
     /// Uses dummy static credentials, for local stacks that require credentials to be
-    /// present but ignore their values.
+    /// present but ignore their values. Applies to a broker built with [`new`](Self::new); a
+    /// [`from_config`](Self::from_config) broker uses its config's credentials.
     pub fn test_credentials(mut self) -> Self {
         self.test_credentials = true;
         self
@@ -195,7 +207,57 @@ impl KinesisBroker {
         self
     }
 
-    /// Overrides this instance's lease-owner id (defaults to a process-unique value).
+    /// Names this instance in the lease store.
+    ///
+    /// Left out, each broker takes an id of its own, unique across processes and hosts. A store
+    /// grants an owner the leases it already holds, so an instance that restarts under the same
+    /// fixed id takes its shards back at once. A fixed id names one live instance: two instances
+    /// running at the same time must not share it, or both read the same shards.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "dynamodb-lease")]
+    /// # mod demo {
+    /// use std::error::Error;
+    /// use std::sync::Arc;
+    ///
+    /// use aws_config::BehaviorVersion;
+    /// use ruststream_kinesis::prelude::*;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Order {
+    ///     id: u64,
+    /// }
+    ///
+    /// #[subscriber(KinesisStream::new("orders"))]
+    /// async fn handle(order: &Order) -> HandlerOutcome {
+    ///     tracing::info!(order.id, "accepted");
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// // The lease store needs the AWS config too, so the service resolves it and hands the broker
+    /// // the same one.
+    /// pub async fn run() -> Result<(), Box<dyn Error>> {
+    ///     let config = aws_config::defaults(BehaviorVersion::latest()).load().await;
+    ///     let leases = Arc::new(DynamoLeaseStore::new(&config, "orders-leases"));
+    ///     let broker = KinesisBroker::from_config(config)
+    ///         .lease_store(leases)
+    ///         // The name this instance holds its shards under in the lease table.
+    ///         .owner_id("instance-a");
+    ///
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+    ///         .with_broker(broker, |b| {
+    ///             b.include(handle);
+    ///         })
+    ///         .run()
+    ///         .await?;
+    ///     Ok(())
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
     pub fn owner_id(mut self, owner: impl Into<String>) -> Self {
         self.owner = Some(owner.into());
         self
@@ -271,6 +333,79 @@ impl Broker for KinesisBroker {
 /// before the harness connected ([`KinesisBroker::publisher`]) publishes into it, exactly as it
 /// publishes through the client once `connect` has run. Nothing here resolves credentials or
 /// dials an endpoint, so the transition cannot fail.
+///
+/// The transport keeps one retained log per stream, with one shard, so every record is ordered
+/// against every other. A record is written the way the publisher writes it for the service and
+/// read back by the same decoding, so a delivery carries the position, the headers and the
+/// context a record from a shard carries. It refuses what the service refuses: a stream name the
+/// service does not accept, an empty partition key or one longer than 256 characters, and a
+/// record over 10 MiB (data plus partition key), the most a stream can be configured to take. A
+/// stream takes 1 MiB unless its owner raised it. A handle used after `shutdown` reports
+/// [`KinesisError::NotConnected`].
+///
+/// A subscription opens at the tip, and `start_at(..)` and a handler's
+/// [`SeekHandle`](crate::SeekHandle) read the retained log again from the position they name. A
+/// record a handler leaves unhandled does not come back here: the service reads it again when
+/// the shard's lease is next taken, and leases, checkpoints, retention and resharding belong to
+/// the live mode, `TestApp::start_live`, over the same test body.
+///
+/// # Examples
+///
+/// A test runs the app `main` runs, and addresses the broker by its production type:
+///
+/// ```
+/// # mod demo {
+/// use std::error::Error;
+///
+/// use ruststream::testing::TestApp;
+/// use ruststream_kinesis::prelude::*;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]
+/// #[outgoing(name = "orders")]
+/// pub struct Order {
+///     pub id: u64,
+/// }
+///
+/// #[subscriber(KinesisStream::new("orders"))]
+/// async fn handle(order: &Order) -> HandlerOutcome {
+///     tracing::info!(order.id, "accepted");
+///     HandlerOutcome::ack()
+/// }
+///
+/// /// The app `main` runs.
+/// pub fn app() -> RustStream {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
+///         b.include(handle);
+///     })
+/// }
+///
+/// pub async fn accepts_an_order() -> Result<(), Box<dyn Error>> {
+///     let tb = TestApp::start(app()).await?;
+///
+///     // The publish returns once the handler it woke has settled.
+///     tb.broker::<KinesisBroker>()
+///         .message(&Order { id: 7 })
+///         .publish()
+///         .await?;
+///
+///     tb.broker::<KinesisBroker>()
+///         .subscriber("orders")
+///         .assert_called_once()
+///         .with(&Order { id: 7 })
+///         .settled(HandlerOutcome::ack());
+///
+///     tb.shutdown().await?;
+///     Ok(())
+/// }
+/// # }
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// #     tokio::runtime::Builder::new_multi_thread()
+/// #         .enable_all()
+/// #         .build()?
+/// #         .block_on(demo::accepts_an_order())
+/// # }
+/// ```
 #[cfg(feature = "testing")]
 impl InProcess for KinesisBroker {
     async fn connect_in_process(self) -> Result<Self::Connected, Self::Error> {
@@ -297,6 +432,56 @@ impl DescribeServer for KinesisBroker {
     /// service with it. Without an override the coordinate is the regional Kinesis endpoint; a
     /// broker that takes its region from the environment cannot name it before `connect`, so the
     /// document reports the service-wide host instead.
+    ///
+    /// # Examples
+    ///
+    /// With the `asyncapi` feature the document also carries what only this broker knows, under
+    /// `x-ruststream-kinesis`: the stream, the read pause and the provisioned shards on a channel,
+    /// and a policy's partition key on the message object. The document is built before anything
+    /// connects, so it reports what the descriptors and the policies hold, and a key named on one
+    /// publish call is not in it:
+    ///
+    /// ```
+    /// # #[cfg(feature = "asyncapi")]
+    /// # mod demo {
+    /// use ruststream::asyncapi::{Spec, build_spec};
+    /// use ruststream_kinesis::prelude::*;
+    /// use schemars::JsonSchema;
+    /// use serde::{Deserialize, Serialize};
+    ///
+    /// #[derive(Deserialize, JsonSchema)]
+    /// struct Order {
+    ///     id: u64,
+    /// }
+    ///
+    /// #[derive(Serialize, Outgoing, JsonSchema)]
+    /// #[outgoing(name = "receipts")]
+    /// struct Receipt {
+    ///     order: u64,
+    /// }
+    ///
+    /// #[subscriber(KinesisStream::new("orders").create_if_missing(2), reply)]
+    /// async fn confirm(order: &Order) -> Receipt {
+    ///     Receipt { order: order.id }
+    /// }
+    ///
+    /// pub fn document() -> Spec {
+    ///     let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+    ///         KinesisBroker::new().region("eu-west-1"),
+    ///         |b| {
+    ///             b.include(confirm)
+    ///                 .out_reply(Publish::default())
+    ///                 .partition_key("tenant-acme");
+    ///         },
+    ///     );
+    ///     build_spec(&app)
+    /// }
+    /// # }
+    /// # fn main() {
+    /// #     #[cfg(feature = "asyncapi")]
+    /// #     let _ = demo::document();
+    /// # }
+    /// ```
     fn describe_server(&self) -> ServerSpec {
         let host = self.endpoint.as_deref().map_or_else(
             || {
@@ -446,8 +631,8 @@ impl Subscribe for ConnectedKinesisBroker {
     ///
     /// A copy reaches the subscription from the tip, so a service that defers a record gets it
     /// back at the end of the stream rather than in place. Ordering against the records already
-    /// in the stream is not preserved, and the shard the copy lands on is the one its partition
-    /// key picks.
+    /// in the stream is not preserved; the copy keeps the record's partition key, so it lands on
+    /// that key's shard.
     type Copies = AddressedCopies;
 
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {

@@ -40,7 +40,7 @@
 //!
 //! #[subscriber(KinesisStream::new("orders").poll_interval(Duration::from_millis(500)), reply)]
 //! async fn confirm(order: &Order, Ctx(at): Ctx<Position>) -> Receipt {
-//!     println!("order {} sits at {at:?}", order.id);
+//!     tracing::info!(order.id, position = ?at, "confirmed");
 //!     Receipt { order: order.id }
 //! }
 //!
