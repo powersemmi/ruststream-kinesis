@@ -27,8 +27,12 @@ describe('the diagrams of the Architecture pages', () => {
         'resharding',
         'iterator',
         'leases',
+        'design',
+        'lifecycle',
+        'path',
         'watermark',
         'retries',
+        'lanes',
       ].sort(),
     );
   });

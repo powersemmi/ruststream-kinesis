@@ -1,6 +1,10 @@
+import {design} from './design';
 import type {Box, Lane, Link} from './flow';
 import {iterator} from './iterator';
+import {lanes} from './lanes';
 import {leases} from './leases';
+import {lifecycle} from './lifecycle';
+import {path} from './path';
 import {resharding} from './resharding';
 import {retries} from './retries';
 import {stream} from './stream';
@@ -19,8 +23,12 @@ export const LAYOUTS = {
   resharding,
   iterator,
   leases,
+  design,
+  lifecycle,
+  path,
   watermark,
   retries,
+  lanes,
 } satisfies Record<string, (words: Words) => Layout>;
 
 export type DiagramName = keyof typeof LAYOUTS;
