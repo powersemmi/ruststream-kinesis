@@ -57,9 +57,183 @@ serde.workspace = true
 serde_json = "1"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 
+# --- examples: subscriptions, settlement, leases ---
+
+[[example]]
+name = "kinesis_subscriptions_name"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_subscriptions_name"
+path = "examples/manual/kinesis_subscriptions_name.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_subscriptions_stream"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_subscriptions_stream"
+path = "examples/manual/kinesis_subscriptions_stream.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_subscriptions_poll"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_subscriptions_poll"
+path = "examples/manual/kinesis_subscriptions_poll.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_subscriptions_create"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_subscriptions_create"
+path = "examples/manual/kinesis_subscriptions_create.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_subscriptions_ext"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_subscriptions_ext"
+path = "examples/manual/kinesis_subscriptions_ext.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_subscriptions_shards"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_subscriptions_shards"
+path = "examples/manual/kinesis_subscriptions_shards.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_batches"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_batches"
+path = "examples/manual/kinesis_batches.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_settlement_outcomes"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_settlement_outcomes"
+path = "examples/manual/kinesis_settlement_outcomes.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_retry"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_retry"
+path = "examples/manual/kinesis_retry.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_settlement_out_retry"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_settlement_out_retry"
+path = "examples/manual/kinesis_settlement_out_retry.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_leases_store"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_leases_store"
+path = "examples/manual/kinesis_leases_store.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_leases_memory"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_leases_memory"
+path = "examples/manual/kinesis_leases_memory.rs"
+required-features = ["testing"]
+test = true
+
 [[example]]
 name = "kinesis_leases"
-required-features = ["dynamodb-lease"]
+required-features = ["testing", "dynamodb-lease"]
+test = true
+
+[[example]]
+name = "manual_kinesis_leases"
+path = "examples/manual/kinesis_leases.rs"
+required-features = ["testing", "dynamodb-lease"]
+test = true
+
+[[example]]
+name = "kinesis_leases_legacy"
+required-features = ["testing", "dynamodb-lease"]
+test = true
+
+[[example]]
+name = "manual_kinesis_leases_legacy"
+path = "examples/manual/kinesis_leases_legacy.rs"
+required-features = ["testing", "dynamodb-lease"]
+test = true
+
+[[example]]
+name = "kinesis_leases_owner"
+required-features = ["testing", "dynamodb-lease"]
+test = true
+
+[[example]]
+name = "manual_kinesis_leases_owner"
+path = "examples/manual/kinesis_leases_owner.rs"
+required-features = ["testing", "dynamodb-lease"]
+test = true
+
+[[example]]
+name = "kinesis_leases_key"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_leases_key"
+path = "examples/manual/kinesis_leases_key.rs"
+required-features = ["testing"]
+test = true
 
 # --- examples: broker, positions, context, publishing, asyncapi, testing ---
 
