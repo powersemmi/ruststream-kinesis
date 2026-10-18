@@ -106,8 +106,9 @@ async fn a_stream_name_the_service_refuses_is_refused() {
     );
 }
 
-// A partition key is 1 to 256 characters, and a record carries at most 1 MiB of data and key
-// together. The service refuses a record outside either limit.
+// A partition key is 1 to 256 characters, and a record carries at most 10 MiB of data and key
+// together, the largest record a stream can be configured to take. The service refuses a record
+// outside either limit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_record_the_service_refuses_is_refused() {
     let broker = connected().await;
@@ -137,16 +138,25 @@ async fn a_record_the_service_refuses_is_refused() {
 
     let refused = publisher
         .publish(
-            OutgoingMessage::produced("orders", BytesMut::zeroed(1024 * 1024)),
+            OutgoingMessage::produced("orders", BytesMut::zeroed(10 * 1024 * 1024)),
             None,
         )
         .await
-        .expect_err("a record over 1 MiB is refused");
+        .expect_err("a record over 10 MiB is refused");
     assert!(
         matches!(refused, KinesisError::Publish { .. }),
         "got {refused}"
     );
     assert_eq!(broker.published("orders"), Vec::new());
+
+    // A stream raised past the 1 MiB default takes a record of several MiB.
+    publisher
+        .publish(
+            OutgoingMessage::produced("orders", BytesMut::zeroed(2 * 1024 * 1024)),
+            None,
+        )
+        .await
+        .expect("a record of 2 MiB is accepted");
 }
 
 /// Bytes the case already holds encoded, published as they are.

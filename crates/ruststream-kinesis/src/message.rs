@@ -79,7 +79,7 @@ pub(crate) fn encode_envelope(headers: &HeaderMap, payload: BytesMut) -> Vec<u8>
     out
 }
 
-/// A length as the envelope writes it. A record is at most 1 MiB, so every length fits; one
+/// A length as the envelope writes it. A record is at most 10 MiB, so every length fits; one
 /// that does not writes zero, and the service refuses the record for its size anyway.
 fn field_len(len: usize) -> [u8; FIELD_LEN] {
     u32::try_from(len).unwrap_or(0).to_be_bytes()
