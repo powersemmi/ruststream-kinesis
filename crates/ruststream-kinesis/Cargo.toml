@@ -323,3 +323,15 @@ name = "manual_guide_leases"
 path = "examples/manual/guide/leases.rs"
 required-features = ["testing", "dynamodb-lease"]
 test = true
+
+[[example]]
+name = "guide_testing"
+path = "examples/guide/testing.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_testing"
+path = "examples/manual/guide/testing.rs"
+required-features = ["testing"]
+test = true
