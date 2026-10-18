@@ -359,7 +359,9 @@ shard resumes from its stored checkpoint, and a shard without one opens at the t
 subscription returns once every shard it took has its reader and its starting cursor, so the tip
 is the moment the subscription opened: a record published after that is read. A child of a split
 or a merge whose parent was read to its end opens at its own beginning instead, so what landed on
-it before its reader started is read too.
+it before its reader started is read too. A reader that loses its iterator before a record is
+settled goes back to the first record it read, not to the tip, so a failure costs a redelivery,
+never a skipped record.
 
 | Position | Scope | Meaning |
 | --- | --- | --- |
