@@ -213,6 +213,15 @@ jobs:
     # name theirs through RUSTUP_TOOLCHAIN, which outranks the file.
     runs-on: ubuntu-latest
     steps:
+      # Three toolchains build every test target here, each linking the AWS SDK, and their
+      # artifacts outgrow the runner's free disk by the floor's test run. The runner image ships
+      # SDKs this job never uses; removing them frees about 30 GB without touching the build cache.
+      - name: Free the runner's disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
+
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
