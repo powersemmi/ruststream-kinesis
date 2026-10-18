@@ -31,7 +31,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
 The `dynamodb-lease` feature adds [`DynamoLeaseStore`](../components/leases/dynamo-lease-store.md).
-Its table has one string partition key, `lease_key`, and nothing else; on-demand billing fits it.
+Its table is keyed by one string attribute, `lease_key`, and nothing else; on-demand billing fits it.
 The table is infrastructure, like the stream: create it once, with Terraform, CloudFormation or the AWS CLI.
 On the local stack, add `dynamodb` to `SERVICES` in the compose file and create it there:
 
