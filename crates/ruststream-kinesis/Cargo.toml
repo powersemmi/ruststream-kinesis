@@ -170,5 +170,67 @@ required-features = ["testing"]
 test = true
 
 [[example]]
+name = "kinesis_leases_store"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_leases_store"
+path = "examples/manual/kinesis_leases_store.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_leases_memory"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_leases_memory"
+path = "examples/manual/kinesis_leases_memory.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
 name = "kinesis_leases"
-required-features = ["dynamodb-lease"]
+required-features = ["testing", "dynamodb-lease"]
+test = true
+
+[[example]]
+name = "manual_kinesis_leases"
+path = "examples/manual/kinesis_leases.rs"
+required-features = ["testing", "dynamodb-lease"]
+test = true
+
+[[example]]
+name = "kinesis_leases_legacy"
+required-features = ["testing", "dynamodb-lease"]
+test = true
+
+[[example]]
+name = "manual_kinesis_leases_legacy"
+path = "examples/manual/kinesis_leases_legacy.rs"
+required-features = ["testing", "dynamodb-lease"]
+test = true
+
+[[example]]
+name = "kinesis_leases_owner"
+required-features = ["testing", "dynamodb-lease"]
+test = true
+
+[[example]]
+name = "manual_kinesis_leases_owner"
+path = "examples/manual/kinesis_leases_owner.rs"
+required-features = ["testing", "dynamodb-lease"]
+test = true
+
+[[example]]
+name = "kinesis_leases_key"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_leases_key"
+path = "examples/manual/kinesis_leases_key.rs"
+required-features = ["testing"]
+test = true
