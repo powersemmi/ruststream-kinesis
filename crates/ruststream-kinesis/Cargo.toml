@@ -313,3 +313,80 @@ name = "manual_kinesis_broker_errors"
 path = "examples/manual/kinesis_broker_errors.rs"
 required-features = ["testing"]
 test = true
+
+[[example]]
+name = "kinesis_positions_timestamp"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_positions_timestamp"
+path = "examples/manual/kinesis_positions_timestamp.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_positions_start_at"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_positions_start_at"
+path = "examples/manual/kinesis_positions_start_at.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_seek"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_seek"
+path = "examples/manual/kinesis_seek.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_context"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_context"
+path = "examples/manual/kinesis_context.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_context_batch"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_context_batch"
+path = "examples/manual/kinesis_context_batch.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_context_headers"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_context_headers"
+path = "examples/manual/kinesis_context_headers.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_context_envelope"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_context_envelope"
+path = "examples/manual/kinesis_context_envelope.rs"
+required-features = ["testing"]
+test = true

@@ -20,7 +20,10 @@ mod stand;
 
 // --8<-- [start:start_at]
 /// Rebuilds the audit projection from the oldest retained entry on every startup.
-#[subscriber(KinesisStream::new("ledger.audit"))]
+#[subscriber(
+    KinesisStream::new("ledger.audit"),
+    start_at(KinesisPosition::horizon())
+)]
 async fn project(entry: &AuditEntry) -> HandlerOutcome {
     tracing::info!(entry.id, "entry projected");
     HandlerOutcome::ack()

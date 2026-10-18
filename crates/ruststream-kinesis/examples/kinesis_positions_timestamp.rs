@@ -32,9 +32,8 @@ async fn report(reading: &Reading) -> HandlerOutcome {
 /// The report opens every shard at the first reading that arrived at or after `since`, in
 /// milliseconds since the Unix epoch.
 fn service(broker: KinesisBroker, since: u64) -> RustStream {
-    let _ = since;
     RustStream::new(AppInfo::new("reports", "0.1.0")).with_broker(broker, |b| {
-        b.include(report);
+        b.include(report.start_at(KinesisPosition::timestamp(since)));
     })
 }
 // --8<-- [end:replay]
@@ -100,9 +99,8 @@ mod tests {
         let since = stand::now_millis() - 1000;
         stand::put(&config, "readings", &serde_json::to_vec(&reading(70))?).await;
 
-        let tb =
-            TestApp::start_live_within(service(stand::broker(&endpoint), since), stand::START)
-                .await?;
+        let tb = TestApp::start_live_within(service(stand::broker(&endpoint), since), stand::START)
+            .await?;
         tb.broker::<KinesisBroker>()
             .message(&reading(71))
             .publish()

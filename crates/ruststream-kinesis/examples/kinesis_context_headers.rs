@@ -19,13 +19,28 @@ use ruststream_kinesis::{PARTITION_KEY_HEADER, SEQUENCE_HEADER, SHARD_HEADER};
 
 /// Bills each meter reading. The meter is the record's partition key, so the readings of one
 /// meter run one after another on four lanes, and in the order the stream holds them.
-#[subscriber(KinesisStream::new("meters"))]
+#[subscriber(KinesisStream::new("meters"), workers(4, by_key))]
 async fn bill(
     reading: &Reading,
     ctx: &mut Context<'_>,
     Out(bills): Out<impl Publisher, Bills>,
 ) -> HandlerOutcome {
-    let _ = (reading, ctx, bills, PARTITION_KEY_HEADER, SEQUENCE_HEADER, SHARD_HEADER);
+    let headers = ctx.headers();
+    let (Some(meter), Some(shard), Some(sequence)) = (
+        headers.get_str(PARTITION_KEY_HEADER),
+        headers.get_str(SHARD_HEADER),
+        headers.get_str(SEQUENCE_HEADER),
+    ) else {
+        return HandlerOutcome::drop();
+    };
+    tracing::info!(meter, shard, sequence, reading.kwh, "reading billed");
+    let charge = Bill {
+        meter: meter.to_owned(),
+        kwh: reading.kwh,
+    };
+    if bills.message(&charge).publish().await.is_err() {
+        return HandlerOutcome::retry();
+    }
     HandlerOutcome::ack()
 }
 // --8<-- [end:headers]

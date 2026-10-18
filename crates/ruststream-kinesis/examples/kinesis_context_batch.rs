@@ -18,7 +18,15 @@ const MARKER: u64 = 999;
 #[subscriber(KinesisStream::new("jobs"))]
 async fn drain(jobs: &[Job], ctx: &mut Context<'_, KinesisBatchContext>) -> HandlerOutcome {
     tracing::info!(count = jobs.len(), "jobs drained");
-    let _ = ctx;
+    if jobs.iter().any(|job| job.id == MARKER)
+        && ctx
+            .context(SeekHandle)
+            .seek(KinesisPosition::latest())
+            .await
+            .is_err()
+    {
+        return HandlerOutcome::retry();
+    }
     HandlerOutcome::ack()
 }
 // --8<-- [end:batch]

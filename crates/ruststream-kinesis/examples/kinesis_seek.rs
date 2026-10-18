@@ -18,7 +18,9 @@ const MARKER: u64 = 999;
 /// tip instead.
 #[subscriber(KinesisStream::new("jobs"), start_at(KinesisPosition::horizon()))]
 async fn replay(job: &Job, Ctx(seeker): Ctx<SeekHandle>) -> HandlerOutcome {
-    let _ = seeker;
+    if job.id == MARKER && seeker.seek(KinesisPosition::latest()).await.is_err() {
+        return HandlerOutcome::retry();
+    }
     tracing::info!(job.id, "job replayed");
     HandlerOutcome::ack()
 }

@@ -22,7 +22,19 @@ async fn audit(
     Ctx(at): Ctx<Position>,
     Out(trail): Out<impl Publisher, Trail>,
 ) -> HandlerOutcome {
-    let _ = (at, trail, order);
+    // A delivered record's position is always one record of one shard.
+    let KinesisPosition::Sequence { shard, sequence } = at else {
+        return HandlerOutcome::drop();
+    };
+    tracing::info!(order.id, shard, sequence, "order located");
+    let located = Located {
+        order: order.id,
+        shard,
+        sequence,
+    };
+    if trail.message(&located).publish().await.is_err() {
+        return HandlerOutcome::retry();
+    }
     HandlerOutcome::ack()
 }
 // --8<-- [end:context]

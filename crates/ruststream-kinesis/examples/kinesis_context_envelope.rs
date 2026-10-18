@@ -23,7 +23,17 @@ async fn verify(
     ctx: &mut Context<'_>,
     Out(ledger): Out<impl Publisher, Ledger>,
 ) -> HandlerOutcome {
-    let _ = (payment, ctx, ledger);
+    let Some(signature) = ctx.headers().get("x-signature") else {
+        tracing::warn!(payment.id, "unsigned payment dropped");
+        return HandlerOutcome::drop();
+    };
+    let verified = Verified {
+        payment: payment.id,
+        signature: signature.to_vec(),
+    };
+    if ledger.message(&verified).publish().await.is_err() {
+        return HandlerOutcome::retry();
+    }
     HandlerOutcome::ack()
 }
 // --8<-- [end:envelope]
