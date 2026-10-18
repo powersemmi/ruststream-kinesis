@@ -16,9 +16,7 @@ use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 use aws_sdk_kinesis::operation::get_records::GetRecordsError;
-use aws_sdk_kinesis::operation::get_shard_iterator::builders::GetShardIteratorFluentBuilder;
-use aws_sdk_kinesis::primitives::DateTime;
-use aws_sdk_kinesis::types::{Shard, ShardIteratorType};
+use aws_sdk_kinesis::types::Shard;
 use futures::Stream;
 #[cfg(feature = "testing")]
 use futures::future::Either;
@@ -27,6 +25,7 @@ use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::broker::Core;
+use crate::cursor::{Lineage, ShardStart, StreamStart, iterator_at};
 use crate::error::{KinesisError, sdk_err};
 #[cfg(feature = "testing")]
 use crate::in_process::{LogDeliveries, LogSeeker};
@@ -51,27 +50,6 @@ const MAX_READ_LIMIT: i32 = 10_000;
 /// the size is the mount site's and the deadline is the broker's; it is short next to the
 /// second the reader waits between reads of an idle shard.
 const BATCH_FILL_WINDOW: Duration = Duration::from_millis(50);
-
-/// A position every shard of the subscription can open at: the stream-wide half of
-/// [`KinesisPosition`]. Kept apart from the shard-scoped forms so that "install this for the
-/// whole subscription" cannot be handed a position that only one shard understands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StreamStart {
-    Horizon,
-    Latest,
-    Timestamp(u64),
-}
-
-/// The cursor one shard's reader opens with, in the shapes the service's iterator types take.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ShardStart {
-    /// A position shared by the whole subscription.
-    Stream(StreamStart),
-    /// Redelivers exactly this record: a captured, pinned position.
-    At(String),
-    /// Resumes after this record: a stored checkpoint.
-    After(String),
-}
 
 /// A repositioning request delivered to one shard's reader.
 pub(crate) struct ShardSeek {
@@ -742,19 +720,6 @@ enum Parents {
     Skipped,
 }
 
-/// Whether a shard's reader picks up a reading its parents left off, or opens one of its own.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Lineage {
-    /// The shard opens at the subscription's position: the stored checkpoint, a sought position,
-    /// or the tip.
-    Opens,
-    /// A parent was read to its end, so whatever landed on this shard since the split follows
-    /// what was delivered. Without a checkpoint the shard opens at its own beginning, as the
-    /// vendor's consumer library opens a child: opening it at the tip would skip every record
-    /// written to it before its reader started.
-    Continues,
-}
-
 async fn parents(
     bus: &SeekState,
     stream: &Arc<str>,
@@ -779,32 +744,6 @@ async fn parents(
         }
     }
     outcome
-}
-
-/// Points a `GetShardIterator` request at a cursor.
-fn iterator_at(
-    request: GetShardIteratorFluentBuilder,
-    start: &ShardStart,
-) -> GetShardIteratorFluentBuilder {
-    match start {
-        ShardStart::Stream(StreamStart::Latest) => {
-            request.shard_iterator_type(ShardIteratorType::Latest)
-        }
-        ShardStart::Stream(StreamStart::Horizon) => {
-            request.shard_iterator_type(ShardIteratorType::TrimHorizon)
-        }
-        ShardStart::Stream(StreamStart::Timestamp(millis)) => request
-            .shard_iterator_type(ShardIteratorType::AtTimestamp)
-            .timestamp(DateTime::from_millis(
-                i64::try_from(*millis).unwrap_or(i64::MAX),
-            )),
-        ShardStart::At(sequence) => request
-            .shard_iterator_type(ShardIteratorType::AtSequenceNumber)
-            .starting_sequence_number(sequence),
-        ShardStart::After(sequence) => request
-            .shard_iterator_type(ShardIteratorType::AfterSequenceNumber)
-            .starting_sequence_number(sequence),
-    }
 }
 
 /// The crate's error for a lease store failure on `key`, naming the stream and the shard.

@@ -4,6 +4,7 @@
 mod broker;
 mod clients;
 mod context;
+mod cursor;
 #[cfg(feature = "dynamodb-lease")]
 mod dynamo;
 mod error;
