@@ -137,5 +137,38 @@ required-features = ["testing"]
 test = true
 
 [[example]]
+name = "kinesis_settlement_outcomes"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_settlement_outcomes"
+path = "examples/manual/kinesis_settlement_outcomes.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_retry"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_retry"
+path = "examples/manual/kinesis_retry.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_settlement_out_retry"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_kinesis_settlement_out_retry"
+path = "examples/manual/kinesis_settlement_out_retry.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
 name = "kinesis_leases"
 required-features = ["dynamodb-lease"]
