@@ -29,7 +29,8 @@ serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 # `runtime::Id`, which tells a request on the broker's runtime from one elsewhere, is stable from 1.49.
 tokio = { version = "1.49", features = ["rt-multi-thread", "macros", "sync", "time"] }
-tracing = "0.1"
+# Examples log `String` fields as values, which `tracing` accepts from 0.1.36.
+tracing = "0.1.36"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
