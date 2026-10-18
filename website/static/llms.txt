@@ -2,33 +2,86 @@
 
 > `ruststream-kinesis` is the Amazon Kinesis Data Streams broker crate for RustStream, a Rust framework for services that subscribe to message brokers and publish to them. It runs over the official `aws-sdk-kinesis` client: a subscription discovers the stream's shards across splits and merges, leases each shard with fencing and checkpoints its progress, so an acknowledgement is a checkpoint and delivery is at-least-once.
 
-A subscription is the descriptor `KinesisStream`, which names the stream and carries the pause between reads. A routes file imports `ruststream_kinesis::prelude::*`, which offers `KinesisPublish` as `Publish`; a body that sets the partition key of one record takes the `partition_key` step from `KinesisPublishSteps`. The `dynamodb-lease` feature adds `DynamoLeaseStore`, so several service instances share the shards.
+A subscription is the descriptor `KinesisStream`, which names the stream by its name and carries the pause between reads; a bare `#[subscriber("orders")]` builds the same descriptor with its defaults. A service imports `ruststream_kinesis::prelude::*`, which offers `KinesisPublish` as `Publish`; the partition key of one publish is its per-message setting. The `dynamodb-lease` feature adds `DynamoLeaseStore`, so several service instances share the shards.
 
 This site holds the guides, one page per component and the architecture of the crate; the API reference is on docs.rs, and the framework itself is documented on the RustStream site.
 
-## Site
+## Guides
 
 - [Guides](https://powersemmi.github.io/ruststream-kinesis/latest/): building a Kinesis service with the crate, from installation to production
+- [Getting started](https://powersemmi.github.io/ruststream-kinesis/latest/guides/getting-started/): installation, a local Kinesis, a first subscriber against it and its test without a server
+- [Consuming a stream](https://powersemmi.github.io/ruststream-kinesis/latest/guides/consuming/): one record or one batch at a time, the shard's read budget, and what a delivery carries
+- [Shards, partition keys and ordering](https://powersemmi.github.io/ruststream-kinesis/latest/guides/ordering/): the shard of each record, per-key order under parallel handlers and across splits and merges
+- [Checkpoints and delivery guarantees](https://powersemmi.github.io/ruststream-kinesis/latest/guides/checkpoints/): what each handler outcome does to a shard's checkpoint, and what a restart reads again
+- [Retries and dead-letter streams](https://powersemmi.github.io/ruststream-kinesis/latest/guides/retries/): a retry now or later, the attempt cap, the dead-letter stream, and what a copy does to order
+- [Replay and seeking](https://powersemmi.github.io/ruststream-kinesis/latest/guides/replay/): reading a stream again from its oldest record or from a moment, and seeking from inside a handler
+- [Several instances](https://powersemmi.github.io/ruststream-kinesis/latest/guides/leases/): a DynamoDB lease table that gives each shard to one instance and keeps its checkpoint
+- [Testing a Kinesis service](https://powersemmi.github.io/ruststream-kinesis/latest/guides/testing/): `TestApp` on the production app with keyed records, replies and delays, and the same test against a local stack
+- [Running in production](https://powersemmi.github.io/ruststream-kinesis/latest/guides/production/): credentials and region, streams owned by infrastructure, and IAM permissions
+
+## Components
+
 - [Components](https://powersemmi.github.io/ruststream-kinesis/latest/components/): the parts of the crate a Kinesis service uses, one page each
+- [KinesisBroker](https://powersemmi.github.io/ruststream-kinesis/latest/components/broker/): the broker type and its lazy connection
+- [Credentials](https://powersemmi.github.io/ruststream-kinesis/latest/components/broker/credentials/): the AWS default chain at connect, and `from_config` for a config built elsewhere
+- [Endpoint](https://powersemmi.github.io/ruststream-kinesis/latest/components/broker/endpoint/): `endpoint`, `region` and `test_credentials` for a local stack such as LocalStack
+- [Startup](https://powersemmi.github.io/ruststream-kinesis/latest/components/broker/startup/): a subscription opens once every shard it took reads, and a missing stream stops the start
+- [Shutdown](https://powersemmi.github.io/ruststream-kinesis/latest/components/broker/shutdown/): `KinesisError::NotConnected` for a publisher or a seek handle used afterwards
+- [Prelude](https://powersemmi.github.io/ruststream-kinesis/latest/components/broker/prelude/): `ruststream_kinesis::prelude`, the one glob a Kinesis service imports
+- [Errors](https://powersemmi.github.io/ruststream-kinesis/latest/components/broker/errors/): `KinesisError`, the one error type of the crate
+- [Subscriptions](https://powersemmi.github.io/ruststream-kinesis/latest/components/subscriptions/): a stream name in `#[subscriber]` and the descriptor that carries every other setting
+- [KinesisStream](https://powersemmi.github.io/ruststream-kinesis/latest/components/subscriptions/kinesis-stream/): one stream, with its read pause and the shards it provisions when the stream is missing
+- [poll_interval](https://powersemmi.github.io/ruststream-kinesis/latest/components/subscriptions/poll-interval/): the pause between reads of an idle shard, against five reads a second per shard
+- [create_if_missing](https://powersemmi.github.io/ruststream-kinesis/latest/components/subscriptions/create-if-missing/): a missing stream created with the shard count it names
+- [KinesisSubscriberExt](https://powersemmi.github.io/ruststream-kinesis/latest/components/subscriptions/subscriber-ext/): `poll_interval` and `create_if_missing` on the mount chain
+- [Shards](https://powersemmi.github.io/ruststream-kinesis/latest/components/subscriptions/shards/): a lease and a reader per shard, and a split's children after their parents
+- [Batches](https://powersemmi.github.io/ruststream-kinesis/latest/components/subscriptions/batches/): slice handlers, with `batch(n)` as the `GetRecords` limit
+- [Checkpoint](https://powersemmi.github.io/ruststream-kinesis/latest/components/settlement/): an ack as a per-shard checkpoint, a drop, and a requeue a shard cannot perform
+- [retry_after](https://powersemmi.github.io/ruststream-kinesis/latest/components/settlement/retry-after/): a copy of the record published back to its stream once the delay is over
+- [out_retry](https://powersemmi.github.io/ruststream-kinesis/latest/components/settlement/out-retry/): the publisher the retry copies leave through; a copy keeps the record's partition key
+- [Dead letters](https://powersemmi.github.io/ruststream-kinesis/latest/components/settlement/dead-letters/): `max_attempts` and `dead_letter`, the stream a spent record goes to
+- [LeaseStore](https://powersemmi.github.io/ruststream-kinesis/latest/components/leases/): each shard's owner and checkpoint, and `SHARD_END` for a finished shard
+- [MemoryLeaseStore](https://powersemmi.github.io/ruststream-kinesis/latest/components/leases/memory-lease-store/): the default store, for one instance, empty again after a restart
+- [DynamoLeaseStore](https://powersemmi.github.io/ruststream-kinesis/latest/components/leases/dynamo-lease-store/): a DynamoDB table several instances share, behind the `dynamodb-lease` feature
+- [LeaseKey](https://powersemmi.github.io/ruststream-kinesis/latest/components/leases/lease-key/): one shard of one stream, and its `stream:shard` form
+- [owner_id](https://powersemmi.github.io/ruststream-kinesis/latest/components/leases/owner-id/): the name an instance holds its leases under
+- [legacy_stream](https://powersemmi.github.io/ruststream-kinesis/latest/components/leases/legacy-stream/): a lease table an earlier version wrote, read for one named stream
+- [KinesisContext](https://powersemmi.github.io/ruststream-kinesis/latest/components/context/): a record's position and the seek handle, through `Ctx<Position>` and `Ctx<SeekHandle>`
+- [KinesisBatchContext](https://powersemmi.github.io/ruststream-kinesis/latest/components/context/batch-context/): a batch handler's context and its seek handle
+- [Headers](https://powersemmi.github.io/ruststream-kinesis/latest/components/context/headers/): the sequence number, the shard and the partition key on every delivery
+- [Envelope](https://powersemmi.github.io/ruststream-kinesis/latest/components/context/envelope/): user headers in front of the payload, only when there are any
+- [KinesisPosition](https://powersemmi.github.io/ruststream-kinesis/latest/components/positions/): the trim horizon, the tip, an arrival timestamp, or one record of one shard
+- [start_at](https://powersemmi.github.io/ruststream-kinesis/latest/components/positions/start-at/): a subscription opened at a position on every startup
+- [Seek](https://powersemmi.github.io/ruststream-kinesis/latest/components/positions/seek/): a running subscription moved from its handler through `Ctx<SeekHandle>`
+- [KinesisPublish](https://powersemmi.github.io/ruststream-kinesis/latest/components/publishing/): the publish policy, `Publish` in the prelude, one `PutRecord` per record
+- [Keys](https://powersemmi.github.io/ruststream-kinesis/latest/components/publishing/keys/): the four places that name a record's partition key, and the order they resolve in
+- [partition_key](https://powersemmi.github.io/ruststream-kinesis/latest/components/publishing/partition-key/): the partition key of one record as a step on the publish builder
+- [KinesisPublishSettings](https://powersemmi.github.io/ruststream-kinesis/latest/components/publishing/publish-settings/): `partition_key` at the mount site, for every record of a position, a reply included
+- [Kinesis bindings](https://powersemmi.github.io/ruststream-kinesis/latest/components/asyncapi/): the Kinesis bindings of the AsyncAPI document behind the `asyncapi` feature
+- [Server](https://powersemmi.github.io/ruststream-kinesis/latest/components/asyncapi/server/): the endpoint's host and port or the regional host, never a credential
+- [Channels](https://powersemmi.github.io/ruststream-kinesis/latest/components/asyncapi/channels/): the stream, the read pause and the provisioned shards of each channel
+- [Messages](https://powersemmi.github.io/ruststream-kinesis/latest/components/asyncapi/messages/): a policy's partition key on the message object
+- [Testing](https://powersemmi.github.io/ruststream-kinesis/latest/components/testing/): `TestApp::start` with `KinesisBroker` in process behind the `testing` feature
+- [Live](https://powersemmi.github.io/ruststream-kinesis/latest/components/testing/live/): `TestApp::start_live`, the same test body against LocalStack or AWS
+
+## Architecture
+
 - [Architecture](https://powersemmi.github.io/ruststream-kinesis/latest/architecture/): how Kinesis Data Streams works, where the crate sits between Kinesis and the RustStream runtime, and what that costs
-- [Benchmarks](https://powersemmi.github.io/ruststream-kinesis/latest/architecture/benchmarks/): what this crate and the framework's runtime cost over the raw `aws-sdk-kinesis` client on LocalStack, and how to re-measure it with `just bench`
-
-## Guide
-
-- [Overview](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html): the transport and a first service
-- [Subscribing](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#subscribing): the stream descriptor, settling a record and delayed redelivery with its cap
-- [Leases and checkpoints](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#leases-and-checkpoints): how shards are leased and progress is checkpointed per stream and shard, in one process or across instances, and how a lease table an earlier version wrote is upgraded
-- [Batches](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#batches): batch handlers over a shard's records
-- [Positions and seeking](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#positions-and-seeking): where a subscription starts and how a handler repositions it
-- [Publishing](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#publishing): the publish policy, the partition key, replies and the header envelope
-- [The prelude](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#the-prelude): what a routes file and a handler body import
-- [The generated document](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#the-generated-document): what the `asyncapi` feature reports
-- [Testing](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#testing): the production app under `TestApp`, `KinesisBroker` in process behind the `testing` feature or against a live stream
-- [Operations](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#operations): credentials, a local stack, read budgets and the client's limits
-- [Cargo features](https://docs.rs/ruststream-kinesis/latest/ruststream_kinesis/index.html#cargo-features): `asyncapi`, `dynamodb-lease` and `testing`
+- [Streams](https://powersemmi.github.io/ruststream-kinesis/latest/architecture/kinesis/): a stream as a set of shards, each an ordered log every consumer reads for itself
+- [Shards and resharding](https://powersemmi.github.io/ruststream-kinesis/latest/architecture/kinesis/shards/): a shard's share of throughput, and the children a split or a merge opens
+- [Reading](https://powersemmi.github.io/ruststream-kinesis/latest/architecture/kinesis/reading/): shard iterators, `GetShardIterator` and `GetRecords`
+- [Leases](https://powersemmi.github.io/ruststream-kinesis/latest/architecture/kinesis/leases/): a lease table with one row per shard, its owner, its expiry and its checkpoint
+- [Design](https://powersemmi.github.io/ruststream-kinesis/latest/architecture/design/): a reader per shard and a lease store between the runtime and the AWS SDK, one SDK client per runtime
+- [Lifecycle](https://powersemmi.github.io/ruststream-kinesis/latest/architecture/lifecycle/): `new`, `connect`, the shards each subscription opens, and shutdown
+- [Path](https://powersemmi.github.io/ruststream-kinesis/latest/architecture/path/): one record from the read through the handler and the reply to its checkpoint
+- [Lanes](https://powersemmi.github.io/ruststream-kinesis/latest/architecture/lanes/): a reader per shard into one channel, and `workers(n, by_key)` lanes keyed by partition key
+- [Settlement](https://powersemmi.github.io/ruststream-kinesis/latest/architecture/settlement/): what `ack`, drop, retry and `retry_after` become on a log with one checkpoint per shard
+- [Benchmarks](https://powersemmi.github.io/ruststream-kinesis/latest/architecture/benchmarks/): what the crate and the framework's runtime cost over the raw `aws-sdk-kinesis` client, and the cost of the crate's own code
+- [Benchmarks: Numbers](https://powersemmi.github.io/ruststream-kinesis/latest/architecture/benchmarks/numbers/): what each published number measures, and what it does not allow you to conclude
+- [Benchmarks: Methodology](https://powersemmi.github.io/ruststream-kinesis/latest/architecture/benchmarks/methodology/): the three loops, the run on a Kinesis endpoint and the code count
 
 ## Optional
 
-- [API reference](https://docs.rs/ruststream-kinesis): the full rustdoc of the crate
+- [API reference](https://docs.rs/ruststream-kinesis): the full rustdoc of the crate, whose overview maps each item to its pages here
 - [RustStream llms.txt](https://powersemmi.github.io/ruststream/llms.txt): the index of the framework's own documentation
 - [Source](https://github.com/powersemmi/ruststream-kinesis): the crate's repository
