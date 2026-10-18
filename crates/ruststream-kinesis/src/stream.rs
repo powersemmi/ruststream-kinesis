@@ -23,8 +23,8 @@ use crate::subscriber::KinesisSubscriber;
 
 /// A subscription descriptor for one Kinesis stream.
 ///
-/// Every shard resumes from its stored checkpoint, and a shard without one starts at the tip.
-/// To open somewhere else, wrap the descriptor in the framework's `start_at(..)` clause with a
+/// Every shard resumes from its stored checkpoint, and a shard without one starts at the tip
+/// (a child whose parent was read to its end starts at its own beginning). To open somewhere else, wrap the descriptor in the framework's `start_at(..)` clause with a
 /// [`KinesisPosition`](crate::KinesisPosition).
 ///
 /// A string literal names a stream too: `#[subscriber("orders")]` builds this descriptor with its
@@ -35,7 +35,11 @@ use crate::subscriber::KinesisSubscriber;
 /// The subscription lists the stream's shards and lists them again as splits and merges change
 /// the set, takes a lease per shard, and runs one reader per shard it holds. A child of a split
 /// or a merge starts only after its parents are fully consumed, which keeps per-key ordering
-/// across resharding. A KPL-aggregated record is reported as
+/// across resharding.
+///
+/// A broker reads a stream through one subscription: a second subscription to the same stream
+/// on one broker is refused when it opens. A second [`KinesisBroker`](crate::KinesisBroker) with
+/// a lease store of its own reads the stream again. A KPL-aggregated record is reported as
 /// [`KinesisError::AggregatedRecord`](crate::KinesisError::AggregatedRecord).
 ///
 /// Implements [`SubscriptionSource`], so it can sit inline in the `#[subscriber(..)]`
@@ -95,6 +99,9 @@ pub struct KinesisStream {
 impl KinesisStream {
     /// Names the stream by its name, which is also the stream half of every [`LeaseKey`](crate::LeaseKey) the
     /// subscription's shards are leased under.
+    ///
+    /// A stream is named by its name; every call the subscription makes passes it as the stream
+    /// name.
     pub fn new(stream: impl Into<String>) -> Self {
         Self {
             stream: stream.into(),
@@ -242,8 +249,7 @@ impl IntoSource for KinesisStream {
 ///
 /// The `AsyncAPI` specification lists no Kinesis binding, and the protocol keys of a binding object
 /// are a closed list, so this travels as an `x-` extension at the same level. Only what the
-/// descriptor itself holds goes in: the real shard count of an existing stream, its ARN and its
-/// retention are the service's to answer and the document is built before anything connects.
+/// descriptor itself holds goes in, because the document is built before anything connects.
 #[cfg(feature = "asyncapi")]
 #[derive(Debug, Serialize)]
 struct KinesisChannelBinding<'a> {
@@ -305,9 +311,9 @@ impl RedeliveryAddressed<ConnectedKinesisBroker> for KinesisStream {
     /// The stream this descriptor names, which is where a deferred copy and a spent delivery of
     /// this registration are published.
     ///
-    /// The copy arrives at the tip rather than in the place the original held, and its partition
-    /// key picks the shard it lands on, so a deferred record loses its position in the stream's
-    /// order. Where that order matters, declare no cap and let `HandlerOutcome::retry()` hold the
+    /// The copy keeps the record's partition key and lands on that key's shard, at the tip rather
+    /// than in the place the original held, so a deferred record loses its position in the
+    /// stream's order. Where that order matters, declare no cap and let `HandlerOutcome::retry()` hold the
     /// shard: the checkpoint stops at the record, and the shard is read again from it.
     ///
     /// `max_attempts(n)` counts the first delivery, and under it `HandlerOutcome::retry()` becomes

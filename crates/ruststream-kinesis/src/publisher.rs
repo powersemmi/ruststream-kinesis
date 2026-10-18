@@ -118,7 +118,7 @@ pub struct KinesisPublishOptions {
     pub partition_key: Option<String>,
 }
 
-/// Publishes records to Kinesis streams (the destination is the stream name or ARN).
+/// Publishes records to Kinesis streams; the destination is the stream's name.
 ///
 /// The record's partition key is the unit of shard routing and per-key ordering. A publish names
 /// it with [`partition_key`](KinesisPublishSteps::partition_key) on the publish builder; a record
@@ -423,9 +423,8 @@ struct KinesisMessageBinding<'a> {
 
 /// What a position publishing through [`KinesisPublish`] writes into its channel object.
 ///
-/// The stream and nothing else: a publisher holds no read settings, and the shard count, the ARN
-/// and the retention of an existing stream are the service's to answer while the document is
-/// built before anything connects.
+/// The stream and nothing else: a publisher holds no read settings, and the document is built
+/// before anything connects, so what an existing stream is like is the service's to answer.
 #[cfg(feature = "asyncapi")]
 #[derive(Debug, Serialize)]
 struct KinesisPublishChannelBinding<'a> {
@@ -469,6 +468,10 @@ impl PublishPolicy<ConnectedKinesisBroker> for KinesisPublish {
 /// beyond that is the broker's own vocabulary. A call that reaches the publish builder names its
 /// own key with [`KinesisPublishSteps::partition_key`]; this settles the key for every record
 /// published from the position, including the reply, which has no call site of its own.
+///
+/// A retry copy keeps the partition key of the record it copies: the copy carries the delivery's
+/// `partition-key` header, and that header wins over the key named here, so on
+/// `.out_retry(policy)` this setting leaves the copy's key unchanged.
 ///
 /// # Examples
 ///

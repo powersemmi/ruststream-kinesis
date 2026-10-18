@@ -167,6 +167,10 @@ impl KinesisBroker {
     }
 
     /// Uses an already built AWS config instead of resolving one from the environment.
+    ///
+    /// The config is used as it is: [`endpoint`](Self::endpoint), [`region`](Self::region) and
+    /// [`test_credentials`](Self::test_credentials) apply to a broker built with
+    /// [`new`](Self::new), so a service that builds its own config sets them on that config.
     pub fn from_config(config: SdkConfig) -> Self {
         Self {
             sdk_config: Some(config),
@@ -174,20 +178,23 @@ impl KinesisBroker {
         }
     }
 
-    /// Overrides the service endpoint (a local stack for development).
+    /// Overrides the service endpoint (a local stack for development). Applies to a broker built
+    /// with [`new`](Self::new); a [`from_config`](Self::from_config) broker uses its config's.
     pub fn endpoint(mut self, endpoint: impl Into<String>) -> Self {
         self.endpoint = Some(endpoint.into());
         self
     }
 
-    /// Overrides the region.
+    /// Overrides the region. Applies to a broker built with [`new`](Self::new); a
+    /// [`from_config`](Self::from_config) broker uses its config's.
     pub fn region(mut self, region: impl Into<String>) -> Self {
         self.region = Some(region.into());
         self
     }
 
     /// Uses dummy static credentials, for local stacks that require credentials to be
-    /// present but ignore their values.
+    /// present but ignore their values. Applies to a broker built with [`new`](Self::new); a
+    /// [`from_config`](Self::from_config) broker uses its config's credentials.
     pub fn test_credentials(mut self) -> Self {
         self.test_credentials = true;
         self
@@ -200,7 +207,12 @@ impl KinesisBroker {
         self
     }
 
-    /// Overrides this instance's lease-owner id (defaults to a process-unique value).
+    /// Names this instance in the lease store.
+    ///
+    /// Left out, each broker takes an id of its own, unique across processes and hosts. A store
+    /// grants an owner the leases it already holds, so an instance that restarts under the same
+    /// fixed id takes its shards back at once. A fixed id names one live instance: two instances
+    /// running at the same time must not share it, or both read the same shards.
     ///
     /// # Examples
     ///
@@ -321,6 +333,21 @@ impl Broker for KinesisBroker {
 /// before the harness connected ([`KinesisBroker::publisher`]) publishes into it, exactly as it
 /// publishes through the client once `connect` has run. Nothing here resolves credentials or
 /// dials an endpoint, so the transition cannot fail.
+///
+/// The transport keeps one retained log per stream, with one shard, so every record is ordered
+/// against every other. A record is written the way the publisher writes it for the service and
+/// read back by the same decoding, so a delivery carries the position, the headers and the
+/// context a record from a shard carries. It refuses what the service refuses: a stream name the
+/// service does not accept, an empty partition key or one longer than 256 characters, and a
+/// record over 10 MiB (data plus partition key), the most a stream can be configured to take. A
+/// stream takes 1 MiB unless its owner raised it. A handle used after `shutdown` reports
+/// [`KinesisError::NotConnected`].
+///
+/// A subscription opens at the tip, and `start_at(..)` and a handler's
+/// [`SeekHandle`](crate::SeekHandle) read the retained log again from the position they name. A
+/// record a handler leaves unhandled does not come back here: the service reads it again when
+/// the shard's lease is next taken, and leases, checkpoints, retention and resharding belong to
+/// the live mode, `TestApp::start_live`, over the same test body.
 ///
 /// # Examples
 ///
@@ -604,8 +631,8 @@ impl Subscribe for ConnectedKinesisBroker {
     ///
     /// A copy reaches the subscription from the tip, so a service that defers a record gets it
     /// back at the end of the stream rather than in place. Ordering against the records already
-    /// in the stream is not preserved, and the shard the copy lands on is the one its partition
-    /// key picks.
+    /// in the stream is not preserved; the copy keeps the record's partition key, so it lands on
+    /// that key's shard.
     type Copies = AddressedCopies;
 
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, Self::Error> {

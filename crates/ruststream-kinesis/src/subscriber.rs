@@ -180,6 +180,9 @@ impl Stamped {
 /// A read the service throttles is not a delivery failure: the reader waits one
 /// [`poll_interval`](crate::KinesisStream::poll_interval) and reads again from where it stopped.
 ///
+/// A reader that loses its shard iterator before a record is settled reads again from the first
+/// record it read, never from the tip: a failure costs a redelivery, never a skipped record.
+///
 /// Dropping the subscriber stops the coordinator and every reader; unsettled records
 /// redeliver from the last checkpoint when the leases are next taken.
 ///
@@ -374,8 +377,9 @@ fn read_limit(size: NonZeroUsize) -> i32 {
 /// [`Seekable::seeker`](ruststream::Seekable::seeker).
 ///
 /// A stream-wide position ([`KinesisPosition::Horizon`], [`Latest`](KinesisPosition::Latest),
-/// [`Timestamp`](KinesisPosition::Timestamp)) moves every shard of the subscription and is
-/// remembered, so shards whose readers start later open there too. A captured
+/// [`Timestamp`](KinesisPosition::Timestamp)) moves every shard this instance reads when the seek
+/// lands. It is remembered for shards whose readers start later: such a shard resumes from its
+/// checkpoint, and opens at the position only when it has none. A captured
 /// [`Sequence`](KinesisPosition::Sequence) position moves the one shard it names. Either way
 /// the affected shards drop their watermark bookkeeping: acknowledgements of records delivered
 /// before the seek no longer checkpoint.
