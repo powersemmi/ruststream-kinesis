@@ -115,7 +115,7 @@ pub(crate) type CoreCell = Arc<OnceCell<Link>>;
 ///
 /// #[subscriber(KinesisStream::new("orders"))]
 /// async fn handle(order: &Order) -> HandlerOutcome {
-///     println!("got order {}", order.id);
+///     tracing::info!(order.id, "accepted");
 ///     HandlerOutcome::ack()
 /// }
 ///
@@ -196,6 +196,51 @@ impl KinesisBroker {
     }
 
     /// Overrides this instance's lease-owner id (defaults to a process-unique value).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "dynamodb-lease")]
+    /// # mod demo {
+    /// use std::error::Error;
+    /// use std::sync::Arc;
+    ///
+    /// use aws_config::BehaviorVersion;
+    /// use ruststream_kinesis::prelude::*;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Order {
+    ///     id: u64,
+    /// }
+    ///
+    /// #[subscriber(KinesisStream::new("orders"))]
+    /// async fn handle(order: &Order) -> HandlerOutcome {
+    ///     tracing::info!(order.id, "accepted");
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// // The lease store needs the AWS config too, so the service resolves it and hands the broker
+    /// // the same one.
+    /// pub async fn run() -> Result<(), Box<dyn Error>> {
+    ///     let config = aws_config::defaults(BehaviorVersion::latest()).load().await;
+    ///     let leases = Arc::new(DynamoLeaseStore::new(&config, "orders-leases"));
+    ///     let broker = KinesisBroker::from_config(config)
+    ///         .lease_store(leases)
+    ///         // The name this instance holds its shards under in the lease table.
+    ///         .owner_id("instance-a");
+    ///
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+    ///         .with_broker(broker, |b| {
+    ///             b.include(handle);
+    ///         })
+    ///         .run()
+    ///         .await?;
+    ///     Ok(())
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
     pub fn owner_id(mut self, owner: impl Into<String>) -> Self {
         self.owner = Some(owner.into());
         self
@@ -271,6 +316,64 @@ impl Broker for KinesisBroker {
 /// before the harness connected ([`KinesisBroker::publisher`]) publishes into it, exactly as it
 /// publishes through the client once `connect` has run. Nothing here resolves credentials or
 /// dials an endpoint, so the transition cannot fail.
+///
+/// # Examples
+///
+/// A test runs the app `main` runs, and addresses the broker by its production type:
+///
+/// ```
+/// # mod demo {
+/// use std::error::Error;
+///
+/// use ruststream::testing::TestApp;
+/// use ruststream_kinesis::prelude::*;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]
+/// #[outgoing(name = "orders")]
+/// pub struct Order {
+///     pub id: u64,
+/// }
+///
+/// #[subscriber(KinesisStream::new("orders"))]
+/// async fn handle(order: &Order) -> HandlerOutcome {
+///     tracing::info!(order.id, "accepted");
+///     HandlerOutcome::ack()
+/// }
+///
+/// /// The app `main` runs.
+/// pub fn app() -> RustStream {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
+///         b.include(handle);
+///     })
+/// }
+///
+/// pub async fn accepts_an_order() -> Result<(), Box<dyn Error>> {
+///     let tb = TestApp::start(app()).await?;
+///
+///     // The publish returns once the handler it woke has settled.
+///     tb.broker::<KinesisBroker>()
+///         .message(&Order { id: 7 })
+///         .publish()
+///         .await?;
+///
+///     tb.broker::<KinesisBroker>()
+///         .subscriber("orders")
+///         .assert_called_once()
+///         .with(&Order { id: 7 })
+///         .settled(HandlerOutcome::ack());
+///
+///     tb.shutdown().await?;
+///     Ok(())
+/// }
+/// # }
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// #     tokio::runtime::Builder::new_multi_thread()
+/// #         .enable_all()
+/// #         .build()?
+/// #         .block_on(demo::accepts_an_order())
+/// # }
+/// ```
 #[cfg(feature = "testing")]
 impl InProcess for KinesisBroker {
     async fn connect_in_process(self) -> Result<Self::Connected, Self::Error> {
@@ -297,6 +400,54 @@ impl DescribeServer for KinesisBroker {
     /// service with it. Without an override the coordinate is the regional Kinesis endpoint; a
     /// broker that takes its region from the environment cannot name it before `connect`, so the
     /// document reports the service-wide host instead.
+    ///
+    /// # Examples
+    ///
+    /// With the `asyncapi` feature the document also carries what only this broker knows, under
+    /// `x-ruststream-kinesis`: the stream, the read pause and the provisioned shards on a channel,
+    /// and a policy's partition key on the message object:
+    ///
+    /// ```
+    /// # #[cfg(feature = "asyncapi")]
+    /// # mod demo {
+    /// use ruststream::asyncapi::{Spec, build_spec};
+    /// use ruststream_kinesis::prelude::*;
+    /// use schemars::JsonSchema;
+    /// use serde::{Deserialize, Serialize};
+    ///
+    /// #[derive(Deserialize, JsonSchema)]
+    /// struct Order {
+    ///     id: u64,
+    /// }
+    ///
+    /// #[derive(Serialize, Outgoing, JsonSchema)]
+    /// #[outgoing(name = "receipts")]
+    /// struct Receipt {
+    ///     order: u64,
+    /// }
+    ///
+    /// #[subscriber(KinesisStream::new("orders").create_if_missing(2), reply)]
+    /// async fn confirm(order: &Order) -> Receipt {
+    ///     Receipt { order: order.id }
+    /// }
+    ///
+    /// pub fn document() -> Spec {
+    ///     let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(
+    ///         KinesisBroker::new().region("eu-west-1"),
+    ///         |b| {
+    ///             b.include(confirm)
+    ///                 .out_reply(Publish::default())
+    ///                 .partition_key("tenant-acme");
+    ///         },
+    ///     );
+    ///     build_spec(&app)
+    /// }
+    /// # }
+    /// # fn main() {
+    /// #     #[cfg(feature = "asyncapi")]
+    /// #     let _ = demo::document();
+    /// # }
+    /// ```
     fn describe_server(&self) -> ServerSpec {
         let host = self.endpoint.as_deref().map_or_else(
             || {

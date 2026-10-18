@@ -55,7 +55,7 @@ use crate::subscriber::KinesisSubscriber;
 ///         _outs: &(),
 ///         _ctx: &mut Context<'_>,
 ///     ) -> Result<(), HandlerOutcome> {
-///         println!("order {}", order.id);
+///         tracing::info!(order.id, "audited");
 ///         Ok(())
 ///     }
 /// }
@@ -165,7 +165,7 @@ impl KinesisStream {
 ///     batch
 ///         .iter()
 ///         .map(|job| {
-///             println!("job {}", job.id);
+///             tracing::info!(job.id, "done");
 ///             HandlerOutcome::ack()
 ///         })
 ///         .collect()
@@ -297,6 +297,44 @@ impl RedeliveryAddressed<ConnectedKinesisBroker> for KinesisStream {
     /// The copy arrives at the tip rather than in the place the original held, and its partition
     /// key picks the shard it lands on, so a deferred record loses its position in the stream's
     /// order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # mod demo {
+    /// use std::time::Duration;
+    ///
+    /// use ruststream_kinesis::prelude::*;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Order {
+    ///     id: u64,
+    /// }
+    ///
+    /// /// Asks for a pause when the order cannot be settled yet, and counts nothing: how many pauses
+    /// /// it gets is the mount site's to say.
+    /// #[subscriber(KinesisStream::new("orders"))]
+    /// async fn reconcile(order: &Order) -> HandlerOutcome {
+    ///     if order.id.is_multiple_of(2) {
+    ///         HandlerOutcome::ack()
+    ///     } else {
+    ///         HandlerOutcome::retry_after(Duration::from_secs(30))
+    ///     }
+    /// }
+    ///
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
+    ///         // Four deliveries per order, then the record leaves for a stream an operator reads.
+    ///         b.include(reconcile)
+    ///             .max_attempts(nonzero!(4))
+    ///             .dead_letter("orders.unsettled");
+    ///     })
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
     fn redelivery_address(
         &self,
         _connected: &ConnectedKinesisBroker,

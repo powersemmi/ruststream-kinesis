@@ -37,7 +37,7 @@ use crate::subscriber::KinesisSeeker;
 /// /// Logs where each job sits, and follows the tip from the marker job on.
 /// #[subscriber(KinesisStream::new("jobs"))]
 /// async fn follow(job: &Job, ctx: &mut Context<'_, KinesisContext>) -> HandlerOutcome {
-///     println!("job {} sits at {:?}", job.id, ctx.context(Position));
+///     tracing::info!(job.id, position = ?ctx.context(Position), "job read");
 ///     if job.id == u64::MAX
 ///         && ctx
 ///             .context(SeekHandle)
@@ -149,7 +149,7 @@ impl BuildBatchContext<KinesisMessage> for KinesisBatchContext {
 ///
 /// #[subscriber(KinesisStream::new("jobs"))]
 /// async fn audit(job: &Job, Ctx(at): Ctx<Position>) -> HandlerOutcome {
-///     println!("job {} sits at {at:?}", job.id);
+///     tracing::info!(job.id, position = ?at, "job read");
 ///     HandlerOutcome::ack()
 /// }
 /// ```

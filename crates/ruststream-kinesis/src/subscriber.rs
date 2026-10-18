@@ -178,6 +178,46 @@ impl Stamped {
 ///
 /// Dropping the subscriber stops the coordinator and every reader; unsettled records
 /// redeliver from the last checkpoint when the leases are next taken.
+///
+/// # Examples
+///
+/// A handler that takes a slice consumes batches, and `batch(n)` at the mount site names the
+/// size every read asks for:
+///
+/// ```
+/// # mod demo {
+/// use std::time::Duration;
+///
+/// use ruststream_kinesis::prelude::*;
+/// use serde::Deserialize;
+///
+/// #[derive(Deserialize)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[subscriber(KinesisStream::new("orders"))]
+/// async fn digest(batch: &[Order]) -> HandlerOutcome {
+///     for order in batch {
+///         tracing::info!(order.id, "digested");
+///     }
+///     HandlerOutcome::ack()
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
+///         // The framework's word first, this crate's read settings after it.
+///         b.include(
+///             digest
+///                 .batch(nonzero!(500))
+///                 .poll_interval(Duration::from_millis(500)),
+///         );
+///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
 pub struct KinesisSubscriber {
     stream: String,
     /// The live `GetRecords` limit, shared with every reader. This is how the mount site's batch
@@ -341,6 +381,39 @@ fn read_limit(size: NonZeroUsize) -> i32 {
 /// On a broker the test harness connected in process, the same handle re-reads that transport's
 /// retained log instead, so a handler that repositions its subscription is the same code in a
 /// test and against the service.
+///
+/// # Examples
+///
+/// ```
+/// # mod demo {
+/// use ruststream_kinesis::prelude::*;
+/// use serde::Deserialize;
+///
+/// #[derive(Deserialize)]
+/// struct Job {
+///     id: u64,
+/// }
+///
+/// /// Replays the retained backlog; on the marker record it abandons the rest of it and follows
+/// /// the tip instead.
+/// #[subscriber(KinesisStream::new("jobs"), start_at(KinesisPosition::horizon()))]
+/// async fn replay(job: &Job, Ctx(seeker): Ctx<SeekHandle>) -> HandlerOutcome {
+///     if job.id == 999 && seeker.seek(KinesisPosition::latest()).await.is_err() {
+///         return HandlerOutcome::retry();
+///     }
+///     tracing::info!(job.id, "replayed");
+///     HandlerOutcome::ack()
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
+///         b.include(replay);
+///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
 #[derive(Clone)]
 pub struct KinesisSeeker {
     target: SeekTarget,

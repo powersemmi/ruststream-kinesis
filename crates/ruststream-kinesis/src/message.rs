@@ -176,7 +176,7 @@ fn decode_text(block: &[u8]) -> HeaderMap {
 /// /// Rebuilds a read model from every record the stream still retains, on every shard.
 /// #[subscriber(KinesisStream::new("orders"), start_at(KinesisPosition::horizon()))]
 /// async fn backfill(order: &Order) -> HandlerOutcome {
-///     println!("order {}", order.id);
+///     tracing::info!(order.id, "backfilled");
 ///     HandlerOutcome::ack()
 /// }
 ///
