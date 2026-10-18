@@ -275,3 +275,15 @@ name = "manual_guide_ordering"
 path = "examples/manual/guide/ordering.rs"
 required-features = ["testing"]
 test = true
+
+[[example]]
+name = "guide_checkpoints"
+path = "examples/guide/checkpoints.rs"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "manual_guide_checkpoints"
+path = "examples/manual/guide/checkpoints.rs"
+required-features = ["testing"]
+test = true
