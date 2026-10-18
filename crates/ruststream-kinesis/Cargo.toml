@@ -60,3 +60,40 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "ti
 [[example]]
 name = "kinesis_leases"
 required-features = ["dynamodb-lease"]
+
+# --- examples: broker, positions, context, publishing, asyncapi, testing ---
+
+[[example]]
+name = "kinesis_service"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_broker_credentials"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_broker_endpoint"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_broker_startup"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_broker_shutdown"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_broker_prelude"
+required-features = ["testing"]
+test = true
+
+[[example]]
+name = "kinesis_broker_errors"
+required-features = ["testing"]
+test = true
