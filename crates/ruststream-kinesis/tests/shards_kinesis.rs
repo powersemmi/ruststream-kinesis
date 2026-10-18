@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use aws_config::{BehaviorVersion, Region};
 use aws_sdk_kinesis::client::Waiters;
+use aws_sdk_kinesis::primitives::Blob;
 use aws_sdk_kinesis::types::Shard;
 use futures::StreamExt;
 
@@ -39,6 +40,9 @@ const RECORDS: usize = 4;
 /// How long the contended stream is watched after the last record, for a copy that should not
 /// exist.
 const QUIET: Duration = Duration::from_secs(2);
+/// How long the lease of an instance that died stays live before another may take it. Short, so
+/// the takeover lands on the coordinator's next pass rather than one after it.
+const DEAD_LEASE: Duration = Duration::from_secs(2);
 
 /// The stack's endpoint, or `None` to skip the live checks below. Under `RUSTSTREAM_REQUIRE_LIVE`
 /// a missing endpoint is a failure instead, so a job that started a stack cannot report `ok`
@@ -568,6 +572,157 @@ async fn a_merge_gates_the_child_on_both_of_its_parents() {
             "both parents must be finished before the child starts",
         );
     }
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// A shard taken over mid-run resumes from its checkpoint. The subscription opens at the tip, but
+/// the position it opens at belongs to the shards it starts with: one whose lease another instance
+/// held, and which this one takes over once that lease lapses, continues right after the last
+/// record the other instance checkpointed. Opening it at the tip would skip what the other
+/// instance left unread.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_shard_taken_over_mid_run_resumes_from_its_checkpoint() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    let client = observer(&endpoint).await;
+    let stream_name = unique("takeover");
+    client
+        .create_stream()
+        .stream_name(&stream_name)
+        .shard_count(1)
+        .send()
+        .await
+        .expect("the stack creates the stream");
+    client
+        .wait_until_stream_exists()
+        .stream_name(&stream_name)
+        .wait(Duration::from_mins(1))
+        .await
+        .expect("the stream becomes usable");
+    let mut written = Vec::new();
+    for payload in ["handled", "left-unread"] {
+        let output = client
+            .put_record()
+            .stream_name(&stream_name)
+            .partition_key("key")
+            .data(Blob::new(payload.as_bytes()))
+            .send()
+            .await
+            .expect("the stack stores the record");
+        written.push((
+            output.shard_id().to_owned(),
+            output.sequence_number().to_owned(),
+        ));
+    }
+    let (shard, handled) = written[0].clone();
+
+    // The instance that held the shard checkpointed the first record and then died: its lease
+    // lapses on its own.
+    let leases = Arc::new(MemoryLeaseStore::new());
+    let key = LeaseKey::new(stream_name.as_str(), shard.as_str());
+    assert!(
+        leases
+            .acquire(&key, "dead-instance", DEAD_LEASE)
+            .await
+            .expect("acquire"),
+        "the other instance takes the free shard",
+    );
+    assert!(
+        leases
+            .checkpoint(&key, "dead-instance", &handled)
+            .await
+            .expect("checkpoint"),
+        "the other instance records its progress",
+    );
+
+    let connected = connect_with(&endpoint, &leases).await;
+    let mut subscriber = StartAt::new(source(&stream_name), KinesisPosition::latest())
+        .subscribe(&connected)
+        .await
+        .expect("subscription opens");
+    let mut stream = pin!(subscriber.stream());
+    let resumed = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+        .await
+        .expect("the shard is taken over and delivers")
+        .expect("stream is open")
+        .expect("delivery is ok");
+    assert_eq!(
+        resumed.payload(),
+        b"left-unread",
+        "the shard continues right after the other instance's checkpoint",
+    );
+    resumed.ack().await.expect("ack succeeds");
+
+    connected.shutdown().await.expect("shutdown succeeds");
+}
+
+/// A child shard that starts mid-run reads from its own beginning. The subscription opens at the
+/// tip, reads its one shard, and the shard is split under it: the records that land on the
+/// children before their readers start are part of the stream the subscription follows, so they
+/// are delivered, not skipped as history.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_child_shard_started_mid_run_reads_what_landed_before_its_reader() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    let client = observer(&endpoint).await;
+    let leases = Arc::new(MemoryLeaseStore::new());
+    let connected = connect_with(&endpoint, &leases).await;
+    let stream_name = unique("child-tip");
+
+    let mut subscriber = StartAt::new(
+        source(&stream_name).create_if_missing(1),
+        KinesisPosition::latest(),
+    )
+    .subscribe(&connected)
+    .await
+    .expect("subscription opens");
+    let publisher = connected.publisher();
+    publisher
+        .publish(
+            OutgoingMessage::new(&stream_name, b"before-the-split".as_slice()),
+            None,
+        )
+        .await
+        .expect("publish succeeds");
+
+    let mut stream = pin!(subscriber.stream());
+    let before = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+        .await
+        .expect("delivery arrives")
+        .expect("stream is open")
+        .expect("delivery is ok");
+    let parent = before
+        .headers()
+        .get_str(SHARD_HEADER)
+        .expect("every delivery names its shard")
+        .to_owned();
+    before.ack().await.expect("ack succeeds");
+
+    split_in_half(&client, &stream_name, &parent).await;
+    // Published at once: the children's readers start only on a later pass of the coordinator,
+    // once the parent is checkpointed as finished.
+    for (index, key) in ["spread-0", "spread-1"].into_iter().enumerate() {
+        publish_keyed(&publisher, &stream_name, key, &format!("after-{index}")).await;
+    }
+
+    let mut seen: HashSet<String> = HashSet::new();
+    for _ in 0..2 {
+        let message = tokio::time::timeout(RECV_TIMEOUT, stream.next())
+            .await
+            .expect("the children deliver what landed before their readers started")
+            .expect("stream is open")
+            .expect("delivery is ok");
+        seen.insert(String::from_utf8(message.payload().to_vec()).expect("the payload is text"));
+        message.ack().await.expect("ack succeeds");
+    }
+    assert_eq!(
+        seen,
+        HashSet::from(["after-0".to_owned(), "after-1".to_owned()]),
+        "both children must deliver what landed on them",
+    );
 
     connected.shutdown().await.expect("shutdown succeeds");
 }

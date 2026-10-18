@@ -357,7 +357,9 @@ reads again from where it stopped, so a handler sees a pause rather than an erro
 [`KinesisPosition`] is the whole vocabulary for where a subscription reads from. By default each
 shard resumes from its stored checkpoint, and a shard without one opens at the tip. Opening a
 subscription returns once every shard it took has its reader and its starting cursor, so the tip
-is the moment the subscription opened: a record published after that is read.
+is the moment the subscription opened: a record published after that is read. A child of a split
+or a merge whose parent was read to its end opens at its own beginning instead, so what landed on
+it before its reader started is read too.
 
 | Position | Scope | Meaning |
 | --- | --- | --- |
@@ -370,14 +372,17 @@ The instant a timestamp names is matched against the arrival timestamp the servi
 each record, and the service calls that stamp approximate: records that arrived around the same
 moment are not separated exactly.
 
-A stream-wide position reaches shards discovered later too, the children of a split among them, so
-a seek keeps its meaning when the stream reshards. The shard-scoped form is the pinned position the
+A stream-wide position moves every shard this instance reads when the seek lands. A shard whose
+reader starts later resumes from its checkpoint and opens at the position only when it has none; a
+child continuing a parent that was read to its end opens at its own beginning, or at the instant a
+timestamp names. The shard-scoped form is the pinned position the
 framework captures from a delivered record (`Positioned::position`): seeking to it redelivers that
 record and moves no other shard. It needs a live reader for that shard in this instance, and errors
 for a shard this instance does not own or has already finished.
 
-`start_at(..)` opens the subscription at a position you name, ahead of any stored checkpoint. A
-running subscription repositions from a handler: this broker fills the delivery context with the
+`start_at(..)` opens the subscription at a position you name, ahead of any stored checkpoint, for
+the shards it opens with. A shard this instance takes on later (a lease another instance released
+or let lapse, a child of a split) resumes from its checkpoint. A running subscription repositions from a handler: this broker fills the delivery context with the
 record's position and the subscription's seeker, and [`Ctx<SeekHandle>`](SeekHandle) binds that
 seeker as a handler parameter.
 

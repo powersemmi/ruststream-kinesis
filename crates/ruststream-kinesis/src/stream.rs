@@ -23,8 +23,8 @@ use crate::subscriber::KinesisSubscriber;
 
 /// A subscription descriptor for one Kinesis stream.
 ///
-/// Every shard resumes from its stored checkpoint, and a shard without one starts at the tip.
-/// To open somewhere else, wrap the descriptor in the framework's `start_at(..)` clause with a
+/// Every shard resumes from its stored checkpoint, and a shard without one starts at the tip
+/// (a child whose parent was read to its end starts at its own beginning). To open somewhere else, wrap the descriptor in the framework's `start_at(..)` clause with a
 /// [`KinesisPosition`](crate::KinesisPosition).
 ///
 /// Implements [`SubscriptionSource`], so it can sit inline in the `#[subscriber(..)]`
