@@ -40,9 +40,9 @@ fn service(broker: KinesisBroker, checkpoints: Arc<Checkpoints>) -> RustStream {
 // --8<-- [end:mount]
 
 // --8<-- [start:key]
-/// Checkpoints in a string-keyed map, for a single instance that owns every shard.
+/// Each shard's progress in a string-keyed map, for a single instance that owns every shard.
 #[derive(Debug, Default)]
-struct Checkpoints(Mutex<HashMap<String, String>>);
+struct Checkpoints(Mutex<HashMap<String, LeaseState>>);
 
 impl LeaseStore for Checkpoints {
     fn checkpoint<'a>(
@@ -55,22 +55,39 @@ impl LeaseStore for Checkpoints {
             self.0
                 .lock()
                 .map_err(|err| err.to_string())?
-                .insert(key.to_string(), sequence.to_owned());
+                .entry(key.to_string())
+                .or_default()
+                .checkpoint = Some(sequence.to_owned());
+            Ok(true)
+        })
+    }
+
+    fn record_opened_at<'a>(
+        &'a self,
+        key: &'a LeaseKey,
+        _owner: &'a str,
+        sequence: &'a str,
+    ) -> BoxFuture<'a, Result<bool, LeaseError>> {
+        Box::pin(async move {
+            self.0
+                .lock()
+                .map_err(|err| err.to_string())?
+                .entry(key.to_string())
+                .or_default()
+                .opened_at = Some(sequence.to_owned());
             Ok(true)
         })
     }
 
     fn read<'a>(&'a self, key: &'a LeaseKey) -> BoxFuture<'a, Result<LeaseState, LeaseError>> {
         Box::pin(async move {
-            let checkpoint = self
+            let state = self
                 .0
                 .lock()
                 .map_err(|err| err.to_string())?
                 .get(&key.to_string())
                 .cloned();
-            let mut state = LeaseState::default();
-            state.checkpoint = checkpoint;
-            Ok(state)
+            Ok(state.unwrap_or_default())
         })
     }
 

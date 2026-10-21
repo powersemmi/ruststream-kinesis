@@ -13,7 +13,7 @@ import TabItem from '@theme/TabItem';
 
 It is a clause of the attribute, `start_at(KinesisPosition::horizon())`, or [`.start_at(position)`](api:ruststream::runtime::SubscriberSettings::start_at) among the mount-site settings.
 The position lands on the shards the subscription opens with, ahead of their first read, whatever their [checkpoints](../settlement/index.md) say.
-A reader that starts later in the run, after a failure or a takeover, resumes from its shard's checkpoint.
+A reader that starts later in the run, after a failure or a takeover, resumes from its shard's checkpoint, or, without one, at the first record the shard's last reading read.
 A child shard of a split or a merge with no checkpoint of its own opens at its oldest record, so no record of a resharded key is skipped.
 A sequence position on a shard this instance does not read is refused, and the service stops at startup.
 It suits a read model rebuilt from the retained stream on each boot.

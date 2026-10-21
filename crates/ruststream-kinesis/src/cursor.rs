@@ -41,6 +41,17 @@ pub(crate) enum Lineage {
     Continues,
 }
 
+/// Where a shard's current reading started, as far as its reader knows, and whether the lease row
+/// still has to learn it. One per reader, so it costs nothing per record beyond the flag's check.
+#[derive(Debug, Default)]
+pub(crate) struct Reading {
+    /// The cursor that reads the shard again from where this reader started (see [`rewind_to`]).
+    pub(crate) rewind: Option<ShardStart>,
+    /// Whether the first record this reading reads is still to be recorded in the lease row, for
+    /// the shard's next owner (see [`reopen_at`]).
+    pub(crate) unrecorded: bool,
+}
+
 /// Points a `GetShardIterator` request at a cursor.
 pub(crate) fn iterator_at(
     request: GetShardIteratorFluentBuilder,
@@ -69,25 +80,28 @@ pub(crate) fn iterator_at(
 
 /// The cursor a shard's reader opens at: when it starts, and when it lost its iterator.
 ///
-/// The stored checkpoint wins: what was settled is not read again. Without one, a reader that
-/// already read the shard goes back to where it started reading (`rewind`), so a failure loses
-/// none of what it read and had not settled. Only a reader that never read the shard falls to its
-/// lineage: a child of a consumed parent opens at its own beginning, any other shard at the
-/// subscription's position or the tip.
+/// The stored checkpoint wins: what was settled is not read again. Without one, the shard opens at
+/// the first record its latest reading read (`opened_at`, kept in the lease row), so a takeover by
+/// another instance loses none of what the previous owner read and had not settled. A reading
+/// that has not recorded one yet goes back to where this reader started reading (`rewind`). Only a
+/// shard nobody read falls to its lineage: a child of a consumed parent opens at its own
+/// beginning, any other shard at the subscription's position or the tip.
 pub(crate) fn reopen_at(
     checkpoint: Option<String>,
+    opened_at: Option<String>,
     rewind: Option<&ShardStart>,
     lineage: Lineage,
     installed: Option<StreamStart>,
 ) -> ShardStart {
-    match (checkpoint, rewind, lineage, installed) {
+    match (checkpoint, opened_at, rewind, lineage, installed) {
         (Some(sequence), ..) => ShardStart::After(sequence),
-        (None, Some(rewind), ..) => rewind.clone(),
-        (None, None, Lineage::Continues, Some(StreamStart::Timestamp(millis))) => {
+        (None, Some(sequence), ..) => ShardStart::At(sequence),
+        (None, None, Some(rewind), ..) => rewind.clone(),
+        (None, None, None, Lineage::Continues, Some(StreamStart::Timestamp(millis))) => {
             ShardStart::Stream(StreamStart::Timestamp(millis))
         }
-        (None, None, Lineage::Continues, _) => ShardStart::Stream(StreamStart::Horizon),
-        (None, None, Lineage::Opens, installed) => {
+        (None, None, None, Lineage::Continues, _) => ShardStart::Stream(StreamStart::Horizon),
+        (None, None, None, Lineage::Opens, installed) => {
             ShardStart::Stream(installed.unwrap_or(StreamStart::Latest))
         }
     }
@@ -115,9 +129,13 @@ mod tests {
     fn a_reader_without_a_checkpoint_reopens_at_the_first_record_it_read() {
         let first =
             ShardStart::At("49590338271490256608559692538361571095921575989136588898".into());
-        assert_eq!(reopen_at(None, Some(&first), Lineage::Opens, None), first);
+        assert_eq!(
+            reopen_at(None, None, Some(&first), Lineage::Opens, None),
+            first
+        );
         assert_eq!(
             reopen_at(
+                None,
                 None,
                 Some(&first),
                 Lineage::Opens,
@@ -132,8 +150,45 @@ mod tests {
     fn the_checkpoint_wins_over_where_the_reader_started() {
         let first = ShardStart::At("1".into());
         assert_eq!(
-            reopen_at(Some("7".into()), Some(&first), Lineage::Opens, None),
+            reopen_at(
+                Some("7".into()),
+                Some("3".into()),
+                Some(&first),
+                Lineage::Opens,
+                None
+            ),
             ShardStart::After("7".into())
+        );
+    }
+
+    /// Another instance read the shard and stopped before it checkpointed. The lease row says
+    /// where that reading opened, and the new owner opens there: neither the tip of a `latest`
+    /// subscription, which would skip what the previous owner read, nor the horizon, which would
+    /// replay the whole shard.
+    #[test]
+    fn a_takeover_without_a_checkpoint_opens_where_the_previous_reading_opened() {
+        for installed in [None, Some(StreamStart::Latest), Some(StreamStart::Horizon)] {
+            assert_eq!(
+                reopen_at(None, Some("17".into()), None, Lineage::Opens, installed),
+                ShardStart::At("17".into())
+            );
+        }
+        assert_eq!(
+            reopen_at(None, Some("17".into()), None, Lineage::Continues, None),
+            ShardStart::At("17".into())
+        );
+    }
+
+    /// A row written before the opening was recorded reads as none: the shard opens as it did.
+    #[test]
+    fn a_row_without_an_opening_opens_at_the_subscription_position() {
+        assert_eq!(
+            reopen_at(None, None, None, Lineage::Opens, None),
+            ShardStart::Stream(StreamStart::Latest)
+        );
+        assert_eq!(
+            reopen_at(None, None, None, Lineage::Opens, Some(StreamStart::Horizon)),
+            ShardStart::Stream(StreamStart::Horizon)
         );
     }
 

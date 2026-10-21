@@ -28,7 +28,7 @@ use tokio::task::JoinHandle;
 
 use crate::broker::Core;
 use crate::claim::StreamClaim;
-use crate::cursor::{Lineage, ShardStart, StreamStart, iterator_at, reopen_at, rewind_to};
+use crate::cursor::{Lineage, Reading, ShardStart, StreamStart, iterator_at, reopen_at, rewind_to};
 use crate::error::{KinesisError, sdk_err};
 #[cfg(feature = "testing")]
 use crate::in_process::{LogDeliveries, LogSeeker};
@@ -77,8 +77,9 @@ pub(crate) struct SeekState {
     /// The readers that can be repositioned right now, by shard id.
     shards: Mutex<HashMap<String, ShardHandle>>,
     /// The stream-wide position a seek installed, if any. A seek moves the readers that are live
-    /// when it lands; a reader that starts later opens here only when its shard has no
-    /// checkpoint, so a shard taken over mid-run resumes where its previous owner stopped.
+    /// when it lands; a reader that starts later opens here only when its shard has neither a
+    /// checkpoint nor a recorded opening, so a shard taken over mid-run resumes where its previous
+    /// owner stopped.
     start: Mutex<Option<StreamStart>>,
 }
 
@@ -876,27 +877,33 @@ fn lease_error(key: &LeaseKey, source: LeaseError) -> KinesisError {
 /// the seek lands, `start_at(..)` included, since a subscription opens only once every reader of
 /// its first pass has its cursor; a reader that starts later, on a shard taken over from another
 /// instance or after a reader gave up, continues where the shard's last owner stopped instead of
-/// replaying the shard or skipping what was left unread. Without a checkpoint, `rewind` is where
-/// this instance started reading the shard (see [`reopen_at`]); it is updated to the cursor the
-/// new iterator opens at.
+/// replaying the shard or skipping what was left unread. Without a checkpoint, the shard opens
+/// where its latest reading opened, as the lease row records it, or else where this instance
+/// started reading it (see [`reopen_at`]). `reading` is updated to the cursor the new iterator
+/// opens at, and says whether that reading is still to be recorded in the lease row.
 async fn initial_iterator(
     client: &aws_sdk_kinesis::Client,
     key: &LeaseKey,
     bus: &SeekState,
     store: &dyn LeaseStore,
     lineage: Lineage,
-    rewind: &mut Option<ShardStart>,
+    reading: &mut Reading,
 ) -> Result<Option<String>, KinesisError> {
     let (stream, shard) = (key.stream(), key.shard());
-    let checkpoint = store
-        .read(key)
-        .await
-        .map_err(|e| lease_error(key, e))?
-        .checkpoint;
-    if checkpoint.as_deref() == Some(SHARD_END) {
+    let state = store.read(key).await.map_err(|e| lease_error(key, e))?;
+    if state.checkpoint.as_deref() == Some(SHARD_END) {
         return Ok(None);
     }
-    let start = reopen_at(checkpoint, rewind.as_ref(), lineage, bus.installed());
+    // A shard with a checkpoint resumes from it whatever the row says of the opening, and one
+    // that reopens at the recorded opening has it recorded already.
+    let recorded = state.checkpoint.is_some() || state.opened_at.is_some();
+    let start = reopen_at(
+        state.checkpoint,
+        state.opened_at,
+        reading.rewind.as_ref(),
+        lineage,
+        bus.installed(),
+    );
     let request = iterator_at(
         client
             .get_shard_iterator()
@@ -909,7 +916,8 @@ async fn initial_iterator(
         shard: shard.to_owned(),
         source: sdk_err(&e),
     })?;
-    *rewind = rewind_to(&start);
+    reading.rewind = rewind_to(&start);
+    reading.unrecorded = !recorded;
     Ok(output.shard_iterator().map(str::to_owned))
 }
 
@@ -921,7 +929,7 @@ async fn apply_shard_seek(
     seek: ShardSeek,
     iterator: &mut String,
     tracker: &mut Arc<Watermark>,
-    rewind: &mut Option<ShardStart>,
+    reading: &mut Reading,
 ) {
     let fresh = iterator_at(
         client
@@ -944,7 +952,12 @@ async fn apply_shard_seek(
             |new_iterator| {
                 new_iterator.clone_into(iterator);
                 *tracker = Arc::new(Watermark::default());
-                *rewind = rewind_to(&seek.start);
+                // A sought position is a reading of its own: its first record becomes the place
+                // the shard's next owner opens at.
+                *reading = Reading {
+                    rewind: rewind_to(&seek.start),
+                    unrecorded: true,
+                };
                 Ok(())
             },
         ),
@@ -964,7 +977,7 @@ async fn read_shard(
     gate: Arc<AtomicU64>,
     mut seek_rx: mpsc::UnboundedReceiver<ShardSeek>,
     lineage: Lineage,
-    mut rewind: Option<ShardStart>,
+    rewind: Option<ShardStart>,
     started: Option<oneshot::Sender<()>>,
 ) -> Option<ShardStart> {
     // Every exit path must deregister this shard's seek surface.
@@ -997,7 +1010,12 @@ async fn read_shard(
     let seeker = KinesisSeeker::shards(Arc::clone(bus));
     let stream = descriptor.stream();
     let mut tracker = Arc::new(Watermark::default());
-    let initial = initial_iterator(client, &lease, bus, store.as_ref(), lineage, &mut rewind).await;
+    let mut reading = Reading {
+        rewind,
+        unrecorded: false,
+    };
+    let initial =
+        initial_iterator(client, &lease, bus, store.as_ref(), lineage, &mut reading).await;
     // The cursor is fixed, so the tip this shard opens at is the one `subscribe` promised.
     drop(started);
     let mut iterator = match initial {
@@ -1005,7 +1023,7 @@ async fn read_shard(
         Ok(None) => return None, // already at SHARD_END
         Err(err) => {
             let _ = out.send(Stamped::unstamped(Err(err))).await;
-            return rewind;
+            return reading.rewind;
         }
     };
     let mut last_renew = tokio::time::Instant::now();
@@ -1027,7 +1045,7 @@ async fn read_shard(
                 seek,
                 &mut iterator,
                 &mut tracker,
-                &mut rewind,
+                &mut reading,
             )
             .await;
         }
@@ -1036,7 +1054,7 @@ async fn read_shard(
                 Ok(true) => last_renew = tokio::time::Instant::now(),
                 // Fenced: stop immediately, without checkpointing - the new owner replays
                 // from the last checkpoint, which at-least-once permits.
-                Ok(false) | Err(_) => return rewind,
+                Ok(false) | Err(_) => return reading.rewind,
             }
         }
 
@@ -1053,9 +1071,22 @@ async fn read_shard(
             Ok(output) => {
                 failures = 0;
                 for record in output.records() {
-                    if rewind.is_none() {
+                    if reading.rewind.is_none() {
                         // Opened at the tip: the first record read is where it started.
-                        rewind = Some(ShardStart::At(record.sequence_number().to_owned()));
+                        reading.rewind = Some(ShardStart::At(record.sequence_number().to_owned()));
+                    }
+                    if reading.unrecorded {
+                        // Recorded before the record is handed out: an owner that takes the shard
+                        // over after this point opens at this record, not at its own start.
+                        match store
+                            .record_opened_at(&lease, owner, record.sequence_number())
+                            .await
+                        {
+                            Ok(true) => reading.unrecorded = false,
+                            // Fenced, or the store cannot say: stop as a failed renew does, and
+                            // hand the shard's next reader the place this one started.
+                            Ok(false) | Err(_) => return reading.rewind,
+                        }
                     }
                     let data = record.data().as_ref();
                     if data.len() > 4 && data[0..4] == KPL_MAGIC {
@@ -1127,7 +1158,7 @@ async fn read_shard(
                                     seek,
                                     &mut iterator,
                                     &mut tracker,
-                                    &mut rewind,
+                                    &mut reading,
                                 )
                                 .await;
                             }
@@ -1177,7 +1208,7 @@ async fn read_shard(
                     let _ = store.release(&lease, owner).await;
                     // The coordinator hands this to the shard's next reader, which would
                     // otherwise open at the tip and skip what this one read and left unsettled.
-                    return rewind;
+                    return reading.rewind;
                 }
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 // A failed read leaves the iterator good, so the reader retries it. An expired
@@ -1190,7 +1221,7 @@ async fn read_shard(
                         bus,
                         store.as_ref(),
                         lineage,
-                        &mut rewind,
+                        &mut reading,
                     )
                     .await
                     {

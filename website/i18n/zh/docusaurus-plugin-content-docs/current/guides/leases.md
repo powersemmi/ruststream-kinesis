@@ -64,7 +64,7 @@ aws dynamodb create-table --table-name warehouse-leases \
 
 ## 移交后重新读取什么 {/* #what-a-handover-reads-again */}
 
-接管分片的实例从上一个持有者写入的检查点之后继续。上一个持有者在最后一个检查点之后处理过的记录会再投递一次，它[扣住](checkpoints.md)的记录及其后的一切也是如此。重启后的实例以同样的方式继续，因为检查点保存在表中。
+接管分片的实例从上一个持有者写入的检查点之后继续。上一个持有者在最后一个检查点之后处理过的记录会再投递一次，它[扣住](checkpoints.md)的记录及其后的一切也是如此。上一个持有者读过却从未写入检查点的分片，从该持有者读到的第一条记录继续，这条记录保存在行的 `opened_at` 列中。所以移交会重新投递上一个持有者读过但尚未确认的记录，不会跳过任何记录，无论 `start_at` 指定了什么位置。重启后的实例以同样的方式继续，因为检查点保存在表中。
 
 ## 为每个实例命名 {/* #naming-each-instance */}
 
@@ -72,7 +72,7 @@ aws dynamodb create-table --table-name warehouse-leases \
 
 ## 升级表与其他存储 {/* #upgrading-a-table-and-other-stores */}
 
-本 crate 早期版本写入的表只按分片 id 作为行的键。[`legacy_stream`](../components/leases/legacy-stream.md) 指定这些行所属的流，于是升级后的服务从它们继续。基于其他数据库的存储实现 [`LeaseStore`](api:ruststream_kinesis::LeaseStore)：五个调用，分别获取、续约、记录检查点、读取和释放租约。
+本 crate 早期版本写入的表只按分片 id 作为行的键。[`legacy_stream`](../components/leases/legacy-stream.md) 指定这些行所属的流，于是升级后的服务从它们继续。基于其他数据库的存储实现 [`LeaseStore`](api:ruststream_kinesis::LeaseStore)：六个调用，分别获取、续约、记录检查点、记录读取的起点、读取和释放租约。
 
 ## 测试 {/* #testing */}
 

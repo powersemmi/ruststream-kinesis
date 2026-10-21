@@ -28,19 +28,22 @@ owner, its expiry and its checkpoint.
 Kinesis keeps no record of who reads a shard or how far. The Kinesis Client Library keeps it in a
 DynamoDB table, one row per shard, and its workers take the rows that nobody renews. This crate
 does the same through a [`LeaseStore`](api:ruststream_kinesis::LeaseStore). A store takes a shard
-for an owner, renews it, records a checkpoint, reads a row and releases it. Every row is keyed by
+for an owner, renews it, records a checkpoint and where a reading opened, reads a row and releases
+it. Every row is keyed by
 the stream and the shard together, because shard ids repeat across streams.
 
 A lease lasts 10 seconds, and its reader renews it every 3 seconds. A reader whose renewal fails
 has lost the shard to another owner, and it stops at once without writing a checkpoint. The new
-owner reads from the last checkpoint, so a few records may be delivered twice. Delivery is at least
-once.
+owner reads from the last checkpoint, so a few records may be delivered twice. A shard with no
+checkpoint opens at the first record its last reading read, which each reading records before it
+hands that record out, so a takeover skips nothing. Delivery is at least once.
 
 [`DynamoLeaseStore`](api:ruststream_kinesis::DynamoLeaseStore), under the `dynamodb-lease` feature,
 keeps the rows in a DynamoDB table with one string key, `lease_key`, written as `stream:shard`.
-A row holds `lease_owner`, `lease_expiry`, `lease_counter` and `checkpoint`. Every write is
-conditional. A take succeeds when the row has no owner, has this owner, or has expired. A renewal,
-a checkpoint and a release succeed only while this owner holds the row. Reads are strongly
+A row holds `lease_owner`, `lease_expiry`, `lease_counter`, `checkpoint` and `opened_at`. Every
+write is conditional. A take succeeds when the row has no owner, has this owner, or has expired. A
+renewal, a checkpoint, an opening and a release succeed only while this owner holds the row. A row
+written by version 0.7.1 or earlier has no `opened_at`, and reads as a shard nobody has read. Reads are strongly
 consistent. Each broker has a lease-owner id of its own, unique by default, so two instances never
 hold one shard together.
 

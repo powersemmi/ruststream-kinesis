@@ -90,6 +90,15 @@ impl LeaseStore for ReleaseWatch {
         self.inner.checkpoint(key, owner, sequence)
     }
 
+    fn record_opened_at<'a>(
+        &'a self,
+        key: &'a LeaseKey,
+        owner: &'a str,
+        sequence: &'a str,
+    ) -> BoxFuture<'a, Result<bool, LeaseError>> {
+        self.inner.record_opened_at(key, owner, sequence)
+    }
+
     fn read<'a>(&'a self, key: &'a LeaseKey) -> BoxFuture<'a, Result<LeaseState, LeaseError>> {
         self.inner.read(key)
     }

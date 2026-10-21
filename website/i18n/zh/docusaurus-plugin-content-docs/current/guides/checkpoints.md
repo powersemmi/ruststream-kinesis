@@ -50,7 +50,7 @@ Kinesis 不为每条记录、每个读取者保存任何状态。读取者记住
 
 投递是至少一次的。取得分片的读取者从它的检查点之后开始，所以从第一条未处理的记录起，一切都会再投递一次：被扣住的货件，以及它后面的每个货件，不论是否已处理。服务重启时会这样，另一个实例接管该分片时也会这样（[多个实例](leases.md)）。因此，可能两次看到同一条记录的处理器要写成幂等的：同一个货件登记两次，结果只登记一次。
 
-检查点保存在租约存储中，由存储决定重启后保留什么。默认的 [`MemoryLeaseStore`](../components/leases/memory-lease-store.md) 存在于进程中，启动时为空，所以重启后的服务在最新处打开每个分片，只读取此后发布的记录。[`DynamoLeaseStore`](../components/leases/dynamo-lease-store.md) 把检查点保存在一张表中，重启后的服务从上一个实例停下的地方继续。没有检查点的分片在 [`start_at`](../components/positions/start-at.md) 指定的位置打开，未作指定时在最新处打开（[重放与 seek](replay.md)）。
+检查点保存在租约存储中，由存储决定重启后保留什么。默认的 [`MemoryLeaseStore`](../components/leases/memory-lease-store.md) 存在于进程中，启动时为空，所以重启后的服务在最新处打开每个分片，只读取此后发布的记录。[`DynamoLeaseStore`](../components/leases/dynamo-lease-store.md) 把检查点保存在一张表中，重启后的服务从上一个实例停下的地方继续。没有检查点的分片从它上一次读取所读到的第一条记录打开，存储把这条记录和检查点保存在一起。还没有人读过的分片在 [`start_at`](../components/positions/start-at.md) 指定的位置打开，未作指定时在最新处打开（[重放与 seek](replay.md)）。
 
 只要同一个读取者持有该分片，被扣住的记录就不会回来。不重启而要再读它，处理器可以 [seek](replay.md) 回到它。
 

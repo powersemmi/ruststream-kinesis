@@ -35,9 +35,9 @@ pub const SHARD_END: &str = "SHARD_END";
 /// use futures::future::BoxFuture;
 /// use ruststream_kinesis::{LeaseError, LeaseKey, LeaseState, LeaseStore};
 ///
-/// /// Checkpoints for a single instance, which owns every shard.
+/// /// Progress for a single instance, which owns every shard.
 /// #[derive(Default)]
-/// pub struct Checkpoints(Mutex<HashMap<String, String>>);
+/// pub struct Checkpoints(Mutex<HashMap<String, LeaseState>>);
 ///
 /// impl LeaseStore for Checkpoints {
 ///     fn checkpoint<'a>(
@@ -47,8 +47,29 @@ pub const SHARD_END: &str = "SHARD_END";
 ///         sequence: &'a str,
 ///     ) -> BoxFuture<'a, Result<bool, LeaseError>> {
 ///         Box::pin(async move {
-///             let mut rows = self.0.lock().map_err(|e| e.to_string())?;
-///             rows.insert(key.to_string(), sequence.to_owned());
+///             self.0
+///                 .lock()
+///                 .map_err(|e| e.to_string())?
+///                 .entry(key.to_string())
+///                 .or_default()
+///                 .checkpoint = Some(sequence.to_owned());
+///             Ok(true)
+///         })
+///     }
+///
+///     fn record_opened_at<'a>(
+///         &'a self,
+///         key: &'a LeaseKey,
+///         _owner: &'a str,
+///         sequence: &'a str,
+///     ) -> BoxFuture<'a, Result<bool, LeaseError>> {
+///         Box::pin(async move {
+///             self.0
+///                 .lock()
+///                 .map_err(|e| e.to_string())?
+///                 .entry(key.to_string())
+///                 .or_default()
+///                 .opened_at = Some(sequence.to_owned());
 ///             Ok(true)
 ///         })
 ///     }
@@ -56,9 +77,9 @@ pub const SHARD_END: &str = "SHARD_END";
 ///     fn read<'a>(&'a self, key: &'a LeaseKey) -> BoxFuture<'a, Result<LeaseState, LeaseError>> {
 ///         Box::pin(async move {
 ///             let rows = self.0.lock().map_err(|e| e.to_string())?;
-///             let mut state = LeaseState::default();
-///             state.checkpoint = rows.get(&key.to_string()).cloned();
-///             Ok(state)
+///             let state = rows.get(&key.to_string()).cloned();
+///             drop(rows);
+///             Ok(state.unwrap_or_default())
 ///         })
 ///     }
 /// #
@@ -139,6 +160,11 @@ pub struct LeaseState {
     /// The last checkpointed sequence number, [`SHARD_END`] when the shard is finished, or
     /// `None` when never checkpointed.
     pub checkpoint: Option<String>,
+    /// The sequence number of the first record the shard's latest reading read, or `None` when no
+    /// reading recorded one. Without a checkpoint, the next owner of the lease opens the shard
+    /// at this record, so what an owner read and did not settle before it stopped is delivered
+    /// again instead of skipped. A checkpoint wins over it.
+    pub opened_at: Option<String>,
 }
 
 /// The boxed error lease stores report; the crate wraps it with the stream and the shard for
@@ -179,6 +205,20 @@ pub trait LeaseStore: Send + Sync + 'static {
         sequence: &'a str,
     ) -> BoxFuture<'a, Result<bool, LeaseError>>;
 
+    /// Records `sequence`, the first record a reading of the shard read, as the place its next
+    /// owner opens the shard at while there is no checkpoint, conditional on `owner` holding the
+    /// lease. Returns `false` when fenced.
+    ///
+    /// A reader calls it once per reading, before it hands out the first record it read. A store
+    /// that drops the value keeps every owner correct within its own process, and a takeover then
+    /// opens a shard without a checkpoint at the subscription's start position instead.
+    fn record_opened_at<'a>(
+        &'a self,
+        key: &'a LeaseKey,
+        owner: &'a str,
+        sequence: &'a str,
+    ) -> BoxFuture<'a, Result<bool, LeaseError>>;
+
     /// Reads the shard's persisted state (regardless of ownership).
     fn read<'a>(&'a self, key: &'a LeaseKey) -> BoxFuture<'a, Result<LeaseState, LeaseError>>;
 
@@ -195,6 +235,7 @@ struct MemoryLease {
     owner: Option<String>,
     expires: Option<Instant>,
     checkpoint: Option<String>,
+    opened_at: Option<String>,
 }
 
 /// In-process lease coordination, correct for a single service instance.
@@ -284,10 +325,29 @@ impl LeaseStore for MemoryLeaseStore {
         })
     }
 
+    fn record_opened_at<'a>(
+        &'a self,
+        key: &'a LeaseKey,
+        owner: &'a str,
+        sequence: &'a str,
+    ) -> BoxFuture<'a, Result<bool, LeaseError>> {
+        Box::pin(async move {
+            Ok(self.with_lease(key, |lease| {
+                if lease.owner.as_deref() == Some(owner) {
+                    lease.opened_at = Some(sequence.to_owned());
+                    true
+                } else {
+                    false
+                }
+            }))
+        })
+    }
+
     fn read<'a>(&'a self, key: &'a LeaseKey) -> BoxFuture<'a, Result<LeaseState, LeaseError>> {
         Box::pin(async move {
             Ok(self.with_lease(key, |lease| LeaseState {
                 checkpoint: lease.checkpoint.clone(),
+                opened_at: lease.opened_at.clone(),
             }))
         })
     }
@@ -350,6 +410,40 @@ mod tests {
         assert_eq!(
             store.read(&s1).await.expect("read").checkpoint.as_deref(),
             Some("41")
+        );
+    }
+
+    /// Where a reading opened is the shard's, like its checkpoint: it outlives the release, so the
+    /// next owner finds it, and only the holder of the lease can write it.
+    #[tokio::test]
+    async fn where_a_reading_opened_is_kept_for_the_next_owner() {
+        let store = MemoryLeaseStore::new();
+        let s1 = key("s1");
+        assert!(store.acquire(&s1, "a", TTL).await.expect("acquire"));
+        assert!(
+            store
+                .record_opened_at(&s1, "a", "17")
+                .await
+                .expect("record"),
+            "the holder records where its reading opened",
+        );
+        store.release(&s1, "a").await.expect("release");
+        assert_eq!(
+            store.read(&s1).await.expect("read").opened_at.as_deref(),
+            Some("17"),
+            "the next owner must find where the previous reading opened",
+        );
+        assert!(
+            !store
+                .record_opened_at(&s1, "b", "23")
+                .await
+                .expect("record"),
+            "an owner without the lease is fenced",
+        );
+        assert_eq!(
+            store.read(&s1).await.expect("read").opened_at.as_deref(),
+            Some("17"),
+            "a fenced write must not move it",
         );
     }
 

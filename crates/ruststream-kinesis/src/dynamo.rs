@@ -3,7 +3,7 @@
 //!
 //! The schema is the minimal safe subset of the vendor's consumer-library table: one item per
 //! stream and shard (`lease_key`, written as `stream:shard`), an owner, an expiry, a fencing
-//! counter bumped on every write, and the checkpoint. Every mutation is a conditional write, so
+//! counter bumped on every write, the checkpoint, and the first record the latest reading read. Every mutation is a conditional write, so
 //! two instances cannot both believe they own a shard.
 
 use std::collections::HashMap;
@@ -23,6 +23,9 @@ use crate::lease::{LeaseError, LeaseKey, LeaseState, LeaseStore};
 const KEY: &str = "lease_key";
 /// The attribute holding a shard's progress.
 const CHECKPOINT: &str = "checkpoint";
+/// The attribute holding the first record the shard's latest reading read. Rows written before it
+/// existed lack it, and read as a shard with no recorded opening.
+const OPENED_AT: &str = "opened_at";
 
 /// A `DynamoDB`-backed lease store.
 ///
@@ -41,6 +44,9 @@ const CHECKPOINT: &str = "checkpoint";
 /// are ignored. With no stream named, a shard whose bare row holds a checkpoint is refused with an
 /// error naming the table, the shard and the stream that asked, and it is not read until the
 /// operator names the stream or deletes the row.
+///
+/// A row written before the store recorded where a reading opened carries no `opened_at`: a shard
+/// with no checkpoint there opens at the subscription's start position, as it did then.
 ///
 /// The two versions lease different rows, so an instance of each can read the same shard at
 /// once: stop the old instances before starting the new ones, or accept the duplicates.
@@ -219,11 +225,16 @@ fn row_key(key: &LeaseKey) -> AttributeValue {
     AttributeValue::S(key.to_string())
 }
 
-/// The checkpoint an item holds, if any.
-fn checkpoint_of(item: Option<&HashMap<String, AttributeValue>>) -> Option<String> {
-    item.and_then(|item| item.get(CHECKPOINT))
+/// The string attribute `name` of an item, if the item carries it.
+fn text_of(item: Option<&HashMap<String, AttributeValue>>, name: &str) -> Option<String> {
+    item.and_then(|item| item.get(name))
         .and_then(|value| value.as_s().ok())
         .cloned()
+}
+
+/// The checkpoint an item holds, if any.
+fn checkpoint_of(item: Option<&HashMap<String, AttributeValue>>) -> Option<String> {
+    text_of(item, CHECKPOINT)
 }
 
 /// A shard whose only progress is in a row keyed by its bare shard id, in a table that names no
@@ -364,31 +375,71 @@ impl LeaseStore for DynamoLeaseStore {
         })
     }
 
+    fn record_opened_at<'a>(
+        &'a self,
+        key: &'a LeaseKey,
+        owner: &'a str,
+        sequence: &'a str,
+    ) -> BoxFuture<'a, Result<bool, LeaseError>> {
+        Box::pin(async move {
+            let outcome = self
+                .clients
+                .with(Client::update_item)
+                .table_name(&self.table)
+                .key(KEY, row_key(key))
+                .update_expression("SET opened_at = :seq ADD lease_counter :one")
+                .condition_expression("lease_owner = :me")
+                .expression_attribute_values(":me", AttributeValue::S(owner.to_owned()))
+                .expression_attribute_values(":seq", AttributeValue::S(sequence.to_owned()))
+                .expression_attribute_values(":one", AttributeValue::N("1".to_owned()))
+                .send()
+                .await;
+            match outcome {
+                Ok(_) => Ok(true),
+                Err(err)
+                    if err
+                        .as_service_error()
+                        .is_some_and(UpdateItemError::is_conditional_check_failed_exception) =>
+                {
+                    Ok(false)
+                }
+                Err(err) => Err(boxed(err)),
+            }
+        })
+    }
+
     fn read<'a>(&'a self, key: &'a LeaseKey) -> BoxFuture<'a, Result<LeaseState, LeaseError>> {
         Box::pin(async move {
             let own = self.item(row_key(key)).await?;
+            let opened_at = text_of(own.as_ref(), OPENED_AT);
             if let Some(checkpoint) = checkpoint_of(own.as_ref()) {
                 return Ok(LeaseState {
                     checkpoint: Some(checkpoint),
+                    opened_at,
                 });
             }
+            let unread = LeaseState {
+                checkpoint: None,
+                opened_at,
+            };
             // The bare rows are another stream's progress: nothing read there could apply.
             if self
                 .legacy_stream
                 .as_deref()
                 .is_some_and(|stream| stream != key.stream())
             {
-                return Ok(LeaseState::default());
+                return Ok(unread);
             }
             let legacy = self.item(AttributeValue::S(key.shard().to_owned())).await?;
             let Some(checkpoint) = checkpoint_of(legacy.as_ref()) else {
-                return Ok(LeaseState::default());
+                return Ok(unread);
             };
             match self.legacy_stream.as_deref() {
                 Some(_) => {
                     if self.adopt(key, &checkpoint).await? {
                         return Ok(LeaseState {
                             checkpoint: Some(checkpoint),
+                            ..unread
                         });
                     }
                     // Another owner saved progress on the stream's row meanwhile: that is the
@@ -396,6 +447,7 @@ impl LeaseStore for DynamoLeaseStore {
                     let own = self.item(row_key(key)).await?;
                     Ok(LeaseState {
                         checkpoint: checkpoint_of(own.as_ref()).or(Some(checkpoint)),
+                        opened_at: text_of(own.as_ref(), OPENED_AT),
                     })
                 }
                 None => Err(boxed(UnattributedLegacyRow {
