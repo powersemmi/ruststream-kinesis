@@ -117,9 +117,9 @@ dependencies = [
 
 [[package]]
 name = "aws-sdk-dynamodb"
-version = "1.130.0"
+version = "1.131.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "093ade632b7d671f9374e89a3784463731987df9ece9259c75247111ea3ac985"
+checksum = "18d4e5ed975d72bce813432317e0cf63d4b37b5f62e9bc0a4922b2fe2b2c4347"
 dependencies = [
  "arc-swap",
  "aws-credential-types",
@@ -693,9 +693,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.2"
+version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d5515a3834141de9eafb9717ad39eea8247b5674e6066c404e8c4b365d2a29e"
+checksum = "38d28fb6aa7dd680b3ffd1a3e64e115c177bdba63c0ae7f9cd48129ff05c4fa0"
 dependencies = [
  "cmov",
 ]
