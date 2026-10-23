@@ -27,7 +27,7 @@ use ruststream_kinesis::{
     KinesisSubscriber, LeaseStore, MemoryLeaseStore, SHARD_HEADER,
 };
 
-mod live;
+use crate::live;
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(30);
 /// The owner id both brokers of a test share, so the second one takes the shards the first one

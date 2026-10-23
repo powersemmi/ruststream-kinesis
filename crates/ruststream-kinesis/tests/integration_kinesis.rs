@@ -31,7 +31,7 @@ use ruststream_kinesis::{
     MemoryLeaseStore, PARTITION_KEY_HEADER, SEQUENCE_HEADER,
 };
 
-mod live;
+use crate::live;
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(30);
 
