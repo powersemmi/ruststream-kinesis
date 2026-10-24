@@ -56,6 +56,10 @@ ruststream = { workspace = true, features = ["conformance", "testing", "macros",
 # `schemars` only under that feature).
 schemars.workspace = true
 serde.workspace = true
+# Builds the examples' tests into one test binary (`tests/examples.rs`) instead of a test binary
+# per example. It lives in the core repository and is not published: a dev-dependency without a
+# version is dropped on publish.
+ruststream-example-suite = { git = "https://github.com/powersemmi/ruststream", branch = "main" }
 serde_json = "1"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
 
@@ -65,414 +69,345 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "ti
 name = "suite"
 path = "tests/main.rs"
 
+# The tests of the examples, one module per example, in a binary of their own beside the suite.
+[[test]]
+name = "examples"
+path = "tests/examples.rs"
+
 [[example]]
 name = "kinesis_subscriptions_name"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_subscriptions_name"
 path = "examples/manual/kinesis_subscriptions_name.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_subscriptions_stream"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_subscriptions_stream"
 path = "examples/manual/kinesis_subscriptions_stream.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_subscriptions_poll"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_subscriptions_poll"
 path = "examples/manual/kinesis_subscriptions_poll.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_subscriptions_create"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_subscriptions_create"
 path = "examples/manual/kinesis_subscriptions_create.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_subscriptions_ext"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_subscriptions_ext"
 path = "examples/manual/kinesis_subscriptions_ext.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_subscriptions_shards"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_subscriptions_shards"
 path = "examples/manual/kinesis_subscriptions_shards.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_batches"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_batches"
 path = "examples/manual/kinesis_batches.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_settlement_outcomes"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_settlement_outcomes"
 path = "examples/manual/kinesis_settlement_outcomes.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_retry"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_retry"
 path = "examples/manual/kinesis_retry.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_settlement_out_retry"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_settlement_out_retry"
 path = "examples/manual/kinesis_settlement_out_retry.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_leases_store"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_leases_store"
 path = "examples/manual/kinesis_leases_store.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_leases_memory"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_leases_memory"
 path = "examples/manual/kinesis_leases_memory.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_leases"
 required-features = ["testing", "dynamodb-lease"]
-test = true
 
 [[example]]
 name = "manual_kinesis_leases"
 path = "examples/manual/kinesis_leases.rs"
 required-features = ["testing", "dynamodb-lease"]
-test = true
 
 [[example]]
 name = "kinesis_leases_legacy"
 required-features = ["testing", "dynamodb-lease"]
-test = true
 
 [[example]]
 name = "manual_kinesis_leases_legacy"
 path = "examples/manual/kinesis_leases_legacy.rs"
 required-features = ["testing", "dynamodb-lease"]
-test = true
 
 [[example]]
 name = "kinesis_leases_owner"
 required-features = ["testing", "dynamodb-lease"]
-test = true
 
 [[example]]
 name = "manual_kinesis_leases_owner"
 path = "examples/manual/kinesis_leases_owner.rs"
 required-features = ["testing", "dynamodb-lease"]
-test = true
 
 [[example]]
 name = "kinesis_leases_key"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_leases_key"
 path = "examples/manual/kinesis_leases_key.rs"
 required-features = ["testing"]
-test = true
 
 # --- examples: broker, positions, context, publishing, asyncapi, testing ---
 
 [[example]]
 name = "kinesis_service"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_service"
 path = "examples/manual/kinesis_service.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_broker_credentials"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_broker_credentials"
 path = "examples/manual/kinesis_broker_credentials.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_broker_endpoint"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_broker_endpoint"
 path = "examples/manual/kinesis_broker_endpoint.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_broker_startup"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_broker_startup"
 path = "examples/manual/kinesis_broker_startup.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_broker_shutdown"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_broker_shutdown"
 path = "examples/manual/kinesis_broker_shutdown.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_broker_prelude"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_broker_prelude"
 path = "examples/manual/kinesis_broker_prelude.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_broker_errors"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_broker_errors"
 path = "examples/manual/kinesis_broker_errors.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_positions_timestamp"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_positions_timestamp"
 path = "examples/manual/kinesis_positions_timestamp.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_positions_start_at"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_positions_start_at"
 path = "examples/manual/kinesis_positions_start_at.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_seek"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_seek"
 path = "examples/manual/kinesis_seek.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_context"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_context"
 path = "examples/manual/kinesis_context.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_context_batch"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_context_batch"
 path = "examples/manual/kinesis_context_batch.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_context_headers"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_context_headers"
 path = "examples/manual/kinesis_context_headers.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_context_envelope"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_context_envelope"
 path = "examples/manual/kinesis_context_envelope.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_replies"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_replies"
 path = "examples/manual/kinesis_replies.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_publishing_publish"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_publishing_publish"
 path = "examples/manual/kinesis_publishing_publish.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_publishing_keys"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_publishing_keys"
 path = "examples/manual/kinesis_publishing_keys.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_publishing_step"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_publishing_step"
 path = "examples/manual/kinesis_publishing_step.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_asyncapi"
 required-features = ["asyncapi"]
-test = true
 
 [[example]]
 name = "manual_kinesis_asyncapi"
 path = "examples/manual/kinesis_asyncapi.rs"
 required-features = ["asyncapi"]
-test = true
 
 [[example]]
 name = "kinesis_testing"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_testing"
 path = "examples/manual/kinesis_testing.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "kinesis_testing_live"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_kinesis_testing_live"
 path = "examples/manual/kinesis_testing_live.rs"
 required-features = ["testing"]
-test = true
 
 # --- examples: guides ---
 
@@ -483,106 +418,88 @@ test = true
 name = "guide_getting_started"
 path = "examples/guide/getting_started.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_guide_getting_started"
 path = "examples/manual/guide/getting_started.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "guide_consuming"
 path = "examples/guide/consuming.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_guide_consuming"
 path = "examples/manual/guide/consuming.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "guide_ordering"
 path = "examples/guide/ordering.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_guide_ordering"
 path = "examples/manual/guide/ordering.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "guide_checkpoints"
 path = "examples/guide/checkpoints.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_guide_checkpoints"
 path = "examples/manual/guide/checkpoints.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "guide_retries"
 path = "examples/guide/retries.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_guide_retries"
 path = "examples/manual/guide/retries.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "guide_replay"
 path = "examples/guide/replay.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_guide_replay"
 path = "examples/manual/guide/replay.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "guide_leases"
 path = "examples/guide/leases.rs"
 required-features = ["testing", "dynamodb-lease"]
-test = true
 
 [[example]]
 name = "manual_guide_leases"
 path = "examples/manual/guide/leases.rs"
 required-features = ["testing", "dynamodb-lease"]
-test = true
 
 [[example]]
 name = "guide_testing"
 path = "examples/guide/testing.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_guide_testing"
 path = "examples/manual/guide/testing.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "guide_production"
 path = "examples/guide/production.rs"
 required-features = ["testing"]
-test = true
 
 [[example]]
 name = "manual_guide_production"
 path = "examples/manual/guide/production.rs"
 required-features = ["testing"]
-test = true

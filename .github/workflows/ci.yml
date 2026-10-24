@@ -189,7 +189,8 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/target-minimal
         run: |
           cargo check --locked -p ruststream-kinesis-bench --all-targets
-          cargo test --locked --workspace --all-features --no-fail-fast
+          cargo test --locked --workspace --all-features --no-fail-fast --tests
+          cargo test --locked --workspace --all-features --no-fail-fast --doc
 
       # Everything above still sees dev-dependencies, which raise shared floors before the library
       # is built: the run proves the workspace resolves, not that the manifest is honest for a
@@ -277,7 +278,8 @@ jobs:
         run: cargo check --locked --workspace --no-default-features
 
       # The benchmark package is built with the feature set a service ships, so it gets a check of
-      # its own. The test step below builds every other target with all features.
+      # its own. The test step below builds every other test target with all features, and clippy
+      # in the lint job compiles each example on its own.
       - name: cargo check (benchmarks)
         run: cargo check --locked -p ruststream-kinesis-bench --all-targets
 
@@ -286,7 +288,11 @@ jobs:
       # --no-fail-fast: a failing target must not hide failures in the targets behind it; the log
       # then lists every red test, not just the first binary's.
       - name: cargo test
-        run: cargo test --locked --workspace --all-features --no-fail-fast
+        # `--tests` and not every target: the examples' tests are modules of one test binary, so
+        # an example needs no binary of its own, and clippy has already compiled each one.
+        run: |
+          cargo test --locked --workspace --all-features --no-fail-fast --tests
+          cargo test --locked --workspace --all-features --no-fail-fast --doc
 
       # The gate the later toolchains wait on: it succeeds only when every stable step did.
       - name: Stable passed
@@ -325,7 +331,11 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: beta
           CARGO_TARGET_DIR: ${{ runner.temp }}/target-beta
-        run: cargo test --locked --workspace --all-features --no-fail-fast
+        # `--tests` and not every target: the examples' tests are modules of one test binary, so
+        # an example needs no binary of its own, and clippy has already compiled each one.
+        run: |
+          cargo test --locked --workspace --all-features --no-fail-fast --tests
+          cargo test --locked --workspace --all-features --no-fail-fast --doc
 
       - name: Delete the beta build
         if: always()
@@ -350,7 +360,11 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: ${{ steps.msrv.outputs.toolchain }}
           CARGO_TARGET_DIR: ${{ runner.temp }}/target-floor
-        run: cargo test --locked --workspace --all-features --no-fail-fast
+        # `--tests` and not every target: the examples' tests are modules of one test binary, so
+        # an example needs no binary of its own, and clippy has already compiled each one.
+        run: |
+          cargo test --locked --workspace --all-features --no-fail-fast --tests
+          cargo test --locked --workspace --all-features --no-fail-fast --doc
 
       - name: Delete the floor build
         if: always()
