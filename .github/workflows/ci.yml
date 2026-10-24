@@ -16,6 +16,11 @@ on:
 permissions:
   contents: read
 
+# No debug info: no step reads it, and it is most of the size of every linked test binary. A
+# failing test still reports the file and line of its panic.
+env:
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -127,6 +132,9 @@ jobs:
       - name: Cache cargo
         if: "!cancelled() && env.RUST_CHANGED == 'true'"
         uses: Swatinem/rust-cache@v2
+        with:
+          # Saved from main only: a pull request reuses main's cache and never replaces it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-hack
         if: "!cancelled() && env.RUST_CHANGED == 'true'"
@@ -171,16 +179,18 @@ jobs:
       # graph holds at its floor. When one does not, a `cargo update -p <crate> --precise
       # <version>` step goes before this one with the reason and the condition for dropping it,
       # rather than raising the declared bound to hide it.
+      # It builds into a target directory of its own, deleted afterwards, so its artifacts stay
+      # out of the cache.
       - name: Build and test against minimal versions
         id: minimal-test
         if: "!cancelled() && steps.minimal-resolve.outcome == 'success'"
         env:
           RUSTUP_TOOLCHAIN: ${{ steps.msrv.outputs.toolchain }}
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-minimal
         run: |
-          cargo check --locked --workspace --exclude ruststream-kinesis-bench --all-targets \
-            --all-features
           cargo check --locked -p ruststream-kinesis-bench --all-targets
-          cargo test --locked --workspace --all-features --no-fail-fast
+          cargo test --locked --workspace --all-features --no-fail-fast --tests
+          cargo test --locked --workspace --all-features --no-fail-fast --doc
 
       # Everything above still sees dev-dependencies, which raise shared floors before the library
       # is built: the run proves the workspace resolves, not that the manifest is honest for a
@@ -200,7 +210,12 @@ jobs:
         if: "!cancelled() && steps.minimal-resolve-lib.outcome == 'success'"
         env:
           RUSTUP_TOOLCHAIN: ${{ steps.msrv.outputs.toolchain }}
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-minimal
         run: cargo hack check --workspace --no-dev-deps --all-features
+
+      - name: Delete the minimal versions build
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/target-minimal"
 
   rust:
     name: Build and test
@@ -210,12 +225,14 @@ jobs:
     # once stable passed as a whole: a break stable already reports is not worth two more
     # builds. Releases between the floor and stable add nothing: what fails on a later one fails
     # on the floor too. Stable is the default through `rust-toolchain.toml`; the later steps
-    # name theirs through RUSTUP_TOOLCHAIN, which outranks the file.
+    # name theirs through RUSTUP_TOOLCHAIN, which outranks the file. Each of the two builds into a
+    # target directory of its own, deleted when its leg ends: it never stacks on the stable build,
+    # and the cache holds the stable build alone.
     runs-on: ubuntu-latest
     steps:
-      # Three toolchains build every test target here, each linking the AWS SDK, and their
-      # artifacts outgrow the runner's free disk by the floor's test run. The runner image ships
-      # SDKs this job never uses; removing them frees about 30 GB without touching the build cache.
+      # The safety margin: the stable build shares the disk with one later toolchain's build at a
+      # time. The runner image ships SDKs this job never uses; removing them frees about 30 GB
+      # without touching the build cache.
       - name: Free the runner's disk
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
@@ -246,6 +263,9 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          # Saved from main only: a pull request reuses main's cache and never replaces it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # The crate-root missing_docs deny covers item docs; this gate catches what rustc
       # cannot: broken intra-doc links and redundant targets only rustdoc resolves.
@@ -257,21 +277,22 @@ jobs:
       - name: cargo check (no default features)
         run: cargo check --locked --workspace --no-default-features
 
-      # The benchmark package is left out of every all-features check on purpose: it is built
-      # with the feature set a service ships, and the framework's harness feature is a compile
-      # error in it. Its own check follows, so it stays compiled.
-      - name: cargo check (all features)
-        run: |
-          cargo check --locked --workspace --exclude ruststream-kinesis-bench --all-targets \
-            --all-features
-          cargo check --locked -p ruststream-kinesis-bench --all-targets
+      # The benchmark package is built with the feature set a service ships, so it gets a check of
+      # its own. The test step below builds every other test target with all features, and clippy
+      # in the lint job compiles each example on its own.
+      - name: cargo check (benchmarks)
+        run: cargo check --locked -p ruststream-kinesis-bench --all-targets
 
       # The in-process suite: the live tests skip themselves without KINESIS_TEST_ENDPOINT, and
       # the broker-integration job runs them against LocalStack.
       # --no-fail-fast: a failing target must not hide failures in the targets behind it; the log
       # then lists every red test, not just the first binary's.
       - name: cargo test
-        run: cargo test --locked --workspace --all-features --no-fail-fast
+        # `--tests` and not every target: the examples' tests are modules of one test binary, so
+        # an example needs no binary of its own, and clippy has already compiled each one.
+        run: |
+          cargo test --locked --workspace --all-features --no-fail-fast --tests
+          cargo test --locked --workspace --all-features --no-fail-fast --doc
 
       # The gate the later toolchains wait on: it succeeds only when every stable step did.
       - name: Stable passed
@@ -285,6 +306,7 @@ jobs:
         continue-on-error: true
         env:
           RUSTUP_TOOLCHAIN: beta
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-beta
         run: |
           cargo clippy --locked --workspace --exclude ruststream-kinesis-bench --all-targets \
             --all-features -- -D warnings
@@ -294,43 +316,59 @@ jobs:
         if: "!cancelled() && steps.stable.outcome == 'success'"
         env:
           RUSTUP_TOOLCHAIN: beta
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-beta
         run: cargo check --locked --workspace --no-default-features
 
-      - name: cargo check (all features, beta)
+      - name: cargo check (benchmarks, beta)
         if: "!cancelled() && steps.stable.outcome == 'success'"
         env:
           RUSTUP_TOOLCHAIN: beta
-        run: |
-          cargo check --locked --workspace --exclude ruststream-kinesis-bench --all-targets \
-            --all-features
-          cargo check --locked -p ruststream-kinesis-bench --all-targets
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-beta
+        run: cargo check --locked -p ruststream-kinesis-bench --all-targets
 
       - name: cargo test (beta)
         if: "!cancelled() && steps.stable.outcome == 'success'"
         env:
           RUSTUP_TOOLCHAIN: beta
-        run: cargo test --locked --workspace --all-features --no-fail-fast
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-beta
+        # `--tests` and not every target: the examples' tests are modules of one test binary, so
+        # an example needs no binary of its own, and clippy has already compiled each one.
+        run: |
+          cargo test --locked --workspace --all-features --no-fail-fast --tests
+          cargo test --locked --workspace --all-features --no-fail-fast --doc
+
+      - name: Delete the beta build
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/target-beta"
 
       - name: cargo check (no default features, floor)
         if: "!cancelled() && steps.stable.outcome == 'success'"
         env:
           RUSTUP_TOOLCHAIN: ${{ steps.msrv.outputs.toolchain }}
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-floor
         run: cargo check --locked --workspace --no-default-features
 
-      - name: cargo check (all features, floor)
+      - name: cargo check (benchmarks, floor)
         if: "!cancelled() && steps.stable.outcome == 'success'"
         env:
           RUSTUP_TOOLCHAIN: ${{ steps.msrv.outputs.toolchain }}
-        run: |
-          cargo check --locked --workspace --exclude ruststream-kinesis-bench --all-targets \
-            --all-features
-          cargo check --locked -p ruststream-kinesis-bench --all-targets
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-floor
+        run: cargo check --locked -p ruststream-kinesis-bench --all-targets
 
       - name: cargo test (floor)
         if: "!cancelled() && steps.stable.outcome == 'success'"
         env:
           RUSTUP_TOOLCHAIN: ${{ steps.msrv.outputs.toolchain }}
-        run: cargo test --locked --workspace --all-features --no-fail-fast
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target-floor
+        # `--tests` and not every target: the examples' tests are modules of one test binary, so
+        # an example needs no binary of its own, and clippy has already compiled each one.
+        run: |
+          cargo test --locked --workspace --all-features --no-fail-fast --tests
+          cargo test --locked --workspace --all-features --no-fail-fast --doc
+
+      - name: Delete the floor build
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/target-floor"
 
   broker-integration:
     name: Broker integration (LocalStack)
@@ -379,6 +417,9 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          # Saved from main only: a pull request reuses main's cache and never replaces it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Run the live suites against LocalStack
         env:
@@ -386,13 +427,9 @@ jobs:
           # This job started a stack, so a suite that skips past it is a defect, not a pass.
           RUSTSTREAM_REQUIRE_LIVE: "1"
         run: >-
-          cargo test --locked -p ruststream-kinesis --all-features
-          --test integration_kinesis
-          --test conformance_kinesis
-          --test positions_kinesis
-          --test shards_kinesis
-          --test leases_kinesis
-          -- --test-threads=1
+          cargo test --locked -p ruststream-kinesis --all-features --test suite --
+          integration_kinesis:: conformance_kinesis:: positions_kinesis:: shards_kinesis::
+          leases_kinesis:: --test-threads=1
 
       - name: Cleanup
         if: always()
@@ -433,6 +470,9 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          # Saved from main only: a pull request reuses main's cache and never replaces it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # The API links on the pages resolve against this rustdoc, the one docs.rs renders for the
       # same code; an item it lacks fails the build below.

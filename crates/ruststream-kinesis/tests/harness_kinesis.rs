@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Barrier;
 use tokio::time::timeout;
 
-mod live;
+use crate::live;
 
 /// The id a producer uses to ask a consumer to abandon the rest of the retained backlog.
 const MARKER: u64 = 999;

@@ -18,7 +18,7 @@ use ruststream_kinesis::KinesisBroker;
 use tokio::runtime;
 use tokio::sync::oneshot;
 
-mod live;
+use crate::live;
 
 /// How long the dedicated thread computes after its publish: far past [`PUBLISH_TIMEOUT`], so a
 /// request that waits for the thread cannot finish in time.

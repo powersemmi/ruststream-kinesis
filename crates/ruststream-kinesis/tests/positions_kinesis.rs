@@ -26,7 +26,7 @@ use ruststream_kinesis::{
     ConnectedKinesisBroker, KinesisBroker, KinesisError, KinesisPosition, KinesisStream,
 };
 
-mod live;
+use crate::live;
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a subscription that must stay silent is watched. Long enough that a reader which had
