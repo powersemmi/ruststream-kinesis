@@ -31,7 +31,7 @@ use ruststream_kinesis::{
     KinesisPublishOptions, KinesisStream, LeaseStore, MemoryLeaseStore,
 };
 
-mod live;
+use crate::live;
 
 /// The partition key the options check configures on its policy, one no publish picks by itself.
 const POLICY_KEY: &str = "conformance-policy-key";

@@ -28,7 +28,7 @@ use ruststream_kinesis::{
     LeaseKey, LeaseStore, MemoryLeaseStore, PARTITION_KEY_HEADER, SHARD_END, SHARD_HEADER,
 };
 
-mod live;
+use crate::live;
 
 const RECV_TIMEOUT: Duration = Duration::from_mins(1);
 /// Records published under one key, and distinct keys published beside them. Sixteen keys over

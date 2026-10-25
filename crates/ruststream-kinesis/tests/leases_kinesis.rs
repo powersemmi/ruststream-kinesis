@@ -36,7 +36,7 @@ use ruststream_kinesis::{
     LeaseKey, LeaseStore, SEQUENCE_HEADER, SHARD_END, SHARD_HEADER,
 };
 
-mod live;
+use crate::live;
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(30);
 /// Long enough that nothing under test expires on its own.
