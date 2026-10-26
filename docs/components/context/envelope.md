@@ -15,6 +15,7 @@ A Kinesis record carries a data blob and a partition key and nothing else.
 So the publisher writes the headers a message carries into a small envelope in front of the payload.
 The partition key stays out of it: it travels in the record's own [partition-key field](../publishing/keys.md).
 A record with no other headers is the plain payload, which any Kinesis consumer reads as it is.
+The one exception is a payload that itself begins with `RSK2` or `RSK1`: it gets an envelope with an empty header block, so it reads back whole instead of being taken for one.
 
 The envelope is the four bytes `RSK2`, a big-endian `u32` length of the header block, the header block, and then the payload.
 The block holds each header as a big-endian `u32` name length, the name, a big-endian `u32` value length and the value.

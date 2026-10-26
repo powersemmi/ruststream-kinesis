@@ -5,6 +5,8 @@
 // Each example uses the part of this module its scenarios need.
 #![allow(dead_code)]
 
+use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+use std::panic::Location;
 use std::process;
 use std::time::Duration;
 
@@ -40,9 +42,18 @@ pub(crate) async fn config(endpoint: &str) -> SdkConfig {
         .await
 }
 
-/// A name no earlier run used, for what a scenario creates and must find empty.
+/// A name no earlier run used, for what a scenario creates and must find empty. Every example is a
+/// module of one test binary, so the process id alone is shared by the scenarios of one run, and
+/// the place the name is asked for tells them apart.
+#[track_caller]
 pub(crate) fn unique(name: &str) -> String {
-    format!("{name}-{}", process::id())
+    let caller = Location::caller();
+    let site = BuildHasherDefault::<DefaultHasher>::default().hash_one((
+        caller.file(),
+        caller.line(),
+        caller.column(),
+    ));
+    format!("{name}-{}-{site:x}", process::id())
 }
 
 /// Creates `stream` with `shards` shards unless the stand has it already, and waits until it is

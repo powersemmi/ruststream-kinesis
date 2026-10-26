@@ -49,7 +49,8 @@ checkpoint. Kinesis stores no checkpoints and no acknowledgements: the consumer 
 
 User headers have no place in a record, so the crate writes them into a small envelope in front of
 the payload, and only when there are any. A record published without headers is the plain payload,
-which any consumer reads.
+which any consumer reads, unless the payload itself begins like an envelope: then it gets one with
+no headers, so it reads back whole.
 
 The model is Amazon Kinesis Data Streams' own
 ([key concepts](https://docs.aws.amazon.com/streams/latest/dev/key-concepts.html),
