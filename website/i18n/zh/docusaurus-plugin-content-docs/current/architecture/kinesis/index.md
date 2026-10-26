@@ -35,6 +35,6 @@ Kinesis 流是一组分片，每个分片都是一个有序的记录日志，每
 
 记录一直留在流中，直到保留期结束，不管有没有人读过：默认 24 小时，最长 365 天。每个消费者用自己的迭代器读取每个分片，因此两个消费者都会看到每条记录。消费者读到了哪里，就是每个分片一个位置，即它的检查点。Kinesis 既不保存检查点，也不保存确认：它们由消费者保存在[租约表](leases.md)中。
 
-记录里没有存放用户消息头的地方，所以本 crate 把消息头写进载荷前面的一个小信封，并且只在有消息头时才这样做。不带消息头发布的记录就是原样的载荷，任何消费者都能读取。
+记录里没有存放用户消息头的地方，所以本 crate 把消息头写进载荷前面的一个小信封，并且只在有消息头时才这样做。不带消息头发布的记录就是原样的载荷，任何消费者都能读取。唯一的例外是本身以信封开头的载荷：它会得到一个不含消息头的信封，因此读回时完整无缺。
 
 这一模型就是 Amazon Kinesis Data Streams 自己的模型（[关键概念](https://docs.aws.amazon.com/streams/latest/dev/key-concepts.html)、[`PutRecord`](https://docs.aws.amazon.com/kinesis/latest/APIReference/API_PutRecord.html)、[保留期](https://docs.aws.amazon.com/streams/latest/dev/kinesis-extended-retention.html)）。分片如何拆分与合并，见[分片与重新分片](shards.md)；消费者如何读取分片，见[读取](reading.md)。

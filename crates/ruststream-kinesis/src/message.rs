@@ -41,7 +41,8 @@ pub(crate) const KPL_MAGIC: [u8; 4] = [0xF3, 0x89, 0x9A, 0xC2];
 /// partition key, so user headers (beyond the partition key, which travels natively) ride a
 /// small prefix - applied only when such headers are present, so plain payloads stay readable
 /// by any consumer. Each header is a length-prefixed name and a length-prefixed value, so a
-/// value is carried byte for byte whatever it holds.
+/// value is carried byte for byte whatever it holds. A headerless payload that begins with this
+/// magic or the text one gets an envelope with an empty header block, so it reads back whole.
 pub(crate) const ENVELOPE_MAGIC: [u8; 4] = *b"RSK2";
 
 /// The magic of the envelope earlier releases wrote, one `name: value` text line per header.
@@ -64,11 +65,13 @@ pub(crate) fn encode_envelope(headers: &HeaderMap, payload: BytesMut) -> Vec<u8>
     let block: usize = user()
         .map(|(name, value)| 2 * FIELD_LEN + name.len() + value.len())
         .sum();
-    if block == 0 {
+    if block == 0 && !looks_enveloped(&payload) {
         // `Vec::from` reclaims the buffer the framework wrote: a record with nothing in front of
         // its payload is that buffer.
         return Vec::from(payload);
     }
+    // A headerless payload that begins with a magic gets an envelope with an empty header block,
+    // so the reader takes the magic for payload rather than cutting at a guessed boundary.
     let mut out = Vec::with_capacity(ENVELOPE_PREFIX + block + payload.len());
     out.extend_from_slice(&ENVELOPE_MAGIC);
     out.extend_from_slice(&field_len(block));
@@ -80,6 +83,13 @@ pub(crate) fn encode_envelope(headers: &HeaderMap, payload: BytesMut) -> Vec<u8>
     }
     out.extend_from_slice(&payload);
     out
+}
+
+/// Whether a reader would take `payload` for an envelope: it begins with either magic.
+fn looks_enveloped(payload: &[u8]) -> bool {
+    payload
+        .first_chunk::<4>()
+        .is_some_and(|magic| *magic == ENVELOPE_MAGIC || *magic == TEXT_ENVELOPE_MAGIC)
 }
 
 /// A length as the envelope writes it. A record is at most 10 MiB, so every length fits; one
@@ -504,6 +514,45 @@ mod tests {
         assert_eq!(decoded.get_str("x-tenant"), Some("acme"));
         assert!(decoded.get(PARTITION_KEY_HEADER).is_none());
         assert_eq!(payload.as_ref(), b"raw");
+    }
+
+    /// A headerless payload that begins like an envelope, this crate's or the text one earlier
+    /// releases wrote, would be cut at a guessed boundary on read, so it is enveloped itself and
+    /// reads back whole.
+    #[test]
+    fn a_headerless_payload_that_looks_like_an_envelope_reads_back_unchanged() {
+        let lookalikes: [&[u8]; 4] = [
+            b"RSK2\0\0\0\0frame",
+            b"RSK1\0\0\0\x05a: b\nframe",
+            b"RSK2",
+            b"RSK1",
+        ];
+        for payload in lookalikes {
+            let data = encode_envelope(&HeaderMap::new(), BytesMut::from(payload));
+            let (headers, read) = decode_envelope(&data);
+            assert_eq!(headers, HeaderMap::new(), "for {payload:?}");
+            assert_eq!(read.as_ref(), payload, "for {payload:?}");
+        }
+    }
+
+    /// The escape is an envelope with an empty header block, which every release that reads
+    /// `RSK2` already reads as the payload alone.
+    #[test]
+    fn the_escape_is_an_envelope_with_no_headers() {
+        let data = encode_envelope(&HeaderMap::new(), BytesMut::from(&b"RSK1x"[..]));
+        assert_eq!(data, b"RSK2\0\0\0\0RSK1x");
+    }
+
+    /// Only the two magics are escaped: a payload that merely shares their first letters is the
+    /// record's data as it stands.
+    #[test]
+    fn a_payload_with_another_prefix_stays_plain() {
+        for payload in [&b"RSK3\0\0\0\0frame"[..], b"RSK", b"RS"] {
+            assert_eq!(
+                encode_envelope(&HeaderMap::new(), BytesMut::from(payload)),
+                payload
+            );
+        }
     }
 
     /// A header value is bytes, not text: whatever it holds - a byte that is not UTF-8, a line

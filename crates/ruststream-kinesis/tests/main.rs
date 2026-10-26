@@ -4,6 +4,7 @@ mod live;
 
 mod asyncapi_kinesis;
 mod conformance_kinesis;
+mod envelope_kinesis;
 mod harness_kinesis;
 mod in_process_kinesis;
 mod integration_kinesis;

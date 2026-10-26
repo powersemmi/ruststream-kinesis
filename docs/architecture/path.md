@@ -52,7 +52,7 @@ Every element settles on its own, with its own checkpoint.
 A reply is encoded into a buffer the dispatch loop reuses. The partition key comes from the publish
 call, then from a `partition-key` header, then from the policy, and a record nobody keyed gets a key
 that spreads records over the shards. User headers go into the envelope, and a reply without them is
-the encoded buffer as it stands. The [`KinesisPublisher`](api:ruststream_kinesis::KinesisPublisher)
+the encoded buffer as it stands, unless it begins like an envelope. The [`KinesisPublisher`](api:ruststream_kinesis::KinesisPublisher)
 writes it with one `PutRecord`, through the SDK client of the runtime that publishes.
 
 The delivery settles after the reply. An `ack` writes a checkpoint only when it moves the shard's
