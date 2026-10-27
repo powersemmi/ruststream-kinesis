@@ -47,10 +47,12 @@ consumers each see every record. What a consumer has read is one position per sh
 checkpoint. Kinesis stores no checkpoints and no acknowledgements: the consumer keeps them, in a
 [lease table](leases.md).
 
-User headers have no place in a record, so the crate writes them into a small envelope in front of
-the payload, and only when there are any. A record published without headers is the plain payload,
-which any consumer reads, unless the payload itself begins like an envelope: then it gets one with
-no headers, so it reads back whole.
+User headers have no place in a record, so the crate writes them into the record's data, in the
+layout of an envelope. The default puts a small block in front of the payload, and only when there
+are headers. A record published without headers is the plain payload, which any consumer reads,
+unless the payload itself begins like an envelope: then it gets one with no headers, so it reads
+back whole. A service whose records another system reads chooses a codec document of headers and
+payload, or no envelope at all.
 
 The model is Amazon Kinesis Data Streams' own
 ([key concepts](https://docs.aws.amazon.com/streams/latest/dev/key-concepts.html),

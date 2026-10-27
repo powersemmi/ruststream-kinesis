@@ -16,7 +16,7 @@ use super::Bus;
 use super::log::{Delivery, DeliveryReceiver, DeliverySender, SubscriptionId};
 use super::seek::{IN_PROCESS_SHARD, LogSeeker, SeekControl, sequence_of};
 use crate::error::KinesisError;
-use crate::message::{KPL_MAGIC, KinesisMessage, Settle};
+use crate::message::{KPL_MAGIC, Received, Settle};
 use crate::subscriber::KinesisSeeker;
 
 /// One subscription's queue over its stream's retained log.
@@ -91,7 +91,7 @@ impl LogDeliveries {
     }
 
     /// The delivery a queued record makes, decoded the way the service's reader decodes one.
-    fn deliver(&self, delivery: &Delivery) -> Result<KinesisMessage, KinesisError> {
+    fn deliver(&self, delivery: &Delivery) -> Result<Received, KinesisError> {
         let data = delivery.record.data.as_ref();
         if data.len() > 4 && data[0..4] == KPL_MAGIC {
             // The service's reader refuses such a record and reads on, so nothing settles it.
@@ -106,18 +106,18 @@ impl LogDeliveries {
             shard: Arc::clone(&self.shard),
             coordinator: self.coordinator.clone(),
         };
-        Ok(KinesisMessage::new(
-            data,
-            &delivery.record.partition_key,
-            &sequence_of(delivery.index),
-            self.seeker.clone(),
-            Settle::InProcess(release),
-        ))
+        Ok(Received {
+            data: data.to_vec(),
+            partition_key: delivery.record.partition_key.to_string(),
+            sequence: Arc::from(sequence_of(delivery.index)),
+            seeker: self.seeker.clone(),
+            settlement: Settle::InProcess(release),
+        })
     }
 
     pub(crate) fn stream(
         &mut self,
-    ) -> impl Stream<Item = Result<KinesisMessage, KinesisError>> + Send + '_ {
+    ) -> impl Stream<Item = Result<Received, KinesisError>> + Send + '_ {
         // Polls the receiver in place rather than wrapping it in an owning stream, so `stream`
         // can be called again after the returned stream is dropped (the runtime and the
         // conformance helpers re-enter it per call).

@@ -29,18 +29,19 @@ use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
 use ruststream::testing::Coordinator;
-use ruststream::{BytesMut, OutgoingFor, OutgoingMessage, RawMessage, Str, Take};
+use ruststream::{BytesMut, HeaderMap, OutgoingFor, OutgoingMessage, RawMessage, Str, Take};
 
 pub(crate) use deliveries::{LogDeliveries, Release};
 pub(crate) use seek::LogSeeker;
 
 use crate::claim::StreamClaim;
+use crate::envelope::{Envelope, EnvelopeError, EnvelopeHeaders};
 use crate::error::KinesisError;
-use crate::message::{PARTITION_KEY_HEADER, decode_envelope, encode_envelope};
+use crate::message::PARTITION_KEY_HEADER;
 use crate::publisher::{KinesisPublishOptions, resolve_partition_key};
 use crate::stream::KinesisStream;
 use crate::subscriber::KinesisSubscriber;
-use log::StreamLog;
+use log::{ReadBack, StreamLog};
 
 /// The longest stream name the service accepts.
 const MAX_STREAM_NAME: usize = 128;
@@ -102,11 +103,12 @@ impl Bus {
     ///
     /// Returns [`KinesisError::NotConnected`] after `shutdown`, and [`KinesisError::Stream`] for a
     /// stream name the service does not accept.
-    pub(crate) fn subscribe(
+    pub(crate) fn subscribe<Env: Envelope>(
         self: &Arc<Self>,
         descriptor: &KinesisStream,
         claim: StreamClaim,
-    ) -> Result<KinesisSubscriber, KinesisError> {
+        envelope: Env,
+    ) -> Result<KinesisSubscriber<Env>, KinesisError> {
         self.ensure_open()?;
         let stream = descriptor.stream();
         check_stream(stream).map_err(|reason| KinesisError::Stream {
@@ -117,6 +119,7 @@ impl Bus {
             stream.to_owned(),
             LogDeliveries::open(self, stream),
             claim,
+            envelope,
         ))
     }
 
@@ -132,12 +135,17 @@ impl Bus {
         msg: OutgoingFor<'_, Take>,
         options: Option<&KinesisPublishOptions>,
         from_policy: Option<&str>,
+        envelope: &impl Envelope,
     ) -> Result<(), KinesisError> {
         self.ensure_open()?;
         let partition_key = resolve_partition_key(options, msg.headers(), from_policy);
         let (stream, payload, headers) = msg.into_parts();
-        let data = encode_envelope(&headers, payload);
-        self.append(stream, partition_key, data)
+        let written =
+            write(envelope, &headers, payload).map_err(|source| KinesisError::Envelope {
+                stream: stream.to_owned(),
+                source,
+            })?;
+        self.append(stream, partition_key, written)
     }
 
     /// Takes a record from outside the service, as another producer writes one to the stream.
@@ -145,19 +153,28 @@ impl Bus {
     /// # Errors
     ///
     /// Returns what [`put`](Self::put) returns for the same record.
-    pub(crate) fn inject(&self, message: OutgoingMessage<'_>) -> Result<(), KinesisError> {
+    pub(crate) fn inject(
+        &self,
+        message: OutgoingMessage<'_>,
+        broker: &impl Envelope,
+    ) -> Result<(), KinesisError> {
         self.ensure_open()?;
         let partition_key = resolve_partition_key(None, message.headers(), None);
         let (stream, payload, headers) = message.into_parts();
-        let data = encode_envelope(&headers, BytesMut::from(payload));
-        self.append(stream, partition_key, data)
+        let written = write(broker, &headers, BytesMut::from(payload)).map_err(|source| {
+            KinesisError::Envelope {
+                stream: stream.to_owned(),
+                source,
+            }
+        })?;
+        self.append(stream, partition_key, written)
     }
 
     fn append(
         &self,
         stream: &str,
         partition_key: String,
-        data: Vec<u8>,
+        (data, read_back): (Vec<u8>, ReadBack),
     ) -> Result<(), KinesisError> {
         check_record(stream, &partition_key, data.len()).map_err(|reason| {
             KinesisError::Publish {
@@ -169,6 +186,7 @@ impl Bus {
             stream,
             Arc::from(partition_key),
             Bytes::from(data),
+            read_back,
             self.coordinator(),
         );
         Ok(())
@@ -182,7 +200,8 @@ impl Bus {
             .records(stream)
             .into_iter()
             .map(|record| {
-                let (mut headers, payload) = decode_envelope(&record.data);
+                let mut headers = record.read_back.headers.clone();
+                let payload = record.read_back.payload.clone();
                 headers.insert(
                     Str::from_static(PARTITION_KEY_HEADER),
                     record.partition_key.to_string(),
@@ -195,6 +214,25 @@ impl Bus {
 
 /// Refuses a stream name the service refuses: one to 128 characters, each a letter, a digit,
 /// `_`, `.` or `-`.
+/// A record's data written in `envelope`, and what that envelope reads back from it.
+fn write(
+    envelope: &impl Envelope,
+    headers: &HeaderMap,
+    payload: BytesMut,
+) -> Result<(Vec<u8>, ReadBack), EnvelopeError> {
+    let data = envelope.seal(EnvelopeHeaders::new(headers), payload)?;
+    let mut read = HeaderMap::new();
+    envelope.read_headers(&data, &mut read);
+    let payload = Bytes::copy_from_slice(envelope.body(&data).fit(data.len()).payload(&data));
+    Ok((
+        data,
+        ReadBack {
+            headers: read,
+            payload,
+        },
+    ))
+}
+
 fn check_stream(stream: &str) -> Result<(), String> {
     if stream.is_empty() || stream.len() > MAX_STREAM_NAME {
         return Err(format!(

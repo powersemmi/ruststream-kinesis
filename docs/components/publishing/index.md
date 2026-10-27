@@ -18,7 +18,7 @@ A registration that names no policy for its reply publishes through this one.
 A record goes to the stream its destination names: the reply type's `#[outgoing(name)]`, a `reply("stream")` clause, or `to("stream")` on the publish.
 A stream is named by its name.
 A publish returns once the service has stored the record, or with the [`KinesisError::Publish`](api:ruststream_kinesis::KinesisError::Publish) it reported.
-The record hands the service the bytes the codec wrote, with the message's headers in an [envelope](../context/envelope.md) in front of them when it has any.
+The record hands the service the bytes the codec wrote, with the message's headers in the layout of the publisher's [envelope](../context/envelope.md).
 A stream takes a record of up to 1 MiB, data and partition key together, unless its owner raised the limit, which goes up to 10 MiB.
 
 Each record carries a [partition key](./keys.md), which picks its shard and its order.

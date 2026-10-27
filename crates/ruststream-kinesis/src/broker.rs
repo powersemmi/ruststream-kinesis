@@ -20,6 +20,12 @@ use std::time::Duration;
 
 use aws_config::{BehaviorVersion, Region, SdkConfig};
 use aws_sdk_kinesis::client::Waiters;
+#[cfg(all(feature = "testing", feature = "cbor"))]
+use ruststream::codec::CborCodec;
+#[cfg(all(feature = "testing", feature = "json"))]
+use ruststream::codec::JsonCodec;
+#[cfg(all(feature = "testing", feature = "msgpack"))]
+use ruststream::codec::MsgpackCodec;
 #[cfg(feature = "testing")]
 use ruststream::testing::{Coordinator, InProcess, TestableBroker};
 use ruststream::{AddressedCopies, Broker, ConnectedBroker, DefaultPublish, Subscribe};
@@ -30,6 +36,14 @@ use tokio::sync::OnceCell;
 
 use crate::claim::ReadStreams;
 use crate::clients::{Overrides, RuntimeClients};
+#[cfg(all(
+    feature = "testing",
+    any(feature = "json", feature = "cbor", feature = "msgpack")
+))]
+use crate::envelope::Framed;
+#[cfg(feature = "testing")]
+use crate::envelope::NoOp;
+use crate::envelope::{ChooseEnvelope, Envelope, Rsk};
 use crate::error::{KinesisError, sdk_err};
 #[cfg(feature = "testing")]
 use crate::in_process::Bus;
@@ -141,9 +155,9 @@ pub(crate) type CoreCell = Arc<OnceCell<Link>>;
 /// # }
 /// # fn main() {}
 /// ```
-#[derive(Clone, Default)]
+#[derive(Clone)]
 #[must_use]
-pub struct KinesisBroker {
+pub struct KinesisBroker<Env = Rsk> {
     endpoint: Option<String>,
     region: Option<String>,
     test_credentials: bool,
@@ -151,9 +165,27 @@ pub struct KinesisBroker {
     store: Option<Arc<dyn LeaseStore>>,
     owner: Option<String>,
     cell: CoreCell,
+    envelope: Env,
 }
 
-impl std::fmt::Debug for KinesisBroker {
+/// A broker in the default layout, [`Rsk`]. Only this form has a default, so
+/// `KinesisBroker::default()` infers it.
+impl Default for KinesisBroker {
+    fn default() -> Self {
+        Self {
+            endpoint: None,
+            region: None,
+            test_credentials: false,
+            sdk_config: None,
+            store: None,
+            owner: None,
+            cell: CoreCell::default(),
+            envelope: Rsk,
+        }
+    }
+}
+
+impl<Env> std::fmt::Debug for KinesisBroker<Env> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KinesisBroker")
             .field("endpoint", &self.endpoint)
@@ -179,6 +211,58 @@ impl KinesisBroker {
         Self {
             sdk_config: Some(config),
             ..Self::default()
+        }
+    }
+}
+
+impl<Env: Envelope> KinesisBroker<Env> {
+    /// Writes and reads records in `envelope`'s layout, wherever a descriptor or a publish policy
+    /// names none of its own.
+    ///
+    /// The default is [`Rsk`], the layout every release of this crate reads. A service whose
+    /// records are read by another system picks the layout that system reads:
+    /// [`Framed`](crate::Framed) for a codec document, [`NoOp`](crate::NoOp) for the raw payload.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # mod demo {
+    /// use ruststream::codec::JsonCodec;
+    /// use ruststream_kinesis::prelude::*;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Order {
+    ///     id: u64,
+    /// }
+    ///
+    /// #[subscriber(KinesisStream::new("orders"))]
+    /// async fn on_order(order: &Order) -> HandlerOutcome {
+    ///     tracing::info!(order.id, "order");
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// /// Every record this service writes and reads is a JSON document of headers and payload.
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     let broker = KinesisBroker::new().envelope(Framed::new(JsonCodec));
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
+    ///         b.include(on_order);
+    ///     })
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
+    pub fn envelope<Named: Envelope>(self, envelope: Named) -> KinesisBroker<Named> {
+        KinesisBroker {
+            endpoint: self.endpoint,
+            region: self.region,
+            test_credentials: self.test_credentials,
+            sdk_config: self.sdk_config,
+            store: self.store,
+            owner: self.owner,
+            cell: self.cell,
+            envelope,
         }
     }
 
@@ -269,8 +353,8 @@ impl KinesisBroker {
 
     /// A publisher sharing this broker's connection cell; buildable before `connect`.
     #[must_use]
-    pub fn publisher(&self) -> KinesisPublisher {
-        KinesisPublisher::new(Arc::clone(&self.cell))
+    pub fn publisher(&self) -> KinesisPublisher<Env> {
+        KinesisPublisher::new(Arc::clone(&self.cell), self.envelope.clone())
     }
 }
 
@@ -299,9 +383,9 @@ fn owner_on(host: Option<&str>, pid: u32, seq: u64) -> String {
     }
 }
 
-impl Broker for KinesisBroker {
+impl<Env: Envelope> Broker for KinesisBroker<Env> {
     type Error = KinesisError;
-    type Connected = ConnectedKinesisBroker;
+    type Connected = ConnectedKinesisBroker<Env>;
 
     async fn connect(self) -> Result<Self::Connected, Self::Error> {
         let link = self
@@ -347,6 +431,7 @@ impl Broker for KinesisBroker {
             link,
             cell: self.cell,
             streams: Arc::default(),
+            envelope: self.envelope,
         })
     }
 }
@@ -432,7 +517,7 @@ impl Broker for KinesisBroker {
 /// # }
 /// ```
 #[cfg(feature = "testing")]
-impl InProcess for KinesisBroker {
+impl<Env: Envelope> InProcess for KinesisBroker<Env> {
     async fn connect_in_process(self) -> Result<Self::Connected, Self::Error> {
         let link = self
             .cell
@@ -443,34 +528,53 @@ impl InProcess for KinesisBroker {
             link,
             cell: self.cell,
             streams: Arc::default(),
+            envelope: self.envelope,
         })
     }
 }
 
 #[cfg(feature = "testing")]
 ruststream::register_testable_broker!(KinesisBroker);
+#[cfg(feature = "testing")]
+ruststream::register_testable_broker!(KinesisBroker<NoOp>);
+#[cfg(all(feature = "testing", feature = "json"))]
+ruststream::register_testable_broker!(KinesisBroker<Framed<JsonCodec>>);
+#[cfg(all(feature = "testing", feature = "cbor"))]
+ruststream::register_testable_broker!(KinesisBroker<Framed<CborCodec>>);
+#[cfg(all(feature = "testing", feature = "msgpack"))]
+ruststream::register_testable_broker!(KinesisBroker<Framed<MsgpackCodec>>);
 
 /// The typed witness that `connect` succeeded: holds the live SDK client directly.
 #[derive(Debug)]
-pub struct ConnectedKinesisBroker {
+pub struct ConnectedKinesisBroker<Env = Rsk> {
     link: Link,
     // Keeps the cell of publishers handed out before connect alive and filled.
     cell: CoreCell,
     /// The streams this broker has an open subscription to: it reads each of them once.
     streams: Arc<ReadStreams>,
+    /// The broker's envelope, for the descriptors and policies that name none.
+    envelope: Env,
 }
 
-impl ConnectedKinesisBroker {
+impl<Env: Envelope> ConnectedKinesisBroker<Env> {
     /// A publisher from the connected form. It rides the same cell-backed publisher type as
     /// the early path; by now `connect` has filled the cell, so it resolves immediately.
     #[must_use]
-    pub fn publisher(&self) -> KinesisPublisher {
-        KinesisPublisher::new(Arc::clone(&self.cell))
+    pub fn publisher(&self) -> KinesisPublisher<Env> {
+        KinesisPublisher::new(Arc::clone(&self.cell), self.envelope.clone())
     }
 
-    /// The same publisher carrying the partition key a mount site named on its policy.
-    pub(crate) fn publisher_keyed(&self, partition_key: Option<Arc<str>>) -> KinesisPublisher {
-        KinesisPublisher::keyed(Arc::clone(&self.cell), partition_key)
+    /// A publisher carrying the partition key and the envelope a mount site named on its policy.
+    pub(crate) fn publisher_keyed<Named: ChooseEnvelope<Env>>(
+        &self,
+        partition_key: Option<Arc<str>>,
+        envelope: Named,
+    ) -> KinesisPublisher<Named::Chosen> {
+        KinesisPublisher::keyed(
+            Arc::clone(&self.cell),
+            partition_key,
+            envelope.choose(&self.envelope),
+        )
     }
 
     /// Opens the subscription described by `descriptor`, returning once it reads: every shard it
@@ -484,16 +588,18 @@ impl ConnectedKinesisBroker {
     /// is shut down. Returns [`KinesisError::AlreadySubscribed`] when this broker already has an
     /// open subscription to the stream: its shards are leased under the broker's one owner id,
     /// so a second subscription would share the first one's leases and checkpoints.
-    pub async fn subscribe_stream(
+    pub async fn subscribe_stream<Named: ChooseEnvelope<Env>>(
         &self,
-        descriptor: KinesisStream,
-    ) -> Result<KinesisSubscriber, KinesisError> {
+        descriptor: KinesisStream<Named>,
+    ) -> Result<KinesisSubscriber<Named::Chosen>, KinesisError> {
+        let (descriptor, named) = descriptor.split();
+        let envelope = named.choose(&self.envelope);
         descriptor.validate()?;
         let claim = self.streams.claim(descriptor.stream())?;
         let core = match &self.link {
             Link::Aws(core) => core,
             #[cfg(feature = "testing")]
-            Link::InProcess(bus) => return bus.subscribe(&descriptor, claim),
+            Link::InProcess(bus) => return bus.subscribe(&descriptor, claim, envelope),
         };
         core.ensure_open()?;
         if let Some(shards) = descriptor.create_value() {
@@ -501,7 +607,7 @@ impl ConnectedKinesisBroker {
         } else {
             Self::require_stream(core, descriptor.stream()).await?;
         }
-        Ok(KinesisSubscriber::open(core, descriptor, claim).await)
+        Ok(KinesisSubscriber::open(core, descriptor, claim, envelope).await)
     }
 
     /// Refuses a stream the service does not have, before the subscription exists.
@@ -566,7 +672,7 @@ impl ConnectedKinesisBroker {
     }
 }
 
-impl ConnectedBroker for ConnectedKinesisBroker {
+impl<Env: Envelope> ConnectedBroker for ConnectedKinesisBroker<Env> {
     type Error = KinesisError;
     type Closed = ();
 
@@ -582,8 +688,8 @@ impl ConnectedBroker for ConnectedKinesisBroker {
     }
 }
 
-impl Subscribe for ConnectedKinesisBroker {
-    type Subscriber = KinesisSubscriber;
+impl<Env: Envelope> Subscribe for ConnectedKinesisBroker<Env> {
+    type Subscriber = KinesisSubscriber<Env>;
     /// A stream is both what a subscription reads and what a publish writes to, so a bare name
     /// is the address of its own copies: the framework publishes the deferred copy of a
     /// `retry_after`, and a spent delivery, back under the name the subscription opened.
@@ -599,7 +705,7 @@ impl Subscribe for ConnectedKinesisBroker {
     }
 }
 
-impl DefaultPublish for ConnectedKinesisBroker {
+impl<Env: Envelope> DefaultPublish for ConnectedKinesisBroker<Env> {
     type Policy = KinesisPublish;
 }
 
@@ -614,7 +720,7 @@ impl DefaultPublish for ConnectedKinesisBroker {
 /// stream name or a partition key it does not accept, a record over its size limit), because the
 /// harness has no error to return it through.
 #[cfg(feature = "testing")]
-impl TestableBroker for ConnectedKinesisBroker {
+impl<Env: Envelope> TestableBroker for ConnectedKinesisBroker<Env> {
     fn install_coordinator(&self, coordinator: Coordinator) {
         if let Link::InProcess(bus) = &self.link {
             bus.install(coordinator);
@@ -623,7 +729,7 @@ impl TestableBroker for ConnectedKinesisBroker {
 
     fn inject(&self, message: OutgoingMessage<'_>) {
         let stream = message.name().to_owned();
-        if let Err(err) = self.bus("inject").inject(message) {
+        if let Err(err) = self.bus("inject").inject(message, &self.envelope) {
             panic!("the injected record to {stream:?} is not one the service takes: {err}");
         }
     }
@@ -646,7 +752,7 @@ impl TestableBroker for ConnectedKinesisBroker {
 }
 
 #[cfg(feature = "testing")]
-impl ConnectedKinesisBroker {
+impl<Env> ConnectedKinesisBroker<Env> {
     /// The in-process transport, which is all the harness drives.
     fn bus(&self, what: &str) -> &Arc<Bus> {
         match &self.link {

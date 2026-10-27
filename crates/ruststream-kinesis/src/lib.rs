@@ -8,6 +8,7 @@ mod context;
 mod cursor;
 #[cfg(feature = "dynamodb-lease")]
 mod dynamo;
+pub mod envelope;
 mod error;
 #[cfg(feature = "testing")]
 mod in_process;
@@ -44,6 +45,7 @@ pub use broker::{ConnectedKinesisBroker, KinesisBroker};
 pub use context::{KinesisBatchContext, KinesisContext, Position, SeekHandle};
 #[cfg(feature = "dynamodb-lease")]
 pub use dynamo::DynamoLeaseStore;
+pub use envelope::{Envelope, Framed, NoOp, Rsk};
 pub use error::KinesisError;
 pub use lease::{LeaseError, LeaseKey, LeaseState, LeaseStore, MemoryLeaseStore, SHARD_END};
 pub use message::{
@@ -53,5 +55,5 @@ pub use publisher::{
     KinesisPublish, KinesisPublishOptions, KinesisPublishSettings, KinesisPublishSteps,
     KinesisPublisher,
 };
-pub use stream::{KinesisStream, KinesisSubscriberExt};
+pub use stream::{KinesisEnvelopeExt, KinesisStream, KinesisSubscriberExt};
 pub use subscriber::{KinesisSeeker, KinesisSubscriber};

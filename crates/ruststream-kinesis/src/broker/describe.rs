@@ -3,11 +3,18 @@
 use aws_config::{Region, SdkConfig};
 use aws_sdk_kinesis::config::endpoint::{DefaultResolver, Params, ResolveEndpoint};
 use futures::FutureExt;
+#[cfg(feature = "asyncapi")]
+use ruststream::asyncapi::{Binding, Bindings};
 use ruststream::{DescribeServer, ServerSpec};
+#[cfg(feature = "asyncapi")]
+use serde::Serialize;
 
 use super::KinesisBroker;
+use crate::envelope::Envelope;
+#[cfg(feature = "asyncapi")]
+use crate::stream::{BINDING_KEY, EnvelopeBinding};
 
-impl DescribeServer for KinesisBroker {
+impl<Env: Envelope> DescribeServer for KinesisBroker<Env> {
     /// The coordinate clients connect to: the host and port, never the endpoint URL as written.
     ///
     /// An overridden endpoint is a URL, so the scheme and any userinfo come off it here - the
@@ -89,8 +96,33 @@ impl DescribeServer for KinesisBroker {
             regional_host(region, configured)
         })
         .unwrap_or_else(|| "kinesis.amazonaws.com".to_owned());
-        ServerSpec::new(host, "kinesis")
+        #[cfg_attr(not(feature = "asyncapi"), allow(unused_mut))]
+        let mut spec = ServerSpec::new(host, "kinesis");
+        #[cfg(feature = "asyncapi")]
+        {
+            spec.bindings = envelope_binding::<Env>();
+        }
+        spec
     }
+}
+
+/// What the broker writes into the server object of the generated document: the envelope its
+/// records travel in where a mount site names none.
+#[cfg(feature = "asyncapi")]
+#[derive(Debug, Serialize)]
+struct KinesisServerBinding {
+    envelope: EnvelopeBinding,
+}
+
+/// The server binding of a broker whose envelope is `Env`, or nothing when it cannot be built:
+/// a document goes without a binding rather than a service without its start-up.
+#[cfg(feature = "asyncapi")]
+fn envelope_binding<Env: Envelope>() -> Bindings {
+    let body = KinesisServerBinding {
+        envelope: EnvelopeBinding::of::<Env>(),
+    };
+    Binding::extension(BINDING_KEY, &body)
+        .map_or_else(|_| Bindings::new(), |binding| Bindings::new().with(binding))
 }
 
 /// The host the SDK's own endpoint rules give the Kinesis client for `region`, so a partition with

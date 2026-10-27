@@ -49,7 +49,7 @@ This site holds the guides, one page per component and the architecture of the c
 - [KinesisContext](https://powersemmi.github.io/ruststream-kinesis/latest/components/context/): a record's position and the seek handle, through `Ctx<Position>` and `Ctx<SeekHandle>`
 - [KinesisBatchContext](https://powersemmi.github.io/ruststream-kinesis/latest/components/context/batch-context/): a batch handler's context and its seek handle
 - [Headers](https://powersemmi.github.io/ruststream-kinesis/latest/components/context/headers/): the sequence number, the shard and the partition key on every delivery
-- [Envelope](https://powersemmi.github.io/ruststream-kinesis/latest/components/context/envelope/): user headers in front of the payload, only when there are any
+- [Envelope](https://powersemmi.github.io/ruststream-kinesis/latest/components/context/envelope/): how headers ride a record: the default RSK2 block, a codec document, no envelope, or a layout of your own
 - [KinesisPosition](https://powersemmi.github.io/ruststream-kinesis/latest/components/positions/): the trim horizon, the tip, an arrival timestamp, or one record of one shard
 - [start_at](https://powersemmi.github.io/ruststream-kinesis/latest/components/positions/start-at/): a subscription opened at a position on every startup
 - [Seek](https://powersemmi.github.io/ruststream-kinesis/latest/components/positions/seek/): a running subscription moved from its handler through `Ctx<SeekHandle>`

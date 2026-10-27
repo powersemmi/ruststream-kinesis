@@ -18,6 +18,7 @@ use ruststream::{AddressedCopies, RedeliveryAddress, RedeliveryAddressed, Subscr
 use serde::Serialize;
 
 use crate::broker::ConnectedKinesisBroker;
+use crate::envelope::{ChooseEnvelope, Envelope, Inherit};
 use crate::error::KinesisError;
 use crate::subscriber::KinesisSubscriber;
 
@@ -90,10 +91,11 @@ use crate::subscriber::KinesisSubscriber;
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use]
-pub struct KinesisStream {
+pub struct KinesisStream<Env = Inherit> {
     stream: String,
     poll_interval: Duration,
     create_shards: Option<i32>,
+    envelope: Env,
 }
 
 impl KinesisStream {
@@ -109,7 +111,86 @@ impl KinesisStream {
             // per-shard budget.
             poll_interval: Duration::from_secs(1),
             create_shards: None,
+            envelope: Inherit,
         }
+    }
+}
+
+impl<Env> KinesisStream<Env> {
+    /// Reads this subscription's records through `envelope` instead of the broker's.
+    ///
+    /// A stream another system writes is read in that system's layout: [`NoOp`](crate::NoOp)
+    /// for raw records, [`Framed`](crate::Framed) for a codec document, an envelope of the
+    /// service's own for anything else. The choice is a type, resolved when the app is built.
+    ///
+    /// # Examples
+    ///
+    /// The manual path names the envelope on the descriptor; the `#[subscriber(..)]` path names
+    /// it at the mount site with [`KinesisEnvelopeExt::envelope`].
+    ///
+    /// ```
+    /// # mod demo {
+    /// use std::future::{Future, ready};
+    ///
+    /// use ruststream_kinesis::prelude::*;
+    /// use schemars::JsonSchema;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize, JsonSchema)]
+    /// struct Reading {
+    ///     celsius: f64,
+    /// }
+    ///
+    /// /// Logs a reading. Devices write plain JSON records through an AWS IoT rule.
+    /// struct Log;
+    ///
+    /// impl Handle<Reading> for Log {
+    ///     fn handle(
+    ///         &self,
+    ///         reading: &Reading,
+    ///         _outs: &(),
+    ///         _ctx: &mut Context<'_>,
+    ///     ) -> impl Future<Output = Result<(), HandlerOutcome>> {
+    ///         tracing::info!(reading.celsius, "reading");
+    ///         ready(Ok(()))
+    ///     }
+    /// }
+    ///
+    /// pub fn app() -> impl App {
+    ///     RustStream::new(AppInfo::new("readings", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
+    ///         let readings = KinesisStream::new("readings").envelope(NoOp);
+    ///         b.include(subscriber(readings, Log).build());
+    ///     })
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
+    pub fn envelope<Named: Envelope>(self, envelope: Named) -> KinesisStream<Named> {
+        KinesisStream {
+            stream: self.stream,
+            poll_interval: self.poll_interval,
+            create_shards: self.create_shards,
+            envelope,
+        }
+    }
+
+    /// The descriptor's settings and its envelope apart: the reader needs only the first.
+    pub(crate) fn split(self) -> (KinesisStream, Env) {
+        let Self {
+            stream,
+            poll_interval,
+            create_shards,
+            envelope,
+        } = self;
+        (
+            KinesisStream {
+                stream,
+                poll_interval,
+                create_shards,
+                envelope: Inherit,
+            },
+            envelope,
+        )
     }
 
     /// The pause between reads on an idle shard. Defaults to 1 second, the service's own
@@ -220,8 +301,8 @@ pub trait KinesisSubscriberExt {
     fn create_if_missing(self, shards: i32) -> Self;
 }
 
-impl<Def, State, DefCodec> KinesisSubscriberExt
-    for SubscriberBuilder<Def, KinesisStream, State, DefCodec>
+impl<Def, State, DefCodec, Env> KinesisSubscriberExt
+    for SubscriberBuilder<Def, KinesisStream<Env>, State, DefCodec>
 where
     Def: Declared,
 {
@@ -234,10 +315,68 @@ where
     }
 }
 
+/// The envelope a subscription reads in, named at the mount site.
+///
+/// The `#[subscriber(..)]` attribute takes the descriptor's type from its constructor, so a
+/// descriptor whose envelope changes its type is named here instead, after the handler, the
+/// way the framework's own steps are. The manual path names it on the descriptor itself,
+/// [`KinesisStream::envelope`].
+///
+/// # Examples
+///
+/// ```
+/// # mod demo {
+/// use ruststream_kinesis::prelude::*;
+/// use serde::Deserialize;
+///
+/// #[derive(Deserialize)]
+/// struct Click {
+///     page: String,
+/// }
+///
+/// #[subscriber(KinesisStream::new("clicks"))]
+/// async fn on_click(click: &Click) -> HandlerOutcome {
+///     tracing::info!(click.page, "click");
+///     HandlerOutcome::ack()
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     RustStream::new(AppInfo::new("clicks", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
+///         // A browser SDK writes the clicks as plain JSON records.
+///         b.include(on_click.envelope(NoOp));
+///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+pub trait KinesisEnvelopeExt: Sized {
+    /// The mount chain reading in `Named`.
+    type Enveloped<Named: Envelope>;
+
+    /// Reads this subscription's records through `envelope` instead of the broker's. The
+    /// mount-site spelling of [`KinesisStream::envelope`].
+    #[must_use]
+    fn envelope<Named: Envelope>(self, envelope: Named) -> Self::Enveloped<Named>;
+}
+
+impl<Decl, Def, State, DefCodec, Env> KinesisEnvelopeExt for Decl
+where
+    Decl: Declared<Settings = SubscriberBuilder<Def, KinesisStream<Env>, State, DefCodec>>,
+    Def: Declared,
+{
+    type Enveloped<Named: Envelope> = SubscriberBuilder<Def, KinesisStream<Named>, State, DefCodec>;
+
+    fn envelope<Named: Envelope>(self, envelope: Named) -> Self::Enveloped<Named> {
+        self.declare()
+            .map_source(|source| source.envelope(envelope))
+    }
+}
+
 /// The manual path's constructor takes a subject string or a source, and this is what makes the
 /// crate's own descriptor the second: a service without the `macros` feature names its stream,
 /// and the settings that price a read, exactly as an attribute one does.
-impl IntoSource for KinesisStream {
+impl<Env> IntoSource for KinesisStream<Env> {
     type Source = Self;
 
     fn into_source(self) -> Self {
@@ -259,31 +398,74 @@ struct KinesisChannelBinding<'a> {
     /// The shards the descriptor would provision, present only where it creates the stream.
     #[serde(rename = "shardCount", skip_serializing_if = "Option::is_none")]
     shard_count: Option<i32>,
+    /// The envelope the descriptor names, present only where it names one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    envelope: Option<EnvelopeBinding>,
+}
+
+/// The envelope a descriptor, a publish policy or a broker names, as the generated document
+/// reports it: its name, and the media type of the record's data where the envelope frames the
+/// payload in a document of its own.
+#[cfg(feature = "asyncapi")]
+#[derive(Debug, Serialize)]
+pub(crate) struct EnvelopeBinding {
+    name: &'static str,
+    #[serde(rename = "contentType", skip_serializing_if = "Option::is_none")]
+    content_type: Option<&'static str>,
+}
+
+#[cfg(feature = "asyncapi")]
+impl EnvelopeBinding {
+    /// The binding of what a mount site names, or nothing where it reads the broker's.
+    pub(crate) fn declared<Named, Default>() -> Option<Self>
+    where
+        Named: ChooseEnvelope<Default>,
+        Default: Envelope,
+    {
+        Named::declared().map(|(name, content_type)| Self { name, content_type })
+    }
+
+    /// The binding of an envelope itself.
+    pub(crate) const fn of<Env: Envelope>() -> Self {
+        Self {
+            name: Env::NAME,
+            content_type: Env::CONTENT_TYPE,
+        }
+    }
 }
 
 /// The extension key this crate writes its bindings under, on the channel and on the message.
 #[cfg(feature = "asyncapi")]
 pub(crate) const BINDING_KEY: &str = "x-ruststream-kinesis";
 
-impl KinesisStream {
-    /// The channel binding of this descriptor, or nothing when it cannot be built.
+impl<Env> KinesisStream<Env> {
+    /// The channel binding of this descriptor on a broker whose envelope is `Default`, or nothing
+    /// when it cannot be built.
     ///
     /// A document is a description of the service, so a binding that fails to serialize is one
     /// the document goes without rather than a start-up the service loses.
     #[cfg(feature = "asyncapi")]
-    fn binding(&self) -> Bindings {
+    fn binding<Default: Envelope>(&self) -> Bindings
+    where
+        Env: ChooseEnvelope<Default>,
+    {
         let body = KinesisChannelBinding {
-            stream: self.stream(),
+            stream: &self.stream,
             poll_interval_ms: u64::try_from(self.poll_interval.as_millis()).unwrap_or(u64::MAX),
             shard_count: self.create_shards,
+            envelope: EnvelopeBinding::declared::<Env, Default>(),
         };
         Binding::extension(BINDING_KEY, &body)
             .map_or_else(|_| Bindings::new(), |binding| Bindings::new().with(binding))
     }
 }
 
-impl SubscriptionSource<ConnectedKinesisBroker> for KinesisStream {
-    type Subscriber = KinesisSubscriber;
+impl<Env, Default> SubscriptionSource<ConnectedKinesisBroker<Default>> for KinesisStream<Env>
+where
+    Env: ChooseEnvelope<Default>,
+    Default: Envelope,
+{
+    type Subscriber = KinesisSubscriber<Env::Chosen>;
     /// Kinesis moves nothing on its own: it holds no redelivery timer, no delivery counter and
     /// no dead-letter mechanism, so the framework publishes every copy. A stream is what a
     /// subscription reads and what a publish writes to, so this descriptor knows where a copy
@@ -291,23 +473,27 @@ impl SubscriptionSource<ConnectedKinesisBroker> for KinesisStream {
     type Copies = AddressedCopies;
 
     fn name(&self) -> &str {
-        self.stream()
+        &self.stream
     }
 
     async fn subscribe(
         self,
-        connected: &ConnectedKinesisBroker,
-    ) -> Result<KinesisSubscriber, KinesisError> {
+        connected: &ConnectedKinesisBroker<Default>,
+    ) -> Result<KinesisSubscriber<Env::Chosen>, KinesisError> {
         connected.subscribe_stream(self).await
     }
 
     #[cfg(feature = "asyncapi")]
     fn channel_bindings(&self) -> Bindings {
-        self.binding()
+        self.binding::<Default>()
     }
 }
 
-impl RedeliveryAddressed<ConnectedKinesisBroker> for KinesisStream {
+impl<Env, Default> RedeliveryAddressed<ConnectedKinesisBroker<Default>> for KinesisStream<Env>
+where
+    Env: ChooseEnvelope<Default>,
+    Default: Envelope,
+{
     /// The stream this descriptor names, which is where a deferred copy and a spent delivery of
     /// this registration are published.
     ///
@@ -360,10 +546,10 @@ impl RedeliveryAddressed<ConnectedKinesisBroker> for KinesisStream {
     /// ```
     fn redelivery_address(
         &self,
-        _connected: &ConnectedKinesisBroker,
+        _connected: &ConnectedKinesisBroker<Default>,
     ) -> impl Future<Output = Result<RedeliveryAddress, KinesisError>> + Send {
         // The stream name is the answer, so nothing is asked of the broker and nothing is awaited.
-        ready(Ok(RedeliveryAddress::new(self.stream().to_owned())))
+        ready(Ok(RedeliveryAddress::new(self.stream.clone())))
     }
 }
 

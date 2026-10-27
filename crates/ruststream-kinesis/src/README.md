@@ -112,7 +112,8 @@ item's own documentation keeps the detail.
 - [KinesisBatchContext][c-batch-context]: [`KinesisBatchContext`], a batch handler's context.
 - [Headers][c-headers]: [`SEQUENCE_HEADER`], [`SHARD_HEADER`] and [`PARTITION_KEY_HEADER`] on
   every delivery.
-- [Envelope][c-envelope]: how user headers travel inside a record.
+- [Envelope][c-envelope]: how headers travel inside a record: [`Rsk`], [`Framed`], [`NoOp`] or
+  an [`Envelope`] of the service's own, chosen on the broker, the subscription or the policy.
 
 ## Positions
 

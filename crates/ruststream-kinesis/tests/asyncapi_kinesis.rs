@@ -9,6 +9,7 @@
 use std::time::Duration;
 
 use ruststream::asyncapi::{Bindings, Spec, build_spec};
+use ruststream::codec::{CborCodec, JsonCodec};
 use ruststream::conformance::harness;
 use ruststream_kinesis::prelude::*;
 use schemars::JsonSchema;
@@ -135,5 +136,56 @@ fn the_description_carries_no_credential() {
         &KinesisBroker::new().endpoint("https://key:hunter2@kinesis.eu-west-1.amazonaws.com:443"),
         &KinesisStream::new("orders").create_if_missing(2),
         "hunter2",
+    );
+}
+
+/// The document of the same mount, on a broker framing its records in JSON.
+fn framed_document() -> serde_json::Value {
+    let broker = KinesisBroker::new().envelope(Framed::new(JsonCodec));
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker_labeled(
+        "kinesis",
+        broker,
+        |b| {
+            b.include(confirm).out_reply(Publish::default());
+        },
+    );
+    serde_json::to_value(build_spec(&app)).expect("the document serializes")
+}
+
+/// The broker's envelope is where every record without an envelope of its own travels, so the
+/// server reports it, and the media type of the document it frames the payload in.
+#[test]
+fn the_server_reports_the_brokers_envelope_and_its_media_type() {
+    let document = framed_document();
+
+    assert_eq!(
+        document["servers"]["kinesis"]["bindings"]["x-ruststream-kinesis"]["envelope"],
+        serde_json::json!({"name": "framed", "contentType": "application/json"})
+    );
+}
+
+/// A subscription or a publish policy that names an envelope of its own reports it beside its
+/// other settings; one that names none leaves it to the server.
+#[test]
+fn a_mount_site_reports_the_envelope_it_names() {
+    let app =
+        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
+            b.include(confirm.envelope(Framed::new(CborCodec)))
+                .out_reply(Publish::default().envelope(NoOp));
+        });
+    let document = serde_json::to_value(build_spec(&app)).expect("the document serializes");
+
+    assert_eq!(
+        document["channels"]["orders"]["bindings"]["x-ruststream-kinesis"]["envelope"],
+        serde_json::json!({"name": "framed", "contentType": "application/cbor"})
+    );
+    assert_eq!(
+        document["components"]["messages"]["Receipt"]["bindings"]["x-ruststream-kinesis"],
+        serde_json::json!({"envelope": {"name": "none"}})
+    );
+    assert!(
+        framed_document()["channels"]["orders"]["bindings"]["x-ruststream-kinesis"]
+            .get("envelope")
+            .is_none()
     );
 }

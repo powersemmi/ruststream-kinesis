@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
+use ruststream::HeaderMap;
 use ruststream::testing::Coordinator;
 use tokio::sync::mpsc;
 
@@ -25,12 +26,21 @@ use crate::message::KinesisPosition;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct SubscriptionId(u64);
 
-/// One retained record: what went out on the wire, and when it arrived.
+/// One retained record: what went out on the wire, what its publisher's envelope reads back from
+/// it, and when it arrived.
 #[derive(Debug, Clone)]
 pub(crate) struct Record {
     pub(crate) partition_key: Arc<str>,
     pub(crate) data: Bytes,
+    pub(crate) read_back: Arc<ReadBack>,
     at_millis: u64,
+}
+
+/// A record as the envelope it was written in reads it: what the harness reports as published.
+#[derive(Debug)]
+pub(crate) struct ReadBack {
+    pub(crate) headers: HeaderMap,
+    pub(crate) payload: Bytes,
 }
 
 impl Record {
@@ -145,11 +155,13 @@ impl StreamLog {
         stream: &str,
         partition_key: Arc<str>,
         data: Bytes,
+        read_back: ReadBack,
         coordinator: Option<&Coordinator>,
     ) {
         let record = Record {
             partition_key,
             data,
+            read_back: Arc::new(read_back),
             at_millis: now_millis(),
         };
         let mut state = self.lock();
@@ -305,6 +317,10 @@ mod tests {
         Record {
             partition_key: Arc::from("key"),
             data: Bytes::from_static(b"record"),
+            read_back: Arc::new(ReadBack {
+                headers: HeaderMap::new(),
+                payload: Bytes::from_static(b"record"),
+            }),
             at_millis,
         }
     }
