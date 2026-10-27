@@ -13,7 +13,7 @@ use std::borrow::Cow;
 
 use super::FrameCodec;
 use super::binary::{ReadHeaders, TextHeaders};
-use crate::envelope::{Body, EnvelopeError, EnvelopeHeaders};
+use crate::envelope::{Body, EnvelopeError, EnvelopeHeaders, MalformedHeaders};
 
 impl FrameCodec for JsonCodec {
     fn frame(
@@ -44,7 +44,7 @@ impl FrameCodec for JsonCodec {
     }
 
     fn frame_body(&self, record: &[u8]) -> Body {
-        let Ok(frame) = serde_json::from_slice::<Frame<'_, IgnoredAny>>(record) else {
+        let Ok(frame) = serde_json::from_slice::<Frame<'_>>(record) else {
             return Body::Whole;
         };
         match (frame.payload, frame.payload_base64) {
@@ -54,26 +54,29 @@ impl FrameCodec for JsonCodec {
                 let start = text.as_ptr() as usize - record.as_ptr() as usize;
                 Body::Within(start..start + text.len())
             }
-            (None, Some(encoded)) => STANDARD
-                .decode(encoded.as_bytes())
-                .map_or(Body::Whole, Body::Decoded),
+            (None, Some(encoded)) => decode_base64(&encoded).map_or(Body::Whole, Body::Decoded),
             _ => Body::Whole,
         }
     }
 
-    fn frame_headers(&self, record: &[u8], headers: &mut HeaderMap) {
-        let Ok(frame) = serde_json::from_slice::<Frame<'_, ReadHeaders>>(record) else {
-            return;
-        };
-        let decodes = match (&frame.payload, &frame.payload_base64) {
-            (Some(_), None) => true,
-            (None, Some(encoded)) => STANDARD.decode(encoded.as_bytes()).is_ok(),
-            _ => false,
-        };
-        if decodes {
-            frame.headers.insert_into(headers);
-        }
+    fn frame_headers(
+        &self,
+        record: &[u8],
+        headers: &mut HeaderMap,
+    ) -> Result<(), MalformedHeaders> {
+        // The body pass found a frame and decoded its payload; this pass reads the header map and
+        // skips the payload fields without decoding them.
+        let frame = serde_json::from_slice::<FrameHeaders>(record).map_err(|_| MalformedHeaders)?;
+        frame.headers.insert_into(headers);
+        Ok(())
     }
+}
+
+/// The payload of a `payload_base64` field, or `None` when it is no base64.
+fn decode_base64(encoded: &str) -> Option<Vec<u8>> {
+    #[cfg(test)]
+    tests::DECODES.with(|decodes| decodes.set(decodes.get() + 1));
+    STANDARD.decode(encoded.as_bytes()).ok()
 }
 
 /// The document of a payload that is a JSON text.
@@ -99,16 +102,28 @@ impl Serialize for Base64<'_> {
     }
 }
 
-/// A document as it is read: the headers in the form `Headers` asks for, and the two payload
-/// fields, of which a frame has exactly one. Any other field makes it no frame.
+/// A document read for its payload: the header map skipped over, and the two payload fields, of
+/// which a frame has exactly one. Any other field makes it no frame.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Frame<'a, Headers> {
-    headers: Headers,
+struct Frame<'a> {
+    #[serde(rename = "headers")]
+    _headers: IgnoredAny,
     #[serde(default, borrow, deserialize_with = "present")]
     payload: Option<&'a RawValue>,
     #[serde(default, borrow)]
     payload_base64: Option<Cow<'a, str>>,
+}
+
+/// A frame read for its header map, the payload fields skipped over.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FrameHeaders {
+    headers: ReadHeaders,
+    #[serde(default, rename = "payload")]
+    _payload: Option<IgnoredAny>,
+    #[serde(default, rename = "payload_base64")]
+    _payload_base64: Option<IgnoredAny>,
 }
 
 /// A `payload` field that is there, whatever it holds: `null` is a payload too.
@@ -120,12 +135,19 @@ fn present<'de, In: Deserializer<'de>>(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use ruststream::{BytesMut, HeaderMap};
 
     use ruststream::codec::JsonCodec;
 
-    use crate::envelope::{Body, Envelope, EnvelopeHeaders, Framed};
+    use crate::envelope::{Body, Envelope, EnvelopeHeaders, Framed, MalformedHeaders};
     use crate::message::PARTITION_KEY_HEADER;
+
+    thread_local! {
+        /// The base64 payloads decoded on this test's thread.
+        pub(super) static DECODES: Cell<usize> = const { Cell::new(0) };
+    }
 
     fn headers() -> HeaderMap {
         let mut headers = HeaderMap::new();
@@ -146,7 +168,9 @@ mod tests {
         let body = framed.body(record).fit(record.len());
         let payload = body.payload(record).to_vec();
         let mut read = HeaderMap::new();
-        framed.read_headers(record, &mut read);
+        framed
+            .read_headers(record, &body, &mut read)
+            .expect("the header map parses");
         (body, payload, read)
     }
 
@@ -226,5 +250,39 @@ mod tests {
                 String::from_utf8_lossy(record)
             );
         }
+    }
+
+    /// A delivery of a base64 payload decodes it once: the body pass decides the shape and
+    /// decodes the payload, and reading the headers decodes nothing again.
+    #[test]
+    fn a_base64_payload_is_decoded_once_per_delivery() {
+        let record = seal(&[0x08, 0x07]);
+        DECODES.with(|decodes| decodes.set(0));
+
+        let (_, payload, headers) = open(&record);
+
+        assert_eq!(payload, [0x08, 0x07]);
+        assert_eq!(headers.get_str("event"), Some("created"));
+        assert_eq!(
+            DECODES.with(Cell::get),
+            1,
+            "the payload was decoded more than once"
+        );
+    }
+
+    /// A frame whose header map does not parse still delivers its payload; its headers are
+    /// reported malformed rather than read as nothing without a word.
+    #[test]
+    fn a_frame_whose_header_map_does_not_parse_reports_it() {
+        let record = br#"{"headers":{"event":7},"payload":{"id":7}}"#;
+        let framed = Framed::new(JsonCodec);
+        let body = framed.body(record).fit(record.len());
+        let mut read = HeaderMap::new();
+
+        let headers = framed.read_headers(record, &body, &mut read);
+
+        assert_eq!(body.payload(record), br#"{"id":7}"#);
+        assert_eq!(headers, Err(MalformedHeaders));
+        assert!(read.is_empty());
     }
 }

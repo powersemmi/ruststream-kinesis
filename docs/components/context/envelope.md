@@ -32,6 +32,7 @@ A delivery finds its payload when it is made and reads the headers only when som
 A handler that reads no header never reads the header block.
 
 A record the envelope does not recognise is somebody else's payload: it reaches the handler whole, with no headers.
+A record the envelope recognises but whose header block does not parse reaches the handler with its payload and no envelope headers, and the subscription logs it with the stream and the envelope.
 
 A record aggregated by the Kinesis Producer Library packs many user records into one.
 The subscription reports it as [`KinesisError::AggregatedRecord`](api:ruststream_kinesis::KinesisError::AggregatedRecord), which the runtime logs, and moves on: the record is never handed to a handler, and the shard's checkpoint moves past it.

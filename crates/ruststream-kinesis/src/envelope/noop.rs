@@ -2,7 +2,7 @@
 
 use ruststream::{BytesMut, HeaderMap};
 
-use super::{Body, Envelope, EnvelopeError, EnvelopeHeaders};
+use super::{Body, Envelope, EnvelopeError, EnvelopeHeaders, MalformedHeaders};
 
 /// No envelope: the record's data is the payload, byte for byte, for a consumer that reads raw
 /// records (a Firehose delivery stream, a Lambda, a service in another language).
@@ -65,7 +65,14 @@ impl Envelope for NoOp {
         Body::Whole
     }
 
-    fn read_headers(&self, _record: &[u8], _headers: &mut HeaderMap) {}
+    fn read_headers(
+        &self,
+        _record: &[u8],
+        _body: &Body,
+        _headers: &mut HeaderMap,
+    ) -> Result<(), MalformedHeaders> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -100,7 +107,8 @@ mod tests {
         assert_eq!(record, payload);
         assert_eq!(NoOp.body(&record).payload(&record), payload);
         let mut read = HeaderMap::new();
-        NoOp.read_headers(&record, &mut read);
+        NoOp.read_headers(&record, &Body::Whole, &mut read)
+            .expect("no envelope, nothing malformed");
         assert!(read.is_empty());
     }
 }

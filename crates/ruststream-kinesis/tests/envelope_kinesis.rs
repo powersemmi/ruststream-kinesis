@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use ruststream::codec::{CborCodec, JsonCodec};
 use ruststream::testing::TestApp;
 use ruststream::{BytesMut, HeaderMap};
-use ruststream_kinesis::envelope::{Body, EnvelopeError, EnvelopeHeaders};
+use ruststream_kinesis::envelope::{Body, EnvelopeError, EnvelopeHeaders, MalformedHeaders};
 use ruststream_kinesis::prelude::*;
 use ruststream_kinesis::{Envelope, Framed, NoOp, Rsk};
 use schemars::JsonSchema;
@@ -489,9 +489,14 @@ impl Envelope for Counted {
         Rsk.body(record)
     }
 
-    fn read_headers(&self, record: &[u8], headers: &mut HeaderMap) {
+    fn read_headers(
+        &self,
+        record: &[u8],
+        body: &Body,
+        headers: &mut HeaderMap,
+    ) -> Result<(), MalformedHeaders> {
         self.reads.fetch_add(1, Ordering::SeqCst);
-        Rsk.read_headers(record, headers);
+        Rsk.read_headers(record, body, headers)
     }
 }
 

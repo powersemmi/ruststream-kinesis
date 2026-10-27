@@ -57,7 +57,7 @@ use crate::message::{PARTITION_KEY_HEADER, SEQUENCE_HEADER, SHARD_HEADER};
 /// # mod demo {
 /// use ruststream::BytesMut;
 /// use ruststream::HeaderMap;
-/// use ruststream_kinesis::envelope::{Body, Envelope, EnvelopeError, EnvelopeHeaders};
+/// use ruststream_kinesis::envelope::{Body, Envelope, EnvelopeError, EnvelopeHeaders, MalformedHeaders};
 /// use ruststream_kinesis::prelude::*;
 /// use serde::Deserialize;
 ///
@@ -100,10 +100,16 @@ use crate::message::{PARTITION_KEY_HEADER, SEQUENCE_HEADER, SHARD_HEADER};
 ///         Self::split(record).map_or(Body::Whole, |(_, start)| Body::Within(start..record.len()))
 ///     }
 ///
-///     fn read_headers(&self, record: &[u8], headers: &mut HeaderMap) {
+///     fn read_headers(
+///         &self,
+///         record: &[u8],
+///         _body: &Body,
+///         headers: &mut HeaderMap,
+///     ) -> Result<(), MalformedHeaders> {
 ///         if let Some((tenant, _)) = Self::split(record) {
 ///             headers.insert("tenant", tenant.to_vec());
 ///         }
+///         Ok(())
 ///     }
 /// }
 ///
@@ -160,8 +166,19 @@ pub trait Envelope: Clone + Send + Sync + 'static {
     fn body(&self, record: &[u8]) -> Body;
 
     /// Adds the headers a record's data carries to `headers`. Runs at most once per delivery,
-    /// on the first read of its headers.
-    fn read_headers(&self, record: &[u8], headers: &mut HeaderMap);
+    /// on the first read of its headers, and is handed the [`Body`] that [`body`](Self::body)
+    /// found, so what that pass learned about the record is not learned again.
+    ///
+    /// # Errors
+    ///
+    /// [`MalformedHeaders`] when the record is an envelope whose header block does not parse.
+    /// The delivery then has no envelope headers, and the subscription logs it.
+    fn read_headers(
+        &self,
+        record: &[u8],
+        body: &Body,
+        headers: &mut HeaderMap,
+    ) -> Result<(), MalformedHeaders>;
 }
 
 /// Where a record's payload sits, as an [`Envelope`] finds it.
@@ -173,7 +190,7 @@ pub trait Envelope: Clone + Send + Sync + 'static {
 /// ```
 /// # mod demo {
 /// use ruststream::{BytesMut, HeaderMap};
-/// use ruststream_kinesis::envelope::{Body, Envelope, EnvelopeError, EnvelopeHeaders};
+/// use ruststream_kinesis::envelope::{Body, Envelope, EnvelopeError, EnvelopeHeaders, MalformedHeaders};
 /// use ruststream_kinesis::prelude::*;
 ///
 /// const TAG: &[u8; 4] = b"ORD1";
@@ -205,7 +222,14 @@ pub trait Envelope: Clone + Send + Sync + 'static {
 ///         }
 ///     }
 ///
-///     fn read_headers(&self, _record: &[u8], _headers: &mut HeaderMap) {}
+///     fn read_headers(
+///         &self,
+///         _record: &[u8],
+///         _body: &Body,
+///         _headers: &mut HeaderMap,
+///     ) -> Result<(), MalformedHeaders> {
+///         Ok(())
+///     }
 /// }
 ///
 /// #[derive(serde::Deserialize)]
@@ -272,7 +296,9 @@ impl Body {
 /// ```
 /// # mod demo {
 /// use ruststream::{BytesMut, HeaderMap};
-/// use ruststream_kinesis::envelope::{Body, Envelope, EnvelopeError, EnvelopeHeaders, Rsk};
+/// use ruststream_kinesis::envelope::{
+///     Body, Envelope, EnvelopeError, EnvelopeHeaders, MalformedHeaders, Rsk,
+/// };
 /// use ruststream_kinesis::prelude::*;
 ///
 /// #[derive(Debug, Clone, Copy, Default)]
@@ -296,8 +322,13 @@ impl Body {
 ///         Rsk.body(record)
 ///     }
 ///
-///     fn read_headers(&self, record: &[u8], headers: &mut HeaderMap) {
-///         Rsk.read_headers(record, headers);
+///     fn read_headers(
+///         &self,
+///         record: &[u8],
+///         body: &Body,
+///         headers: &mut HeaderMap,
+///     ) -> Result<(), MalformedHeaders> {
+///         Rsk.read_headers(record, body, headers)
 ///     }
 /// }
 ///
@@ -332,6 +363,18 @@ impl<'a> EnvelopeHeaders<'a> {
         self.iter().next().is_none()
     }
 }
+
+/// A record is an envelope whose header block does not parse.
+///
+/// [`Envelope::read_headers`] answers it; the delivery then carries no envelope headers, and the
+/// subscription logs it with the stream and the envelope.
+///
+/// # Examples
+///
+/// See [`Envelope`]: an envelope whose header block always parses answers `Ok(())`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, thiserror::Error)]
+#[error("the record's header block does not parse")]
+pub struct MalformedHeaders;
 
 /// Why an [`Envelope`] could not write a record.
 ///

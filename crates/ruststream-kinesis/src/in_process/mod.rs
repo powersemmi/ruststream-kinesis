@@ -221,9 +221,12 @@ fn write(
     payload: BytesMut,
 ) -> Result<(Vec<u8>, ReadBack), EnvelopeError> {
     let data = envelope.seal(EnvelopeHeaders::new(headers), payload)?;
+    let body = envelope.body(&data).fit(data.len());
     let mut read = HeaderMap::new();
-    envelope.read_headers(&data, &mut read);
-    let payload = Bytes::copy_from_slice(envelope.body(&data).fit(data.len()).payload(&data));
+    if envelope.read_headers(&data, &body, &mut read).is_err() {
+        read = HeaderMap::new();
+    }
+    let payload = Bytes::copy_from_slice(body.payload(&data));
     Ok((
         data,
         ReadBack {

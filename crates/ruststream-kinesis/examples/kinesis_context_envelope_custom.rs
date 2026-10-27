@@ -6,7 +6,7 @@
 //! ```
 
 use ruststream::{BytesMut, HeaderMap};
-use ruststream_kinesis::envelope::{Body, EnvelopeError, EnvelopeHeaders};
+use ruststream_kinesis::envelope::{Body, EnvelopeError, EnvelopeHeaders, MalformedHeaders};
 use ruststream_kinesis::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -51,10 +51,16 @@ impl Envelope for TenantLine {
         Self::split(record).map_or(Body::Whole, |(_, start)| Body::Within(start..record.len()))
     }
 
-    fn read_headers(&self, record: &[u8], headers: &mut HeaderMap) {
+    fn read_headers(
+        &self,
+        record: &[u8],
+        _body: &Body,
+        headers: &mut HeaderMap,
+    ) -> Result<(), MalformedHeaders> {
         if let Some((tenant, _)) = Self::split(record) {
             headers.insert("tenant", tenant.to_vec());
         }
+        Ok(())
     }
 }
 

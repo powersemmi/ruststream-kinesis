@@ -10,7 +10,7 @@ use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_bytes::ByteBuf;
 
-use crate::envelope::{Body, EnvelopeError, EnvelopeHeaders};
+use crate::envelope::{Body, EnvelopeError, EnvelopeHeaders, MalformedHeaders};
 
 /// The document of a binary codec, the payload a byte string.
 pub(super) fn frame<Format: Codec>(
@@ -35,11 +35,17 @@ pub(super) fn body<Format: Codec>(codec: &Format, record: &[u8]) -> Body {
         .map_or(Body::Whole, |frame| Body::Decoded(frame.payload.into_vec()))
 }
 
-/// The headers of a binary document.
-pub(super) fn headers<Format: Codec>(codec: &Format, record: &[u8], headers: &mut HeaderMap) {
-    if let Ok(frame) = codec.decode::<FrameHeaders>(record) {
-        frame.headers.insert_into(headers);
-    }
+/// The headers of a binary document, the payload skipped over.
+pub(super) fn headers<Format: Codec>(
+    codec: &Format,
+    record: &[u8],
+    headers: &mut HeaderMap,
+) -> Result<(), MalformedHeaders> {
+    let frame = codec
+        .decode::<FrameHeaders>(record)
+        .map_err(|_| MalformedHeaders)?;
+    frame.headers.insert_into(headers);
+    Ok(())
 }
 
 /// The document a publish writes.

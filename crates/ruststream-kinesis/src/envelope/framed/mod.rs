@@ -11,7 +11,7 @@ use ruststream::codec::Codec;
 use ruststream::codec::MsgpackCodec;
 use ruststream::{BytesMut, HeaderMap};
 
-use super::{Body, Envelope, EnvelopeError, EnvelopeHeaders};
+use super::{Body, Envelope, EnvelopeError, EnvelopeHeaders, MalformedHeaders};
 
 /// Headers and payload as one document of a `RustStream` codec, which a consumer in any language
 /// reads with its own JSON, CBOR or msgpack library.
@@ -187,9 +187,19 @@ pub trait FrameCodec: Codec + Clone + 'static {
         binary::body(self, record)
     }
 
-    /// Adds the headers of a document to `headers`; a record that is no frame adds none.
-    fn frame_headers(&self, record: &[u8], headers: &mut HeaderMap) {
-        binary::headers(self, record, headers);
+    /// Adds the headers of a document to `headers`. Called only for a record
+    /// [`frame_body`](Self::frame_body) found to be a frame, so it reads the header map and
+    /// skips the payload.
+    ///
+    /// # Errors
+    ///
+    /// [`MalformedHeaders`] when the document's header map does not parse.
+    fn frame_headers(
+        &self,
+        record: &[u8],
+        headers: &mut HeaderMap,
+    ) -> Result<(), MalformedHeaders> {
+        binary::headers(self, record, headers)
     }
 }
 
@@ -225,8 +235,18 @@ impl<Format: FrameCodec> Envelope for Framed<Format> {
         self.codec.frame_body(record)
     }
 
-    fn read_headers(&self, record: &[u8], headers: &mut HeaderMap) {
-        self.codec.frame_headers(record, headers);
+    fn read_headers(
+        &self,
+        record: &[u8],
+        body: &Body,
+        headers: &mut HeaderMap,
+    ) -> Result<(), MalformedHeaders> {
+        // The body pass decided whether the record is a frame; a record that is none has no
+        // headers to read.
+        if *body == Body::Whole {
+            return Ok(());
+        }
+        self.codec.frame_headers(record, headers)
     }
 }
 
@@ -268,11 +288,11 @@ mod tests {
 
         let framed = Framed::new(CborCodec);
         let mut read = HeaderMap::new();
-        framed.read_headers(&record, &mut read);
-        assert_eq!(
-            framed.body(&record).fit(record.len()).payload(&record),
-            payload
-        );
+        let body = framed.body(&record).fit(record.len());
+        framed
+            .read_headers(&record, &body, &mut read)
+            .expect("the header map parses");
+        assert_eq!(body.payload(&record), payload);
         assert_eq!(read.get_str("event"), Some("created"));
         assert_eq!(read.len(), 1);
     }
@@ -299,8 +319,11 @@ mod tests {
         let framed = Framed::new(codec);
         for record in [both, b"\x00\x01raw".to_vec()] {
             let mut read = HeaderMap::new();
-            framed.read_headers(&record, &mut read);
-            assert_eq!(framed.body(&record), Body::Whole, "for {record:x?}");
+            let body = framed.body(&record);
+            framed
+                .read_headers(&record, &body, &mut read)
+                .expect("no frame, nothing malformed");
+            assert_eq!(body, Body::Whole, "for {record:x?}");
             assert!(read.is_empty(), "for {record:x?}");
         }
     }

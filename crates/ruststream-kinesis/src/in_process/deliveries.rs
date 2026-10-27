@@ -103,6 +103,7 @@ impl LogDeliveries {
             });
         }
         let release = Release {
+            stream: Arc::clone(&self.stream),
             shard: Arc::clone(&self.shard),
             coordinator: self.coordinator.clone(),
         };
@@ -147,11 +148,16 @@ impl Drop for LogDeliveries {
 /// an unhandled record again only when the shard's lease is next taken, and the in-process mode
 /// has no leases. Either way the delivery is released to the harness once, when this is dropped.
 pub(crate) struct Release {
+    stream: Arc<str>,
     shard: Arc<str>,
     coordinator: Option<Coordinator>,
 }
 
 impl Release {
+    pub(crate) fn stream(&self) -> &str {
+        &self.stream
+    }
+
     pub(crate) fn shard(&self) -> &Arc<str> {
         &self.shard
     }

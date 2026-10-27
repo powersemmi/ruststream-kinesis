@@ -188,6 +188,15 @@ pub(crate) enum Settle {
 const _: () = assert!(size_of::<Settle>() == size_of::<Settlement>());
 
 impl Settle {
+    /// The stream the record was read from, which names the subscription.
+    fn stream(&self) -> &str {
+        match self {
+            Self::Checkpoint(settlement) => settlement.lease.stream(),
+            #[cfg(feature = "testing")]
+            Self::InProcess(release) => release.stream(),
+        }
+    }
+
     fn shard(&self) -> &Arc<str> {
         match self {
             Self::Checkpoint(settlement) => settlement.lease.shard_shared(),
@@ -266,7 +275,21 @@ impl<Env: Envelope> KinesisMessage<Env> {
     fn read_headers(&self) -> HeaderMap {
         let received = &self.received;
         let mut headers = HeaderMap::new();
-        self.envelope.read_headers(&received.data, &mut headers);
+        if self
+            .envelope
+            .read_headers(&received.data, &self.body, &mut headers)
+            .is_err()
+        {
+            // A header block that does not parse costs the delivery its envelope headers, never
+            // its payload.
+            headers = HeaderMap::new();
+            tracing::warn!(
+                stream = received.settlement.stream(),
+                shard = %received.settlement.shard(),
+                envelope = Env::NAME,
+                "the record's header block does not parse; it is delivered without its headers"
+            );
+        }
         headers.insert(
             Str::from_static(PARTITION_KEY_HEADER),
             received.partition_key.clone(),

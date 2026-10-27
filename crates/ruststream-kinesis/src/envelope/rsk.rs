@@ -3,7 +3,7 @@
 use bytes::Bytes;
 use ruststream::{BytesMut, HeaderMap};
 
-use super::{Body, Envelope, EnvelopeError, EnvelopeHeaders};
+use super::{Body, Envelope, EnvelopeError, EnvelopeHeaders, MalformedHeaders};
 
 /// The envelope magic: a record that starts with it carries a header block.
 const MAGIC: [u8; 4] = *b"RSK2";
@@ -99,13 +99,21 @@ impl Envelope for Rsk {
         split(record).map_or(Body::Whole, |(_, start)| Body::Within(start..record.len()))
     }
 
-    fn read_headers(&self, record: &[u8], headers: &mut HeaderMap) {
+    fn read_headers(
+        &self,
+        record: &[u8],
+        _body: &Body,
+        headers: &mut HeaderMap,
+    ) -> Result<(), MalformedHeaders> {
+        // `split` accepts a binary block only when it parses whole, so a record whose block does
+        // not is no envelope at all and is read as payload.
         if let Some((block, _)) = split(record) {
             match block {
                 Block::Fields(block) => decode_fields(block, headers),
                 Block::Text(block) => decode_text(block, headers),
             }
         }
+        Ok(())
     }
 }
 
@@ -204,8 +212,9 @@ mod tests {
 
     fn open(record: &[u8]) -> (HeaderMap, Vec<u8>) {
         let mut headers = HeaderMap::new();
-        Rsk.read_headers(record, &mut headers);
         let body = Rsk.body(record).fit(record.len());
+        Rsk.read_headers(record, &body, &mut headers)
+            .expect("a block that parses reads");
         (headers, body.payload(record).to_vec())
     }
 
