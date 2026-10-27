@@ -24,7 +24,7 @@ async fn confirm(order: &Order, ctx: &mut Context<'_>) -> Receipt {
 }
 
 /// Every record the service writes and reads, the order and its receipt alike, is a JSON
-/// document: `{"headers": {"x-tenant": "acme"}, "payload": [...]}`.
+/// document: `{"headers":{"x-tenant":"acme"},"payload":{"id":7}}`.
 #[ruststream::app]
 fn app() -> impl App {
     let broker = KinesisBroker::new().envelope(Framed::new(JsonCodec));

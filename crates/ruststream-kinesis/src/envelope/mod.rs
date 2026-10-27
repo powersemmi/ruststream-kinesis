@@ -26,7 +26,7 @@ use std::ops::Range;
 use ruststream::codec::CodecError;
 use ruststream::{BytesMut, HeaderMap};
 
-pub use framed::Framed;
+pub use framed::{FrameCodec, Framed};
 pub use noop::NoOp;
 pub use rsk::Rsk;
 
@@ -418,6 +418,7 @@ impl EnvelopeError {
 /// # Examples
 ///
 /// ```
+/// # #[cfg(feature = "json")]
 /// # mod demo {
 /// use ruststream::codec::JsonCodec;
 /// use ruststream_kinesis::prelude::*;

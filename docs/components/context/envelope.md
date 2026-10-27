@@ -13,14 +13,14 @@ Headers ride the record's data in the layout of an envelope: the default `RSK2` 
 
 A Kinesis record carries a data blob and a partition key and nothing else.
 The partition key travels in the record's own [partition-key field](../publishing/keys.md) whatever the envelope.
-The other headers travel in the data, in the layout of an [`Envelope`](api:ruststream_kinesis::Envelope).
+The other headers travel in the data, in the layout of an [`Envelope`](api:ruststream_kinesis::envelope::Envelope).
 The crate ships three:
 
 | Envelope | The record's data | Read by |
 |---|---|---|
-| [`Rsk`](api:ruststream_kinesis::Rsk), the default | the payload, with a binary header block in front of it when there are headers | every release of this crate |
-| [`Framed`](api:ruststream_kinesis::Framed) | one document of a RustStream codec: `headers` and `payload` | any consumer with a JSON, CBOR or msgpack library |
-| [`NoOp`](api:ruststream_kinesis::NoOp) | the payload alone | any consumer |
+| [`Rsk`](api:ruststream_kinesis::envelope::Rsk), the default | the payload, with a binary header block in front of it when there are headers | every release of this crate |
+| [`Framed`](api:ruststream_kinesis::envelope::Framed) | one document of a RustStream codec: `headers` and `payload` | any consumer with a JSON, CBOR or msgpack library |
+| [`NoOp`](api:ruststream_kinesis::envelope::NoOp) | the payload alone | any consumer |
 
 The envelope is chosen the way a codec is, and the most specific choice wins.
 [`KinesisBroker::envelope`](api:ruststream_kinesis::KinesisBroker::envelope) sets the broker's.
@@ -47,11 +47,16 @@ A record without the magic, or whose header block does not parse, reads as a pay
 
 ## A codec document
 
-Every record is one document, with or without headers: `{"headers": {"x-tenant": "acme"}, "payload": [...]}` in JSON.
+Every record is one document, with or without headers.
+The payload follows the convention of the CloudEvents JSON format.
+In JSON, a payload that is a JSON text rides `payload` as that value, byte for byte: `{"headers":{"event":"created"},"payload":{"id":7}}`.
+Any other payload rides `payload_base64` as a standard base64 string: `{"headers":{"event":"created"},"payload_base64":"CAc="}`.
+In CBOR and msgpack the payload is always a byte string in `payload`.
 Header values are text, and a publish whose header value is not UTF-8 fails.
-The payload is a byte string in CBOR and msgpack and an array of numbers in JSON.
+A document is a frame only with `headers` and exactly one of the two payload fields; any other record is somebody else's payload.
 
-The payload is not a slice of the record, so a delivery decodes it into a buffer of its own: one allocation per record that the binary envelope does not make.
+A JSON payload is read where it lies in the record.
+A base64 payload and a CBOR or msgpack byte string are decoded into a buffer of the delivery's own: one allocation per record that the binary envelope does not make.
 The generated AsyncAPI document reports the envelope and the media type of its document beside the broker, the subscription or the policy that names it.
 
 ## No envelope
@@ -63,7 +68,7 @@ That includes the attempt counter of `max_attempts(..)`, so a registration that 
 
 ## An envelope of your own
 
-A layout another system already writes is an [`Envelope`](api:ruststream_kinesis::Envelope) of the service.
+A layout another system already writes is an [`Envelope`](api:ruststream_kinesis::envelope::Envelope) of the service.
 `seal` writes a record, `body` finds the payload in one, and `read_headers` reads its headers on the first request.
 
 ## Testing

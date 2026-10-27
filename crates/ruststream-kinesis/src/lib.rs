@@ -24,6 +24,24 @@ mod track;
 /// they carry mean something only to a transport that reads them back.
 #[doc(hidden)]
 pub mod sealed {
+    use crate::envelope::Envelope;
+
+    /// A subscription source whose envelope the mount-site step
+    /// [`KinesisEnvelopeExt::envelope`](crate::KinesisEnvelopeExt::envelope) names: the crate's
+    /// descriptor, alone or wrapped in a start position.
+    #[diagnostic::on_unimplemented(
+        message = "`{Self}` does not read in a Kinesis envelope",
+        note = "`.envelope(..)` follows a handler whose source is a `KinesisStream`, with or \
+                without a `start_at(..)`"
+    )]
+    pub trait EnvelopedSource: Sized {
+        /// The source reading in `Named`.
+        type Enveloped<Named: Envelope>;
+
+        /// The source reading in `envelope`.
+        fn with_envelope<Named: Envelope>(self, envelope: Named) -> Self::Enveloped<Named>;
+    }
+
     /// The crate's publish policy behind a bound.
     ///
     /// [`KinesisPublishSettings`](crate::KinesisPublishSettings) is one blanket impl over the

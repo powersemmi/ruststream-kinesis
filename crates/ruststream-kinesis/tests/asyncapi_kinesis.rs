@@ -9,6 +9,7 @@
 use std::time::Duration;
 
 use ruststream::asyncapi::{Bindings, Spec, build_spec};
+#[cfg(all(feature = "json", feature = "cbor"))]
 use ruststream::codec::{CborCodec, JsonCodec};
 use ruststream::conformance::harness;
 use ruststream_kinesis::prelude::*;
@@ -140,6 +141,7 @@ fn the_description_carries_no_credential() {
 }
 
 /// The document of the same mount, on a broker framing its records in JSON.
+#[cfg(feature = "json")]
 fn framed_document() -> serde_json::Value {
     let broker = KinesisBroker::new().envelope(Framed::new(JsonCodec));
     let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker_labeled(
@@ -155,6 +157,7 @@ fn framed_document() -> serde_json::Value {
 /// The broker's envelope is where every record without an envelope of its own travels, so the
 /// server reports it, and the media type of the document it frames the payload in.
 #[test]
+#[cfg(feature = "json")]
 fn the_server_reports_the_brokers_envelope_and_its_media_type() {
     let document = framed_document();
 
@@ -167,6 +170,7 @@ fn the_server_reports_the_brokers_envelope_and_its_media_type() {
 /// A subscription or a publish policy that names an envelope of its own reports it beside its
 /// other settings; one that names none leaves it to the server.
 #[test]
+#[cfg(all(feature = "json", feature = "cbor"))]
 fn a_mount_site_reports_the_envelope_it_names() {
     let app =
         RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {

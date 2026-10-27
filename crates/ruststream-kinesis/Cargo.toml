@@ -35,7 +35,7 @@ testing = ["ruststream/testing"]
 # The codecs a `Framed` envelope can name, forwarded to the framework. Under `testing` each one
 # also makes the harness know the broker framed in it, `KinesisBroker<Framed<JsonCodec>>` and
 # the like.
-json = ["ruststream/json"]
+json = ["ruststream/json", "dep:serde_json", "dep:base64"]
 cbor = ["ruststream/cbor"]
 msgpack = ["ruststream/msgpack"]
 
@@ -51,6 +51,10 @@ serde.workspace = true
 # The payload of a `Framed` document as a byte string rather than a sequence of numbers, where
 # the codec has one. Serialization wrappers only: it adds no work of its own.
 serde_bytes = "0.11"
+# The `Framed` JSON document: a payload that is a JSON text embedded as it stands
+# (`RawValue`, read in place), any other payload as a base64 string.
+serde_json = { version = "1", features = ["raw_value"], optional = true }
+base64 = { version = "0.22", optional = true }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

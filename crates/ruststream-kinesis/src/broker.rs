@@ -226,6 +226,7 @@ impl<Env: Envelope> KinesisBroker<Env> {
     /// # Examples
     ///
     /// ```
+    /// # #[cfg(feature = "json")]
     /// # mod demo {
     /// use ruststream::codec::JsonCodec;
     /// use ruststream_kinesis::prelude::*;

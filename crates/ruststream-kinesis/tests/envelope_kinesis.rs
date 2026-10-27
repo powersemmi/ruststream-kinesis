@@ -584,3 +584,49 @@ async fn headers_are_read_only_when_asked_for_and_once() {
     );
     tb.shutdown().await.expect("the harness shuts down");
 }
+
+/// The stream a raw producer writes, read from a position the attribute names.
+const POSITIONED: &str = "envelope.positioned";
+
+/// Names its start position in the attribute; the envelope is named at the mount site after it.
+#[subscriber(KinesisStream::new(POSITIONED), start_at(KinesisPosition::horizon()))]
+async fn positioned(order: &Order, ctx: &mut Context<'_>) -> HandlerOutcome {
+    if order.id == 7 && ctx.headers().get(TENANT).is_none() {
+        HandlerOutcome::ack()
+    } else {
+        HandlerOutcome::drop()
+    }
+}
+
+/// The envelope step and the start position compose in either order at the mount site, and after
+/// a position the attribute named.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_envelope_composes_with_a_start_position_in_either_order() {
+    let app = RustStream::new(AppInfo::new("positions", "0.1.0")).with_broker(
+        KinesisBroker::new(),
+        |b| {
+            b.include(positioned.envelope(NoOp));
+            b.include(
+                foreign
+                    .start_at(KinesisPosition::horizon())
+                    .envelope(Framed::new(JsonCodec)),
+            );
+        },
+    );
+    let tb = TestApp::start(app).await.expect("the harness starts");
+    let broker = tb.broker::<KinesisBroker>();
+    for stream in [POSITIONED, FOREIGN] {
+        broker
+            .message(&Order { id: 7 })
+            .to(stream)
+            .publish()
+            .await
+            .expect("publish drives the order to its settlement");
+        broker
+            .subscriber(stream)
+            .assert_called(1)
+            .with(&Order { id: 7 })
+            .settled(HandlerOutcome::ack());
+    }
+    tb.shutdown().await.expect("the harness shuts down");
+}

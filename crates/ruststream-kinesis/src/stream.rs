@@ -13,13 +13,16 @@ use std::time::Duration;
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::{Binding, Bindings};
 use ruststream::runtime::{Declared, IntoSource, SubscriberBuilder, SubscriberSettings};
-use ruststream::{AddressedCopies, RedeliveryAddress, RedeliveryAddressed, SubscriptionSource};
+use ruststream::{
+    AddressedCopies, RedeliveryAddress, RedeliveryAddressed, StartAt, SubscriptionSource,
+};
 #[cfg(feature = "asyncapi")]
 use serde::Serialize;
 
 use crate::broker::ConnectedKinesisBroker;
 use crate::envelope::{ChooseEnvelope, Envelope, Inherit};
 use crate::error::KinesisError;
+use crate::sealed::EnvelopedSource;
 use crate::subscriber::KinesisSubscriber;
 
 /// A subscription descriptor for one Kinesis stream.
@@ -360,16 +363,36 @@ pub trait KinesisEnvelopeExt: Sized {
     fn envelope<Named: Envelope>(self, envelope: Named) -> Self::Enveloped<Named>;
 }
 
-impl<Decl, Def, State, DefCodec, Env> KinesisEnvelopeExt for Decl
+impl<Decl, Def, Source, State, DefCodec> KinesisEnvelopeExt for Decl
 where
-    Decl: Declared<Settings = SubscriberBuilder<Def, KinesisStream<Env>, State, DefCodec>>,
+    Decl: Declared<Settings = SubscriberBuilder<Def, Source, State, DefCodec>>,
     Def: Declared,
+    Source: EnvelopedSource,
 {
-    type Enveloped<Named: Envelope> = SubscriberBuilder<Def, KinesisStream<Named>, State, DefCodec>;
+    type Enveloped<Named: Envelope> =
+        SubscriberBuilder<Def, Source::Enveloped<Named>, State, DefCodec>;
 
     fn envelope<Named: Envelope>(self, envelope: Named) -> Self::Enveloped<Named> {
         self.declare()
-            .map_source(|source| source.envelope(envelope))
+            .map_source(|source| source.with_envelope(envelope))
+    }
+}
+
+impl<Env> EnvelopedSource for KinesisStream<Env> {
+    type Enveloped<Named: Envelope> = KinesisStream<Named>;
+
+    fn with_envelope<Named: Envelope>(self, envelope: Named) -> KinesisStream<Named> {
+        self.envelope(envelope)
+    }
+}
+
+/// A start position wraps the descriptor, so the envelope reaches through it: the two steps
+/// compose in either order, and after a position the attribute named.
+impl<Env, Position> EnvelopedSource for StartAt<KinesisStream<Env>, Position> {
+    type Enveloped<Named: Envelope> = StartAt<KinesisStream<Named>, Position>;
+
+    fn with_envelope<Named: Envelope>(self, envelope: Named) -> Self::Enveloped<Named> {
+        self.map_inner(|stream| stream.envelope(envelope))
     }
 }
 

@@ -37,7 +37,7 @@ impl Handle<Order, Receipt> for Confirm {
 }
 
 /// Every record the service writes and reads, the order and its receipt alike, is a JSON
-/// document: `{"headers": {"x-tenant": "acme"}, "payload": [...]}`.
+/// document: `{"headers":{"x-tenant":"acme"},"payload":{"id":7}}`.
 fn app() -> impl App {
     let broker = KinesisBroker::new().envelope(Framed::new(JsonCodec));
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
