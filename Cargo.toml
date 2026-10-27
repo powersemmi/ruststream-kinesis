@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/ruststream-kinesis", "crates/ruststream-kinesis-bench"]
 
 [workspace.package]
-version = "0.7.1"
+version = "0.7.2"
 edition = "2024"
 # The floor is the higher of the core's (1.95) and the AWS SDK's, which tracks a stable-2
 # policy (1.94.1 today).
