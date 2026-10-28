@@ -54,7 +54,7 @@ serde_bytes = "0.11"
 # The `Framed` JSON document: a payload that is a JSON text embedded as it stands
 # (`RawValue`, read in place), any other payload as a base64 string.
 serde_json = { version = "1", features = ["raw_value"], optional = true }
-base64 = { version = "0.22", optional = true }
+base64 = { version = "0.23", optional = true }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
