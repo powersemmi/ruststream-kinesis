@@ -19,6 +19,7 @@
     "Name the stream by its name with `KinesisStream::new(\"orders\")` inside `#[subscriber(..)]`; the bare `#[subscriber(\"orders\")]` form builds the same descriptor with its default read settings.",
     "Set `poll_interval(d)` and `create_if_missing(shards)` on the descriptor or at the mount site; on the mount chain they come after `batch(n)` and before `start_at(..)`, which replaces the descriptor.",
     "Subscribe to a stream once per broker: a second subscription to the same stream on one broker is refused when it opens; a second `KinesisBroker` with a lease store of its own reads the stream again.",
+    "Choose how headers ride a record with an envelope: `KinesisBroker::new().envelope(Framed::new(JsonCodec))` for the broker, `handler.envelope(NoOp)` at the mount site or `KinesisStream::new(..).envelope(..)` on the manual path, `Publish::default().envelope(..)` for a publish position; `Rsk` is the default and `NoOp` refuses a publish that carries a header.",
     "Key one record with `.partition_key(..)` on the publish builder, bounding the slot `Out<impl Publisher<Options = KinesisPublishOptions>, Marker>`.",
     "Key every record of a position, a reply included, at the mount site: `.out_reply(Publish::default()).partition_key(..)`.",
     "Cap redeliveries with `.max_attempts(n).dead_letter(stream)` after `include`; the framework publishes the copies back to the stream, each keeping its partition key and arriving at the tip of its shard.",

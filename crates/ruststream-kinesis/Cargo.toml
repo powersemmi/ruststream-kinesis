@@ -25,13 +25,19 @@ all-features = true
 default = []
 # What this broker contributes to the generated AsyncAPI document. The specification lists no
 # Kinesis binding, so the crate writes its own `x-ruststream-kinesis` extension objects.
-asyncapi = ["ruststream/asyncapi", "dep:serde"]
+asyncapi = ["ruststream/asyncapi"]
 # A DynamoDB-backed lease store, so multiple service instances can share the shards.
 dynamodb-lease = ["dep:aws-sdk-dynamodb"]
 # The broker's in-process mode: `TestApp::start` connects `KinesisBroker` without a server. A
 # service enables it in its dev-dependencies. The conformance harness is a broker-author tool and
 # stays in this repo's dev-dependencies, not in the user-facing feature.
 testing = ["ruststream/testing"]
+# The codecs a `Framed` envelope can name, forwarded to the framework. Under `testing` each one
+# also makes the harness know the broker framed in it, `KinesisBroker<Framed<JsonCodec>>` and
+# the like.
+json = ["ruststream/json", "dep:serde_json", "dep:base64"]
+cbor = ["ruststream/cbor"]
+msgpack = ["ruststream/msgpack"]
 
 [dependencies]
 ruststream = { workspace = true, default-features = false }
@@ -40,9 +46,15 @@ aws-sdk-kinesis.workspace = true
 aws-sdk-dynamodb = { workspace = true, optional = true }
 bytes.workspace = true
 futures.workspace = true
-# Only the binding bodies of the `asyncapi` feature are serialized; a record's payload is the
-# codec's business, not this crate's.
-serde = { workspace = true, optional = true }
+# The `Framed` envelope's document and the binding bodies of the `asyncapi` feature.
+serde.workspace = true
+# The payload of a `Framed` document as a byte string rather than a sequence of numbers, where
+# the codec has one. Serialization wrappers only: it adds no work of its own.
+serde_bytes = "0.11"
+# The `Framed` JSON document: a payload that is a JSON text embedded as it stands
+# (`RawValue`, read in place), any other payload as a base64 string.
+serde_json = { version = "1", features = ["raw_value"], optional = true }
+base64 = { version = "0.22", optional = true }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -50,7 +62,7 @@ tracing.workspace = true
 [dev-dependencies]
 # `cbor` earns its place in one check: a per-message step must not cost the mount site's codec,
 # and proving that needs a second codec to mount.
-ruststream = { workspace = true, features = ["conformance", "testing", "macros", "json", "cbor"] }
+ruststream = { workspace = true, features = ["conformance", "testing", "macros", "json", "cbor", "msgpack"] }
 # A registration on the manual path is documented by default, so its message type derives
 # `JsonSchema` whether or not the test turns the `asyncapi` feature on (the core re-exports
 # `schemars` only under that feature).
@@ -344,6 +356,33 @@ required-features = ["testing"]
 [[example]]
 name = "manual_kinesis_context_envelope"
 path = "examples/manual/kinesis_context_envelope.rs"
+required-features = ["testing"]
+
+[[example]]
+name = "kinesis_context_envelope_framed"
+required-features = ["testing", "json"]
+
+[[example]]
+name = "manual_kinesis_context_envelope_framed"
+path = "examples/manual/kinesis_context_envelope_framed.rs"
+required-features = ["testing", "json"]
+
+[[example]]
+name = "kinesis_context_envelope_noop"
+required-features = ["testing"]
+
+[[example]]
+name = "manual_kinesis_context_envelope_noop"
+path = "examples/manual/kinesis_context_envelope_noop.rs"
+required-features = ["testing"]
+
+[[example]]
+name = "kinesis_context_envelope_custom"
+required-features = ["testing"]
+
+[[example]]
+name = "manual_kinesis_context_envelope_custom"
+path = "examples/manual/kinesis_context_envelope_custom.rs"
 required-features = ["testing"]
 
 [[example]]

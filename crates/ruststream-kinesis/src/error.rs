@@ -2,6 +2,8 @@
 
 use std::error::Error as StdError;
 
+use crate::envelope::EnvelopeError;
+
 /// Errors returned by the Amazon Kinesis Data Streams broker.
 ///
 /// One enum for the whole crate, variants by source, per the `RustStream` broker conventions.
@@ -60,6 +62,17 @@ pub enum KinesisError {
         /// The store's failure.
         #[source]
         source: Box<dyn StdError + Send + Sync>,
+    },
+
+    /// The record's envelope could not write it: a header it has no place for, or a document
+    /// its codec could not encode. Nothing was written.
+    #[error("kinesis record for '{stream}' does not fit its envelope: {source}")]
+    Envelope {
+        /// The stream the record was published to.
+        stream: String,
+        /// What the envelope refused.
+        #[source]
+        source: EnvelopeError,
     },
 
     /// The handle is used before `connect` filled the shared connection, or after `shutdown`.

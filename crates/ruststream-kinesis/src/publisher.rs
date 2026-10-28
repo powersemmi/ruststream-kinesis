@@ -23,8 +23,11 @@ use serde::Serialize;
 use crate::stream::BINDING_KEY;
 
 use crate::broker::{ConnectedKinesisBroker, CoreCell, Link};
+use crate::envelope::{ChooseEnvelope, Envelope, EnvelopeHeaders, Inherit, Rsk};
 use crate::error::{KinesisError, sdk_err};
-use crate::message::{PARTITION_KEY_HEADER, encode_envelope};
+use crate::message::PARTITION_KEY_HEADER;
+#[cfg(feature = "asyncapi")]
+use crate::stream::EnvelopeBinding;
 
 /// The per-message publish settings of this broker: what one call varies, against what the mount
 /// site fixed on the policy.
@@ -124,43 +127,45 @@ pub struct KinesisPublishOptions {
 /// it with [`partition_key`](KinesisPublishSteps::partition_key) on the publish builder; a record
 /// that names none takes the key the mount site named on the policy
 /// ([`KinesisPublish::partition_key`]), and without that a process-unique key spreads the records
-/// across the shards. User headers beyond the partition key travel in a small conditional envelope
-/// (Kinesis records carry only a data blob and a partition key); plain payloads stay unenveloped,
-/// so any Kinesis consumer reads them, and a record from another producer reads back as
-/// headerless. The envelope is the magic `RSK2`, a big-endian `u32` length of the header block,
-/// the block, and the payload; each header is a `u32`-prefixed name and a `u32`-prefixed value,
-/// so a value comes back byte for byte. Records in the earlier `RSK1` text envelope still read
-/// back with their headers. One publish is one `PutRecord` call.
+/// across the shards. The other headers travel in the record's data, in the layout of the
+/// publisher's [`Envelope`]: the broker's, or the one the policy names
+/// ([`KinesisPublish::envelope`]). A header the envelope has no place for fails the publish with
+/// [`KinesisError::Envelope`], which names the header and the stream. One publish is one
+/// `PutRecord` call.
 /// Buildable before `connect` and usable until `shutdown`; afterwards every publish reports
 /// [`KinesisError::NotConnected`].
 #[derive(Clone)]
-pub struct KinesisPublisher {
+pub struct KinesisPublisher<Env = Rsk> {
     cell: CoreCell,
     /// The partition key the mount site named on the policy this publisher was paired from,
     /// used by every record that does not name one of its own.
     partition_key: Option<Arc<str>>,
+    /// The layout every record of this publisher is written in.
+    envelope: Env,
 }
 
-impl std::fmt::Debug for KinesisPublisher {
+impl<Env> std::fmt::Debug for KinesisPublisher<Env> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KinesisPublisher").finish_non_exhaustive()
     }
 }
 
-impl KinesisPublisher {
-    pub(crate) fn new(cell: CoreCell) -> Self {
+impl<Env: Envelope> KinesisPublisher<Env> {
+    pub(crate) fn new(cell: CoreCell, envelope: Env) -> Self {
         Self {
             cell,
             partition_key: None,
+            envelope,
         }
     }
 
     /// The publisher a policy pairs into: the same connection, plus what the mount site named
     /// on that policy.
-    pub(crate) fn keyed(cell: CoreCell, partition_key: Option<Arc<str>>) -> Self {
+    pub(crate) fn keyed(cell: CoreCell, partition_key: Option<Arc<str>>, envelope: Env) -> Self {
         Self {
             cell,
             partition_key,
+            envelope,
         }
     }
 
@@ -203,7 +208,7 @@ fn spread_key() -> String {
     )
 }
 
-impl Publisher for KinesisPublisher {
+impl<Env: Envelope> Publisher for KinesisPublisher<Env> {
     /// A record's data is a `Blob`, a vector the client keeps for the request, so the publisher
     /// takes the buffer the framework wrote: a publish that carries no header hands it straight
     /// through, and one that does spends it as the body of the envelope.
@@ -222,7 +227,7 @@ impl Publisher for KinesisPublisher {
             Link::Aws(core) => core,
             #[cfg(feature = "testing")]
             Link::InProcess(bus) => {
-                return bus.put(msg, options, self.partition_key.as_deref());
+                return bus.put(msg, options, self.partition_key.as_deref(), &self.envelope);
             }
         };
         core.ensure_open()?;
@@ -236,7 +241,13 @@ impl Publisher for KinesisPublisher {
         // The stream name is the caller's string and outlives the message the record is built
         // from.
         let (stream, payload, headers) = msg.into_parts();
-        let data = encode_envelope(&headers, payload);
+        let data = self
+            .envelope
+            .seal(EnvelopeHeaders::new(&headers), payload)
+            .map_err(|source| KinesisError::Envelope {
+                stream: stream.to_owned(),
+                source,
+            })?;
         core.client
             .with(Client::put_record)
             .stream_name(stream)
@@ -301,13 +312,25 @@ impl Publisher for KinesisPublisher {
 /// # }
 /// # fn main() {}
 /// ```
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use]
-pub struct KinesisPublish {
+pub struct KinesisPublish<Env = Inherit> {
     partition_key: Option<String>,
+    envelope: Env,
 }
 
-impl KinesisPublish {
+/// The policy a mount site writes as `Publish::default()`: no partition key, the broker's
+/// envelope. Only this form has a default, so the call infers it.
+impl Default for KinesisPublish {
+    fn default() -> Self {
+        Self {
+            partition_key: None,
+            envelope: Inherit,
+        }
+    }
+}
+
+impl<Env> KinesisPublish<Env> {
     /// The partition key every record published through this policy carries unless the call
     /// names its own.
     ///
@@ -374,6 +397,51 @@ impl KinesisPublish {
     }
 
     /// The key a publisher paired from this policy carries.
+    /// Writes the records of this position in `envelope`'s layout instead of the broker's.
+    ///
+    /// A reply or a slot whose stream another system reads is written in the layout that system
+    /// reads, while the rest of the service keeps the broker's.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # mod demo {
+    /// use ruststream_kinesis::prelude::*;
+    /// use serde::{Deserialize, Serialize};
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Order {
+    ///     id: u64,
+    /// }
+    ///
+    /// #[derive(Serialize, Outgoing)]
+    /// #[outgoing(name = "orders.analytics")]
+    /// struct Fact {
+    ///     order: u64,
+    /// }
+    ///
+    /// /// The analytics stream feeds a Firehose delivery stream, which takes the records raw.
+    /// #[subscriber(KinesisStream::new("orders"), reply)]
+    /// async fn project(order: &Order) -> Fact {
+    ///     Fact { order: order.id }
+    /// }
+    ///
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
+    ///         b.include(project).out_reply(Publish::default().envelope(NoOp));
+    ///     })
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
+    pub fn envelope<Named: Envelope>(self, envelope: Named) -> KinesisPublish<Named> {
+        KinesisPublish {
+            partition_key: self.partition_key,
+            envelope,
+        }
+    }
+
     fn key(&self) -> Option<Arc<str>> {
         self.partition_key.as_deref().map(Arc::from)
     }
@@ -385,11 +453,18 @@ impl KinesisPublish {
     /// the publish builder is a property of one record. A policy that names no key says nothing,
     /// so the document carries no field the service did not fix.
     #[cfg(feature = "asyncapi")]
-    fn message_binding(&self) -> Bindings {
-        let Some(partition_key) = self.partition_key.as_deref() else {
+    fn message_binding<Default: Envelope>(&self) -> Bindings
+    where
+        Env: ChooseEnvelope<Default>,
+    {
+        let envelope = EnvelopeBinding::declared::<Env, Default>();
+        if self.partition_key.is_none() && envelope.is_none() {
             return Bindings::new();
+        }
+        let body = KinesisMessageBinding {
+            partition_key: self.partition_key.as_deref(),
+            envelope,
         };
-        let body = KinesisMessageBinding { partition_key };
         Binding::extension(BINDING_KEY, &body)
             .map_or_else(|_| Bindings::new(), |binding| Bindings::new().with(binding))
     }
@@ -417,8 +492,11 @@ fn channel_binding(stream: &str) -> Bindings {
 #[cfg(feature = "asyncapi")]
 #[derive(Debug, Serialize)]
 struct KinesisMessageBinding<'a> {
-    #[serde(rename = "partitionKey")]
-    partition_key: &'a str,
+    #[serde(rename = "partitionKey", skip_serializing_if = "Option::is_none")]
+    partition_key: Option<&'a str>,
+    /// The envelope the policy names, present only where it names one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    envelope: Option<EnvelopeBinding>,
 }
 
 /// What a position publishing through [`KinesisPublish`] writes into its channel object.
@@ -431,20 +509,25 @@ struct KinesisPublishChannelBinding<'a> {
     stream: &'a str,
 }
 
-impl crate::sealed::PolicyKey for KinesisPublish {
+impl<Env> crate::sealed::PolicyKey for KinesisPublish<Env> {
     fn with_partition_key(self, key: String) -> Self {
         self.partition_key(key)
     }
 }
 
-impl PublishPolicy<ConnectedKinesisBroker> for KinesisPublish {
-    type Live = KinesisPublisher;
+impl<Env, Default> PublishPolicy<ConnectedKinesisBroker<Default>> for KinesisPublish<Env>
+where
+    Env: ChooseEnvelope<Default>,
+    Default: Envelope,
+{
+    type Live = KinesisPublisher<Env::Chosen>;
 
     fn pair(
         self,
-        connected: &ConnectedKinesisBroker,
+        connected: &ConnectedKinesisBroker<Default>,
     ) -> impl Future<Output = Result<Self::Live, PairError>> {
-        ready(Ok(connected.publisher_keyed(self.key())))
+        let key = self.key();
+        ready(Ok(connected.publisher_keyed(key, self.envelope)))
     }
 
     #[cfg(feature = "asyncapi")]
@@ -456,7 +539,7 @@ impl PublishPolicy<ConnectedKinesisBroker> for KinesisPublish {
     /// the channel the message goes to; the destination therefore has no part in it.
     #[cfg(feature = "asyncapi")]
     fn message_bindings(&self, _channel: &str) -> Bindings {
-        self.message_binding()
+        self.message_binding::<Default>()
     }
 }
 
@@ -619,7 +702,7 @@ mod tests {
     use ruststream::{HeaderMap, Outgoing, OutgoingMessage, Serialized};
 
     use super::*;
-    use crate::KinesisBroker;
+    use crate::{KinesisBroker, NoOp};
 
     /// Bytes the test already holds encoded: a serialized type publishes them as they are, so
     /// these checks stay about the headers rather than about a codec.
@@ -785,5 +868,37 @@ mod tests {
             records[1].headers().get_str(PARTITION_KEY_HEADER),
             Some("named-on-the-call")
         );
+    }
+
+    /// A header the envelope has no place for fails the publish, and the error names the header
+    /// and the stream, so the service that wrote it can tell which record and which header.
+    #[tokio::test]
+    async fn a_header_without_a_place_in_the_envelope_fails_naming_it_and_the_stream() {
+        let broker = KinesisBroker::new()
+            .envelope(NoOp)
+            .connect_in_process()
+            .await
+            .expect("the broker connects in process");
+        let mut headers = HeaderMap::new();
+        headers.insert(PARTITION_KEY_HEADER, "travels-natively");
+        headers.insert("x-tenant", "acme");
+
+        let refused = broker
+            .publisher()
+            .publish(
+                OutgoingMessage::new("jobs", b"payload").with_headers(headers),
+                None,
+            )
+            .await;
+
+        let Err(err) = refused else {
+            panic!("a header the envelope has no place for was published");
+        };
+        assert_eq!(
+            err.to_string(),
+            "kinesis record for 'jobs' does not fit its envelope: the envelope has no place for \
+             header 'x-tenant'"
+        );
+        assert_eq!(broker.published("jobs").len(), 0, "nothing was written");
     }
 }

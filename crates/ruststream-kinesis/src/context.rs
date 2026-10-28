@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use ruststream::{BuildBatchContext, BuildContext, ContextField, Field};
 
+use crate::envelope::Envelope;
 use crate::message::{KinesisMessage, KinesisPosition};
 use crate::subscriber::KinesisSeeker;
 
@@ -66,8 +67,8 @@ pub struct KinesisContext {
     seeker: KinesisSeeker,
 }
 
-impl BuildContext<KinesisMessage> for KinesisContext {
-    fn build(msg: &KinesisMessage) -> Self {
+impl<Env: Envelope> BuildContext<KinesisMessage<Env>> for KinesisContext {
+    fn build(msg: &KinesisMessage<Env>) -> Self {
         Self {
             shard: Arc::clone(msg.shard()),
             sequence: Arc::clone(msg.sequence()),
@@ -126,8 +127,8 @@ pub struct KinesisBatchContext {
     seeker: KinesisSeeker,
 }
 
-impl BuildBatchContext<KinesisMessage> for KinesisBatchContext {
-    fn build(first: &KinesisMessage) -> Self {
+impl<Env: Envelope> BuildBatchContext<KinesisMessage<Env>> for KinesisBatchContext {
+    fn build(first: &KinesisMessage<Env>) -> Self {
         Self {
             seeker: first.seeker().clone(),
         }

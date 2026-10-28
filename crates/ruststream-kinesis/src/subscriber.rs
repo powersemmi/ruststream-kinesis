@@ -29,11 +29,14 @@ use tokio::task::JoinHandle;
 use crate::broker::Core;
 use crate::claim::StreamClaim;
 use crate::cursor::{Lineage, Reading, ShardStart, StreamStart, iterator_at, reopen_at, rewind_to};
+use crate::envelope::{Envelope, Rsk};
 use crate::error::{KinesisError, sdk_err};
 #[cfg(feature = "testing")]
 use crate::in_process::{LogDeliveries, LogSeeker};
 use crate::lease::{LeaseError, LeaseKey, LeaseStore, SHARD_END};
-use crate::message::{KPL_MAGIC, KinesisMessage, KinesisPosition, Settle, Settlement};
+use crate::message::{
+    KPL_MAGIC, KinesisMessage, KinesisPosition, Opened, Received, Settle, Settlement,
+};
 use crate::stream::KinesisStream;
 use crate::track::Watermark;
 
@@ -127,18 +130,18 @@ impl SeekState {
 /// shard's gate, and items stamped under an older generation are discarded on the way out.
 pub(crate) struct Stamped {
     stamp: Option<(u64, Arc<AtomicU64>)>,
-    item: Result<KinesisMessage, KinesisError>,
+    item: Result<Received, KinesisError>,
 }
 
 impl Stamped {
-    fn live(epoch: u64, gate: &Arc<AtomicU64>, item: Result<KinesisMessage, KinesisError>) -> Self {
+    fn live(epoch: u64, gate: &Arc<AtomicU64>, item: Result<Received, KinesisError>) -> Self {
         Self {
             stamp: Some((epoch, Arc::clone(gate))),
             item,
         }
     }
 
-    fn unstamped(item: Result<KinesisMessage, KinesisError>) -> Self {
+    fn unstamped(item: Result<Received, KinesisError>) -> Self {
         Self { stamp: None, item }
     }
 
@@ -206,17 +209,17 @@ impl Stamped {
 /// # }
 /// # fn main() {}
 /// ```
-pub struct KinesisSubscriber {
+pub struct KinesisSubscriber<Env = Rsk> {
     stream: String,
     /// The live `GetRecords` limit, shared with every reader. This is how the mount site's batch
     /// size reaches the wire: [`BatchSubscriber::batches`] stores it before the first batch.
     limit: Arc<AtomicI32>,
-    deliveries: BufferedSubscriber<Deliveries>,
+    deliveries: BufferedSubscriber<Opened<Env>>,
     /// Given back when the subscription is dropped, so the broker may open the stream again.
     _claim: StreamClaim,
 }
 
-impl std::fmt::Debug for KinesisSubscriber {
+impl<Env> std::fmt::Debug for KinesisSubscriber<Env> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KinesisSubscriber")
             .field("stream", &self.stream)
@@ -224,7 +227,7 @@ impl std::fmt::Debug for KinesisSubscriber {
     }
 }
 
-impl KinesisSubscriber {
+impl<Env: Envelope> KinesisSubscriber<Env> {
     /// The stream this subscription consumes from.
     #[must_use]
     pub fn stream_name(&self) -> &str {
@@ -239,6 +242,7 @@ impl KinesisSubscriber {
         core: &Arc<Core>,
         descriptor: KinesisStream,
         claim: StreamClaim,
+        envelope: Env,
     ) -> Self {
         let (tx, rx) = mpsc::channel(CHANNEL_CAPACITY);
         let stream = descriptor.stream().to_owned();
@@ -267,8 +271,11 @@ impl KinesisSubscriber {
         Self {
             stream,
             limit,
-            deliveries: BufferedSubscriber::new(Deliveries::Shards(ShardDeliveries { rx, bus }))
-                .max_wait(BATCH_FILL_WINDOW),
+            deliveries: BufferedSubscriber::new(Opened {
+                deliveries: Deliveries::Shards(ShardDeliveries { rx, bus }),
+                envelope,
+            })
+            .max_wait(BATCH_FILL_WINDOW),
             _claim: claim,
         }
     }
@@ -280,12 +287,16 @@ impl KinesisSubscriber {
         stream: String,
         deliveries: LogDeliveries,
         claim: StreamClaim,
+        envelope: Env,
     ) -> Self {
         Self {
             stream,
             limit: Arc::new(AtomicI32::new(DEFAULT_READ_LIMIT)),
-            deliveries: BufferedSubscriber::new(Deliveries::InProcess(deliveries))
-                .max_wait(BATCH_FILL_WINDOW),
+            deliveries: BufferedSubscriber::new(Opened {
+                deliveries: Deliveries::InProcess(deliveries),
+                envelope,
+            })
+            .max_wait(BATCH_FILL_WINDOW),
             _claim: claim,
         }
     }
@@ -295,8 +306,8 @@ impl KinesisSubscriber {
 /// above it batches on the client.
 ///
 /// Without the `testing` feature the shard readers' channel is the only variant, so the type is
-/// that channel and the `match` in [`stream`](Subscriber::stream) resolves at compile time.
-enum Deliveries {
+/// that channel and the `match` in [`stream`](Self::stream) resolves at compile time.
+pub(crate) enum Deliveries {
     Shards(ShardDeliveries),
     #[cfg(feature = "testing")]
     InProcess(LogDeliveries),
@@ -311,23 +322,18 @@ impl std::fmt::Debug for Deliveries {
     }
 }
 
-impl ruststream::Seekable for Deliveries {
-    type Seeker = KinesisSeeker;
-
-    fn seeker(&self) -> KinesisSeeker {
+impl Deliveries {
+    pub(crate) fn seeker(&self) -> KinesisSeeker {
         match self {
-            Self::Shards(shards) => ruststream::Seekable::seeker(shards),
+            Self::Shards(shards) => shards.seeker(),
             #[cfg(feature = "testing")]
             Self::InProcess(log) => log.seeker(),
         }
     }
-}
 
-impl Subscriber for Deliveries {
-    type Message = KinesisMessage;
-    type Error = KinesisError;
-
-    fn stream(&mut self) -> impl Stream<Item = Result<KinesisMessage, KinesisError>> + Send + '_ {
+    pub(crate) fn stream(
+        &mut self,
+    ) -> impl Stream<Item = Result<Received, KinesisError>> + Send + '_ {
         match self {
             #[cfg(not(feature = "testing"))]
             Self::Shards(shards) => shards.stream(),
@@ -344,7 +350,7 @@ impl Subscriber for Deliveries {
 /// Kept apart from [`KinesisSubscriber`] so the framework's batch adapter can wrap it - the
 /// adapter owns what it groups, and the public subscriber keeps its name and its stream-wide
 /// surface.
-struct ShardDeliveries {
+pub(crate) struct ShardDeliveries {
     rx: mpsc::Receiver<Stamped>,
     bus: SeekBus,
 }
@@ -559,19 +565,12 @@ impl ruststream::Seeker for KinesisSeeker {
     }
 }
 
-impl ruststream::Seekable for ShardDeliveries {
-    type Seeker = KinesisSeeker;
-
+impl ShardDeliveries {
     fn seeker(&self) -> KinesisSeeker {
         KinesisSeeker::shards(Arc::clone(&self.bus))
     }
-}
 
-impl Subscriber for ShardDeliveries {
-    type Message = KinesisMessage;
-    type Error = KinesisError;
-
-    fn stream(&mut self) -> impl Stream<Item = Result<KinesisMessage, KinesisError>> + Send + '_ {
+    fn stream(&mut self) -> impl Stream<Item = Result<Received, KinesisError>> + Send + '_ {
         // Poll the channel in place rather than wrapping it in an owning stream, so `stream`
         // can be called again after the returned stream is dropped (the runtime and the
         // conformance helpers re-enter it per call). Items stamped under an older generation
@@ -594,7 +593,7 @@ impl Subscriber for ShardDeliveries {
 
 /// Repositioning reaches through the batch buffer to the readers, so a batch subscription opens
 /// at a chosen position and repositions from a handler exactly as a single-message one does.
-impl ruststream::Seekable for KinesisSubscriber {
+impl<Env: Envelope> ruststream::Seekable for KinesisSubscriber<Env> {
     type Seeker = KinesisSeeker;
 
     fn seeker(&self) -> KinesisSeeker {
@@ -602,17 +601,19 @@ impl ruststream::Seekable for KinesisSubscriber {
     }
 }
 
-impl Subscriber for KinesisSubscriber {
-    type Message = KinesisMessage;
+impl<Env: Envelope> Subscriber for KinesisSubscriber<Env> {
+    type Message = KinesisMessage<Env>;
     type Error = KinesisError;
 
-    fn stream(&mut self) -> impl Stream<Item = Result<KinesisMessage, KinesisError>> + Send + '_ {
+    fn stream(
+        &mut self,
+    ) -> impl Stream<Item = Result<KinesisMessage<Env>, KinesisError>> + Send + '_ {
         self.deliveries.stream()
     }
 }
 
-impl BatchSubscriber for KinesisSubscriber {
-    type Batch = Vec<KinesisMessage>;
+impl<Env: Envelope> BatchSubscriber for KinesisSubscriber<Env> {
+    type Batch = Vec<KinesisMessage<Env>>;
 
     /// # Cancel safety
     ///
@@ -1068,9 +1069,13 @@ async fn read_shard(
             .send()
             .await;
         match response {
-            Ok(output) => {
+            Ok(mut output) => {
                 failures = 0;
-                for record in output.records() {
+                // The records are taken out of the response, so each delivery keeps the data the
+                // SDK decoded rather than a copy of it.
+                let records = mem::take(&mut output.records);
+                let idle = records.is_empty();
+                for record in records {
                     if reading.rewind.is_none() {
                         // Opened at the tip: the first record read is where it started.
                         reading.rewind = Some(ShardStart::At(record.sequence_number().to_owned()));
@@ -1088,7 +1093,7 @@ async fn read_shard(
                             Ok(false) | Err(_) => return reading.rewind,
                         }
                     }
-                    let data = record.data().as_ref();
+                    let data = record.data.as_ref();
                     if data.len() > 4 && data[0..4] == KPL_MAGIC {
                         if out
                             .send(Stamped::live(
@@ -1114,15 +1119,15 @@ async fn read_shard(
                         epoch,
                         gate: Arc::clone(&gate),
                     });
-                    let message = KinesisMessage::new(
-                        data,
+                    let message = Received {
+                        sequence: Arc::from(record.sequence_number.as_str()),
+                        data: record.data.into_inner(),
                         // The service stamps every record with the key it was put under; the
                         // SDK's model only types the field as optional.
-                        record.partition_key().unwrap_or_default(),
-                        record.sequence_number(),
-                        seeker.clone(),
+                        partition_key: record.partition_key.unwrap_or_default(),
+                        seeker: seeker.clone(),
                         settlement,
-                    );
+                    };
                     if out
                         .send(Stamped::live(epoch, &gate, Ok(message)))
                         .await
@@ -1146,7 +1151,7 @@ async fn read_shard(
                     return None;
                 };
                 iterator = next.to_owned();
-                if output.records().is_empty() {
+                if idle {
                     tokio::select! {
                         () = out.closed() => {}
                         seek = seek_rx.recv() => {

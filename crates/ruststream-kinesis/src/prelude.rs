@@ -68,8 +68,9 @@ pub use crate::message::KinesisPosition;
 // The options type keeps its prefix: it is not a policy or a context key but the name a handler
 // body writes in its own bound (`Out<impl Publisher<Options = KinesisPublishOptions>, Marker>`),
 // and that body says which broker it is tied to.
+pub use crate::envelope::{Envelope, Framed, NoOp, Rsk};
 pub use crate::publisher::{
     KinesisPublish as Publish, KinesisPublishOptions, KinesisPublishSettings, KinesisPublishSteps,
 };
-pub use crate::stream::{KinesisStream, KinesisSubscriberExt};
+pub use crate::stream::{KinesisEnvelopeExt, KinesisStream, KinesisSubscriberExt};
 pub use crate::subscriber::KinesisSeeker;
