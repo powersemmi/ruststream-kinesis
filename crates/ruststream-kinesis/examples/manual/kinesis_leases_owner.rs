@@ -61,7 +61,7 @@ fn broker(config: &SdkConfig, table: &str, instance: &str) -> KinesisBroker {
 
 fn service(broker: KinesisBroker) -> RustStream {
     RustStream::new(AppInfo::new("dispatch", "0.1.0")).with_broker(broker, |b| {
-        b.include(subscriber(KinesisStream::new("dispatch"), Assign).build());
+        b.include(subscriber(KinesisStream::new("dispatch"), Assign).build())
     })
 }
 

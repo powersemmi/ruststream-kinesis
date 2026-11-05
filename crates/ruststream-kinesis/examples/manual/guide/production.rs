@@ -72,7 +72,7 @@ fn app() -> impl App {
         KinesisBroker::from_config(aws_config()),
         |b| {
             // The stream belongs to the infrastructure, so the descriptor does not create it.
-            b.include(subscriber(KinesisStream::new("orders"), TakeOrder).build());
+            b.include(subscriber(KinesisStream::new("orders"), TakeOrder).build())
         },
     )
 }

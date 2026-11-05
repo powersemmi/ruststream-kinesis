@@ -57,7 +57,6 @@ fn app() -> impl App {
             .max_attempts(nonzero!(3))
             .dead_letter("invoices.unarchived")
             .out(Archive, Publish::default())
-            .build();
     })
 }
 
@@ -164,7 +163,7 @@ mod tests {
             KinesisBroker::new(),
             |b| {
                 let invoices = KinesisStream::new("invoices").create_if_missing(0);
-                b.include(subscriber(invoices, Unprovisioned).build());
+                b.include(subscriber(invoices, Unprovisioned).build())
             },
         );
 

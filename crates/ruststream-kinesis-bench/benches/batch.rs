@@ -32,9 +32,7 @@ async fn consume(orders: &[Order], ctx: &mut Context<'_, (), Latch>) -> HandlerO
 }
 
 fn app(messages: usize) -> Pending {
-    common::pending(messages, &[], |b| {
-        b.include(consume.batch(nonzero!(64)));
-    })
+    common::pending(messages, &[], |b| b.include(consume.batch(nonzero!(64))))
 }
 
 // Four runs put the longest one at 42,128 blocks every time. The limit this declares is 42,506:

@@ -27,9 +27,7 @@ async fn reprice(quote: &Quote) -> HandlerOutcome {
 }
 
 fn service(broker: KinesisBroker) -> RustStream {
-    RustStream::new(AppInfo::new("pricing", "0.1.0")).with_broker(broker, |b| {
-        b.include(reprice);
-    })
+    RustStream::new(AppInfo::new("pricing", "0.1.0")).with_broker(broker, |b| b.include(reprice))
 }
 // --8<-- [end:poll]
 

@@ -75,8 +75,8 @@ settled, and its children start after that.
 
 Kinesis holds no record back and counts no deliveries, so the runtime does both. A `retry_after`
 outcome, and a `retry()` on a registration that declares
-[`max_attempts`](api:ruststream::runtime::Mounting::max_attempts) or a
-[`dead_letter`](api:ruststream::runtime::Mounting::dead_letter) stream, take this path. The
+[`max_attempts`](api:ruststream::runtime::RouterWith::max_attempts) or a
+[`dead_letter`](api:ruststream::runtime::RouterWith::dead_letter) stream, take this path. The
 attempt count travels in the copy's `x-ruststream-retry-count` header, and the first delivery
 counts as one.
 

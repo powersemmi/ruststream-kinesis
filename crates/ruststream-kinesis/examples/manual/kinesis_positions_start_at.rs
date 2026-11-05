@@ -50,7 +50,7 @@ fn service(broker: KinesisBroker) -> RustStream {
             subscriber(KinesisStream::new("ledger.audit"), Project)
                 .build()
                 .start_at(KinesisPosition::horizon()),
-        );
+        )
     })
 }
 // --8<-- [end:start_at]

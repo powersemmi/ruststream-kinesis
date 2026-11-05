@@ -23,7 +23,7 @@ use tokio::sync::Notify;
 use ruststream::runtime::PublishExt;
 use ruststream::{
     AckError, Broker, ConnectedBroker, HeaderMap, IncomingMessage, Outgoing, OutgoingMessage,
-    PublishPolicy, Publisher, Serialized, StartAt, Subscriber, SubscriptionSource,
+    PublishPolicy, Publisher, Serialized, Settle, StartAt, Subscriber, SubscriptionSource,
 };
 use ruststream_kinesis::{
     ConnectedKinesisBroker, KinesisBroker, KinesisError, KinesisPosition, KinesisPublish,
@@ -581,7 +581,7 @@ async fn a_publish_to_a_missing_stream_names_the_stream() {
         .publish(OutgoingMessage::new(&missing, b"nowhere".as_slice()), None)
         .await
         .expect_err("a stream that was never created cannot take a record");
-    let KinesisError::Publish { stream, source } = &failure else {
+    let KinesisError::Publish { stream, source } = failure.error() else {
         panic!("expected a publish failure, got {failure:?}")
     };
     assert_eq!(stream, &missing);

@@ -57,7 +57,7 @@ impl Handle<Entry> for Book {
 
 fn service(broker: KinesisBroker) -> RustStream {
     RustStream::new(AppInfo::new("ledger", "0.1.0")).with_broker(broker, |b| {
-        b.include(subscriber(KinesisStream::new("ledger"), Book).build());
+        b.include(subscriber(KinesisStream::new("ledger"), Book).build())
     })
 }
 // --8<-- [end:outcomes]

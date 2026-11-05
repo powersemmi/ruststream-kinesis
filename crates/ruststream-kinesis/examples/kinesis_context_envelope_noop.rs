@@ -17,9 +17,8 @@ async fn count(click: &Click) -> HandlerOutcome {
 
 #[ruststream::app]
 fn app() -> impl App {
-    RustStream::new(AppInfo::new("clicks", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-        b.include(count.envelope(NoOp));
-    })
+    RustStream::new(AppInfo::new("clicks", "0.1.0"))
+        .with_broker(KinesisBroker::new(), |b| b.include(count.envelope(NoOp)))
 }
 // --8<-- [end:noop]
 

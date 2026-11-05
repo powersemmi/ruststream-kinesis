@@ -96,12 +96,12 @@ fn service(broker: KinesisBroker) -> RustStream {
                 Book,
             )
             .build(),
-        );
-        b.include(
+        )
+        .include(
             subscriber(KinesisStream::new("page-views").create_if_missing(1), Count)
                 .batch(nonzero!(500))
                 .build(),
-        );
+        )
     })
 }
 

@@ -41,7 +41,7 @@ async fn verify(
 #[ruststream::app]
 fn app() -> impl App {
     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-        b.include(verify).out(Ledger, Publish::default()).build();
+        b.include(verify).out(Ledger, Publish::default())
     })
 }
 

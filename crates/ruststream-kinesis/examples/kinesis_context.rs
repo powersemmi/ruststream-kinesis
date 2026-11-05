@@ -42,7 +42,7 @@ async fn audit(
 #[ruststream::app]
 fn app() -> impl App {
     RustStream::new(AppInfo::new("audit", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-        b.include(audit).out(Trail, Publish::default()).build();
+        b.include(audit).out(Trail, Publish::default())
     })
 }
 

@@ -50,7 +50,7 @@ impl Handle<Parcel> for Track {
 fn service(broker: KinesisBroker) -> RustStream {
     RustStream::new(AppInfo::new("parcels", "0.1.0")).with_broker(broker, |b| {
         let parcels = KinesisStream::new("parcels").create_if_missing(2);
-        b.include(subscriber(parcels, Track).build());
+        b.include(subscriber(parcels, Track).build())
     })
 }
 // --8<-- [end:create]
@@ -85,7 +85,7 @@ mod tests {
             KinesisBroker::new(),
             |b| {
                 let shardless = KinesisStream::new("parcels").create_if_missing(0);
-                b.include(subscriber(shardless, Track).build());
+                b.include(subscriber(shardless, Track).build())
             },
         );
 

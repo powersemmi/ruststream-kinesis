@@ -47,7 +47,7 @@
 //! #[ruststream::app]
 //! fn app() -> impl App {
 //!     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-//!         b.include(confirm).out_reply(Publish::default());
+//!         b.include(confirm).out_reply(Publish::default())
 //!     })
 //! }
 //! # }

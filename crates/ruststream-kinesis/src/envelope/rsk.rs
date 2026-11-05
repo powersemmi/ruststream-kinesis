@@ -53,7 +53,7 @@ const FIELD_LEN: usize = 4;
 /// fn app() -> impl App {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
 ///         .with_broker(KinesisBroker::new().envelope(NoOp), |b| {
-///             b.include(on_order.envelope(Rsk));
+///             b.include(on_order.envelope(Rsk))
 ///         })
 /// }
 /// # }

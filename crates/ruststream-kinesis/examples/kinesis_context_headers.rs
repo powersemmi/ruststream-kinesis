@@ -48,7 +48,7 @@ async fn bill(
 #[ruststream::app]
 fn app() -> impl App {
     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-        b.include(bill).out(Bills, Publish::default()).build();
+        b.include(bill).out(Bills, Publish::default())
     })
 }
 

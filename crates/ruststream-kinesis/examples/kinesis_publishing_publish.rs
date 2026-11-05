@@ -48,9 +48,7 @@ async fn confirm(order: &Order, Out(shipments): Out<impl Publisher, Shipments>) 
 fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
         // The reply names no policy and takes the broker's default; the slot names one.
-        b.include(confirm)
-            .out(Shipments, Publish::default())
-            .build();
+        b.include(confirm).out(Shipments, Publish::default())
     })
 }
 // --8<-- [end:publish]

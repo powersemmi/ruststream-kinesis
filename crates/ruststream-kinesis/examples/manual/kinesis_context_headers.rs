@@ -64,7 +64,6 @@ fn app() -> impl App {
                 .build(),
         )
         .out(Bills, Publish::default())
-        .build();
     })
 }
 // --8<-- [end:headers]

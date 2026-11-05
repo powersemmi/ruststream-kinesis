@@ -37,7 +37,7 @@ use super::{Body, Envelope, EnvelopeError, EnvelopeHeaders, MalformedHeaders};
 /// #[ruststream::app]
 /// fn app() -> impl App {
 ///     RustStream::new(AppInfo::new("clicks", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-///         b.include(on_click.envelope(NoOp));
+///         b.include(on_click.envelope(NoOp))
 ///     })
 /// }
 /// # }

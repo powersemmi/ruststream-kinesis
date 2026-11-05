@@ -28,9 +28,7 @@ async fn pay(payout: &Payout) -> HandlerOutcome {
 }
 
 fn service(broker: KinesisBroker) -> RustStream {
-    RustStream::new(AppInfo::new("payouts", "0.1.0")).with_broker(broker, |b| {
-        b.include(pay);
-    })
+    RustStream::new(AppInfo::new("payouts", "0.1.0")).with_broker(broker, |b| b.include(pay))
 }
 // --8<-- [end:service]
 

@@ -178,23 +178,23 @@ fn service(broker: KinesisBroker, review_from: SystemTime) -> impl App<State = P
                 )
                 .start_at(KinesisPosition::horizon())
                 .build(),
-            );
-            b.include(
+            )
+            .include(
                 subscriber(
                     KinesisStream::new("card-postings").create_if_missing(1),
                     ProjectSpend,
                 )
                 .batch(nonzero!(500usize))
                 .build(),
-            );
-            b.include(
+            )
+            .include(
                 subscriber(
                     KinesisStream::new("payouts").create_if_missing(1),
                     ReviewPayout,
                 )
                 .start_at(KinesisPosition::timestamp(epoch_millis(review_from)))
                 .build(),
-            );
+            )
         })
 }
 

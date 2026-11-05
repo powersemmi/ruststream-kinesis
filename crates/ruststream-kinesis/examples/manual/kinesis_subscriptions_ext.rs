@@ -56,7 +56,7 @@ fn service(broker: KinesisBroker) -> RustStream {
                 .poll_interval(Duration::from_millis(250))
                 .create_if_missing(1)
                 .start_at(KinesisPosition::horizon()),
-        );
+        )
     })
 }
 // --8<-- [end:chain]

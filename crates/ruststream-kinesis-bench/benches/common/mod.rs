@@ -73,7 +73,10 @@ use aws_sdk_kinesis::operation::create_stream::CreateStreamError;
 use aws_sdk_kinesis::primitives::Blob;
 use aws_sdk_kinesis::types::PutRecordsRequestEntry;
 use gungraun::{Callgrind, Dhat, DhatMetric, EntryPoint, LibraryBenchmarkConfig};
-use ruststream::runtime::{AppInfo, BrokerScope, Identity, RunningApp, RustStream};
+use ruststream::runtime::{
+    AppInfo, BrokerScope, Identity, MountChain, MountRoutes, PublishIdentity, RunningApp,
+    RustStream,
+};
 use ruststream_kinesis::KinesisBroker;
 use serde::Deserialize;
 use tokio::runtime::{Builder, Runtime};
@@ -384,15 +387,26 @@ pub struct Pending {
     messages: usize,
 }
 
-/// The mount a scenario passes in: what `with_broker` does with the scope.
-pub type Mount<'a> = &'a mut BrokerScope<KinesisBroker, Identity, (), Latch>;
+/// The scope a scenario's mount receives: what `with_broker` hands its closure.
+pub type Mount = BrokerScope<KinesisBroker, Identity, (), Latch>;
+
+/// The chain a scenario's mount returns.
+pub trait Mounted:
+    MountChain<Routes: MountRoutes<KinesisBroker, Identity, Latch, PublishIdentity>>
+{
+}
+
+impl<Chain: MountChain<Routes: MountRoutes<KinesisBroker, Identity, Latch, PublishIdentity>>>
+    Mounted for Chain
+{
+}
 
 /// Builds a one-handler service on the production broker, with the run's stream and every stream
 /// in `outputs` created on the stand, ready to be started by the body.
-pub fn pending(
+pub fn pending<Chain: Mounted>(
     messages: usize,
     outputs: &'static [&'static str],
-    mount: impl FnOnce(Mount<'_>),
+    mount: impl FnOnce(Mount) -> Chain,
 ) -> Pending {
     let input = stream();
     aside(async move |client| {

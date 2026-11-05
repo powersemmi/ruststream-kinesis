@@ -63,7 +63,7 @@ fn service(broker: KinesisBroker) -> RustStream {
         // Four deliveries per order, then the record leaves for a stream an operator reads.
         b.include(subscriber(KinesisStream::new("orders"), Reconcile).build())
             .max_attempts(nonzero!(4))
-            .dead_letter("orders.unsettled");
+            .dead_letter("orders.unsettled")
     })
 }
 // --8<-- [end:retry]

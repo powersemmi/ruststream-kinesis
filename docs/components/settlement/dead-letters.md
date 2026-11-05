@@ -9,7 +9,7 @@ import TabItem from '@theme/TabItem';
 
 # Dead letters
 
-[`max_attempts(n)`](api:ruststream::runtime::Mounting::max_attempts) caps deliveries per record; [`dead_letter(stream)`](api:ruststream::runtime::Mounting::dead_letter) names the stream a spent record leaves for, and a cap without one retires the record.
+[`max_attempts(n)`](api:ruststream::runtime::RouterWith::max_attempts) caps deliveries per record; [`dead_letter(stream)`](api:ruststream::runtime::RouterWith::dead_letter) names the stream a spent record leaves for, and a cap without one retires the record.
 
 The cap counts the first delivery too.
 Kinesis keeps no delivery count, so the count travels with the record in [`RETRY_COUNT_HEADER`](api:ruststream::runtime::RETRY_COUNT_HEADER).

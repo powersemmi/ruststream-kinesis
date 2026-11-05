@@ -46,7 +46,6 @@ fn app() -> impl App {
             .max_attempts(nonzero!(3))
             .dead_letter("invoices.unarchived")
             .out(Archive, Publish::default())
-            .build();
     })
 }
 
@@ -135,12 +134,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_startup_carries_the_kinesis_error() {
-        let app = RustStream::new(AppInfo::new("invoices", "0.1.0")).with_broker(
-            KinesisBroker::new(),
-            |b| {
-                b.include(unprovisioned);
-            },
-        );
+        let app = RustStream::new(AppInfo::new("invoices", "0.1.0"))
+            .with_broker(KinesisBroker::new(), |b| b.include(unprovisioned));
 
         let failed = TestApp::start(app).await.err();
         let mut cause: Option<&(dyn Error + 'static)> = failed.as_ref().map(|err| err as _);

@@ -7,6 +7,9 @@
 //!     cargo test --example kinesis_subscriptions_shards --features testing -- --test-threads=1
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no `Send`.
+#![allow(clippy::future_not_send)]
+
 use ruststream_kinesis::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -27,9 +30,7 @@ async fn ship(shipment: &Shipment) -> HandlerOutcome {
 }
 
 fn service(broker: KinesisBroker) -> RustStream {
-    RustStream::new(AppInfo::new("shipping", "0.1.0")).with_broker(broker, |b| {
-        b.include(ship);
-    })
+    RustStream::new(AppInfo::new("shipping", "0.1.0")).with_broker(broker, |b| b.include(ship))
 }
 // --8<-- [end:shards]
 

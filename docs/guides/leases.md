@@ -25,7 +25,7 @@ A restarted instance starts with an empty store and opens each shard at its tip,
 
 ```toml title="Cargo.toml"
 [dependencies]
-ruststream-kinesis = { version = "0.7", features = ["dynamodb-lease"] }
+ruststream-kinesis = { version = "0.8", features = ["dynamodb-lease"] }
 aws-config = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```

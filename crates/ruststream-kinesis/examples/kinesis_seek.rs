@@ -38,8 +38,8 @@ fn app() -> impl App {
                 .partition_key("tenant-acme")
                 .publish()
                 .await
-        });
-        b.include(replay);
+        })
+        .include(replay)
     })
 }
 // --8<-- [end:publish]

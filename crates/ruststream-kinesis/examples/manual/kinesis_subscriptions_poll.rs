@@ -51,7 +51,7 @@ impl Handle<Quote> for Reprice {
 fn service(broker: KinesisBroker) -> RustStream {
     RustStream::new(AppInfo::new("pricing", "0.1.0")).with_broker(broker, |b| {
         let quotes = KinesisStream::new("quotes").poll_interval(Duration::from_millis(200));
-        b.include(subscriber(quotes, Reprice).build());
+        b.include(subscriber(quotes, Reprice).build())
     })
 }
 // --8<-- [end:poll]

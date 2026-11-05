@@ -20,8 +20,8 @@ use aws_sdk_kinesis::types::Shard;
 use futures::StreamExt;
 
 use ruststream::{
-    Broker, ConnectedBroker, HeaderMap, IncomingMessage, OutgoingMessage, Publisher, StartAt,
-    Subscriber, SubscriptionSource,
+    Broker, ConnectedBroker, HeaderMap, IncomingMessage, OutgoingMessage, Publisher, Settle,
+    StartAt, Subscriber, SubscriptionSource,
 };
 use ruststream_kinesis::{
     ConnectedKinesisBroker, KinesisBroker, KinesisPosition, KinesisPublisher, KinesisStream,

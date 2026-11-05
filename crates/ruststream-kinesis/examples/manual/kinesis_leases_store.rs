@@ -51,12 +51,10 @@ impl Handle<StockChange> for Apply {
 }
 
 fn service(broker: KinesisBroker, leases: Arc<dyn LeaseStore>) -> RustStream {
-    RustStream::new(AppInfo::new("inventory", "0.1.0")).with_broker(
-        broker.lease_store(leases),
-        |b| {
-            b.include(subscriber(KinesisStream::new("inventory"), Apply).build());
-        },
-    )
+    RustStream::new(AppInfo::new("inventory", "0.1.0"))
+        .with_broker(broker.lease_store(leases), |b| {
+            b.include(subscriber(KinesisStream::new("inventory"), Apply).build())
+        })
 }
 // --8<-- [end:store]
 

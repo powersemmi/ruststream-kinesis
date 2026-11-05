@@ -46,9 +46,8 @@ impl Handle<Order> for Place {
 }
 
 fn service(broker: KinesisBroker) -> RustStream {
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(subscriber("orders", Place).build());
-    })
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(broker, |b| b.include(subscriber("orders", Place).build()))
 }
 // --8<-- [end:name]
 

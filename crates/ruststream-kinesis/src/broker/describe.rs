@@ -65,7 +65,7 @@ impl<Env: Envelope> DescribeServer for KinesisBroker<Env> {
     ///         |b| {
     ///             b.include(confirm)
     ///                 .out_reply(Publish::default())
-    ///                 .partition_key("tenant-acme");
+    ///                 .partition_key("tenant-acme")
     ///         },
     ///     );
     ///     build_spec(&app)

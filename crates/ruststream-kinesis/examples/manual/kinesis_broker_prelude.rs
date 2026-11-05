@@ -41,7 +41,7 @@ fn app() -> impl App {
                 .start_at(KinesisPosition::horizon()),
         )
         .out_reply(Publish::default())
-        .partition_key("receipts-v1");
+        .partition_key("receipts-v1")
     })
 }
 // --8<-- [end:app]

@@ -18,9 +18,8 @@ use ruststream_kinesis::prelude::*;
 /// as an admin endpoint.
 fn service(broker: KinesisBroker) -> (RustStream, KinesisPublisher) {
     let admin = broker.publisher();
-    let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(place);
-    });
+    let app =
+        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| b.include(place));
     (app, admin)
 }
 // --8<-- [end:service]
@@ -77,7 +76,10 @@ mod tests {
         assert!(
             matches!(
                 refused,
-                Err(PublishError::Publish(KinesisError::NotConnected))
+                Err(PublishError::Publish {
+                    source: KinesisError::NotConnected,
+                    ..
+                })
             ),
             "{refused:?}"
         );

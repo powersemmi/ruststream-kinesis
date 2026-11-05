@@ -54,7 +54,6 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("audit", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
         b.include(subscriber(KinesisStream::new("orders"), Audit).build())
             .out(Trail, Publish::default())
-            .build();
     })
 }
 

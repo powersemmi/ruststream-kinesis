@@ -25,9 +25,7 @@ async fn track(parcel: &Parcel) -> HandlerOutcome {
 }
 
 fn service(broker: KinesisBroker) -> RustStream {
-    RustStream::new(AppInfo::new("parcels", "0.1.0")).with_broker(broker, |b| {
-        b.include(track);
-    })
+    RustStream::new(AppInfo::new("parcels", "0.1.0")).with_broker(broker, |b| b.include(track))
 }
 // --8<-- [end:create]
 
@@ -61,12 +59,8 @@ mod tests {
 
     #[tokio::test]
     async fn zero_shards_stop_the_service_at_startup() {
-        let app = RustStream::new(AppInfo::new("parcels", "0.1.0")).with_broker(
-            KinesisBroker::new(),
-            |b| {
-                b.include(shardless);
-            },
-        );
+        let app = RustStream::new(AppInfo::new("parcels", "0.1.0"))
+            .with_broker(KinesisBroker::new(), |b| b.include(shardless));
 
         let refused = TestApp::start(app)
             .await

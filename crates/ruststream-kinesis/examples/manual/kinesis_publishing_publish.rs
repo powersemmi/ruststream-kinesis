@@ -67,7 +67,6 @@ fn app() -> impl App {
                 .build(),
         )
         .out(Shipments, Publish::default())
-        .build();
     })
 }
 // --8<-- [end:publish]

@@ -57,7 +57,7 @@ fn document() -> Spec {
         RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
             b.include(confirm)
                 .out_reply(Publish::default())
-                .partition_key("tenant-acme");
+                .partition_key("tenant-acme")
         });
     build_spec(&app)
 }
@@ -117,9 +117,9 @@ fn the_message_object_names_no_stream() {
 /// carries no field the service never set.
 #[test]
 fn a_policy_without_a_key_adds_no_message_binding() {
-    let app =
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-            b.include(confirm).out_reply(Publish::default());
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(KinesisBroker::new(), |b| {
+            b.include(confirm).out_reply(Publish::default())
         });
     let spec = build_spec(&app);
 
@@ -147,9 +147,7 @@ fn framed_document() -> serde_json::Value {
     let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker_labeled(
         "kinesis",
         broker,
-        |b| {
-            b.include(confirm).out_reply(Publish::default());
-        },
+        |b| b.include(confirm).out_reply(Publish::default()),
     );
     serde_json::to_value(build_spec(&app)).expect("the document serializes")
 }
@@ -175,7 +173,7 @@ fn a_mount_site_reports_the_envelope_it_names() {
     let app =
         RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
             b.include(confirm.envelope(Framed::new(CborCodec)))
-                .out_reply(Publish::default().envelope(NoOp));
+                .out_reply(Publish::default().envelope(NoOp))
         });
     let document = serde_json::to_value(build_spec(&app)).expect("the document serializes");
 

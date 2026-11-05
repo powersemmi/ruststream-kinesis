@@ -62,7 +62,7 @@ export const retries = {
 
 <Diagram name="retries" words={retries} />
 
-Kinesis 既不扣留记录，也不统计投递次数，所以这两件事都由运行时来做。`retry_after` 结果，以及声明了 [`max_attempts`](api:ruststream::runtime::Mounting::max_attempts) 或 [`dead_letter`](api:ruststream::runtime::Mounting::dead_letter) 死信流的注册上的 `retry()`，都走这条路径。尝试次数随副本的 `x-ruststream-retry-count` 消息头传递，第一次投递算作一次。
+Kinesis 既不扣留记录，也不统计投递次数，所以这两件事都由运行时来做。`retry_after` 结果，以及声明了 [`max_attempts`](api:ruststream::runtime::RouterWith::max_attempts) 或 [`dead_letter`](api:ruststream::runtime::RouterWith::dead_letter) 死信流的注册上的 `retry()`，都走这条路径。尝试次数随副本的 `x-ruststream-retry-count` 消息头传递，第一次投递算作一次。
 
 副本发往订阅读取的流，也就是 [`KinesisStream`](api:ruststream_kinesis::KinesisStream) 描述符报告的地址，因此注册无需指定目的地。副本落在最新处，位于其分区键选定的分片上，排在此后写入的记录之后。因此重试的记录会失去它与相邻记录之间的顺序。在这一顺序重要的地方，不要声明上限，让 `retry()` 挡住分片。流的每个消费者都会收到副本，而不只是发起重试的那个。
 
