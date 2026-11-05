@@ -91,7 +91,7 @@ impl DynamoLeaseStore {
     ///
     ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
     ///         .with_broker(broker, |b| {
-    ///             b.include(handle);
+    ///             b.include(handle)
     ///         })
     ///         .run()
     ///         .await?;
@@ -152,7 +152,7 @@ impl DynamoLeaseStore {
     ///
     ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
     ///         .with_broker(broker, |b| {
-    ///             b.include(handle);
+    ///             b.include(handle)
     ///         })
     ///         .run()
     ///         .await?;

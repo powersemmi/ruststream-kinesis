@@ -203,7 +203,7 @@ impl Stamped {
 ///             digest
 ///                 .batch(nonzero!(500))
 ///                 .poll_interval(Duration::from_millis(500)),
-///         );
+///         )
 ///     })
 /// }
 /// # }
@@ -415,7 +415,7 @@ fn read_limit(size: NonZeroUsize) -> i32 {
 /// #[ruststream::app]
 /// fn app() -> impl App {
 ///     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-///         b.include(replay);
+///         b.include(replay)
 ///     })
 /// }
 /// # }

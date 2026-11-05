@@ -87,7 +87,7 @@ use crate::stream::EnvelopeBinding;
 /// /// The app `main` runs.
 /// pub fn app() -> RustStream {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-///         b.include(record).out(Journal, Publish::default()).build();
+///         b.include(record).out(Journal, Publish::default())
 ///     })
 /// }
 ///
@@ -316,7 +316,7 @@ impl<Env: Envelope> Publisher for KinesisPublisher<Env> {
 /// #[ruststream::app]
 /// fn app() -> impl App {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-///         b.include(record).out(Journal, KinesisPublish::default()).build();
+///         b.include(record).out(Journal, KinesisPublish::default())
 ///     })
 /// }
 /// # }
@@ -395,7 +395,7 @@ impl<Env> KinesisPublish<Env> {
     ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
     ///         // Every journal entry on one shard, mutually ordered.
     ///         let journal = KinesisPublish::default().partition_key("journal-v1");
-    ///         b.include(record).out(Journal, journal).build();
+    ///         b.include(record).out(Journal, journal)
     ///     })
     /// }
     /// # }
@@ -439,7 +439,7 @@ impl<Env> KinesisPublish<Env> {
     /// #[ruststream::app]
     /// fn app() -> impl App {
     ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-    ///         b.include(project).out_reply(Publish::default().envelope(NoOp));
+    ///         b.include(project).out_reply(Publish::default().envelope(NoOp))
     ///     })
     /// }
     /// # }
@@ -595,7 +595,7 @@ where
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
 ///         b.include(confirm)
 ///             .out_reply(Publish::default())
-///             .partition_key("tenant-acme");
+///             .partition_key("tenant-acme")
 ///     })
 /// }
 /// # }
@@ -676,7 +676,7 @@ where
 /// #[ruststream::app]
 /// fn app() -> impl App {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-///         b.include(record).out(Journal, Publish::default()).build();
+///         b.include(record).out(Journal, Publish::default())
 ///     })
 /// }
 /// # }

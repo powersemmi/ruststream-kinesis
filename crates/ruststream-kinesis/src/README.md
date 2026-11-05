@@ -32,7 +32,7 @@ async fn handle(order: &Order) -> HandlerOutcome {
 #[ruststream::app]
 fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-        b.include(handle);
+        b.include(handle)
     })
 }
 # }

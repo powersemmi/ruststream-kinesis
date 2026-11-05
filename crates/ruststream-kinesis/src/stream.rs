@@ -85,7 +85,7 @@ use crate::subscriber::KinesisSubscriber;
 ///     let orders = KinesisStream::new("orders").poll_interval(Duration::from_millis(500));
 ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
 ///         .with_broker(KinesisBroker::new(), |b| {
-///             b.include(subscriber(orders, Audit).build());
+///             b.include(subscriber(orders, Audit).build())
 ///         })
 ///         .run()
 ///         .await?;
@@ -164,7 +164,7 @@ impl<Env> KinesisStream<Env> {
     /// pub fn app() -> impl App {
     ///     RustStream::new(AppInfo::new("readings", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
     ///         let readings = KinesisStream::new("readings").envelope(NoOp);
-    ///         b.include(subscriber(readings, Log).build());
+    ///         b.include(subscriber(readings, Log).build())
     ///     })
     /// }
     /// # }
@@ -282,7 +282,7 @@ impl<Env> KinesisStream<Env> {
 ///             work.batch(nonzero!(500))
 ///                 .poll_interval(Duration::from_millis(500))
 ///                 .create_if_missing(1),
-///         );
+///         )
 ///     })
 /// }
 /// # }
@@ -350,7 +350,7 @@ where
 /// fn app() -> impl App {
 ///     RustStream::new(AppInfo::new("clicks", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
 ///         // A browser SDK writes the clicks as plain JSON records.
-///         b.include(on_click.envelope(NoOp));
+///         b.include(on_click.envelope(NoOp))
 ///     })
 /// }
 /// # }
@@ -566,7 +566,7 @@ where
     ///         // Four deliveries per order, then the record leaves for a stream an operator reads.
     ///         b.include(reconcile)
     ///             .max_attempts(nonzero!(4))
-    ///             .dead_letter("orders.unsettled");
+    ///             .dead_letter("orders.unsettled")
     ///     })
     /// }
     /// # }

@@ -83,7 +83,7 @@ pub(crate) const KPL_MAGIC: [u8; 4] = [0xF3, 0x89, 0x9A, 0xC2];
 /// #[ruststream::app]
 /// fn app() -> impl App {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-///         b.include(backfill);
+///         b.include(backfill)
 ///     })
 /// }
 /// # }
