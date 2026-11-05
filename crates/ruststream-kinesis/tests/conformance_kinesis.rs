@@ -23,6 +23,7 @@ use std::time::Duration;
 use ruststream::conformance::harness::{self, InProcessBroker};
 use ruststream::conformance::helpers::unique_subject;
 use ruststream::conformance::message_shape::{self, OptionCases};
+use ruststream::conformance::lifecycle::Unsent;
 use ruststream::conformance::{capabilities, lifecycle, retry, settlement};
 use ruststream::testing::Backlog;
 use ruststream::{IncomingMessage, Name, StartAt};
@@ -128,6 +129,19 @@ async fn in_process_passes_lifecycle() {
         in_process,
         |name| KinesisStream::new(name),
         |connected| connected.publisher(),
+    )
+    .await;
+}
+
+/// A publish refused after the shutdown hands its message back: the record is built only once the
+/// connection is known to be open, so nothing of the message is spent on a refusal, and a
+/// handler's `.error` continuation can publish it elsewhere.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn in_process_returns_a_refused_message() {
+    lifecycle::refused_publish_returns_message(
+        in_process,
+        |connected| connected.publisher(),
+        Unsent::Returned,
     )
     .await;
 }
@@ -260,6 +274,20 @@ async fn kinesis_broker_passes_lifecycle() {
         move || live_broker(&endpoint),
         from_horizon,
         |connected| connected.publisher(),
+    ))
+    .await;
+}
+
+/// The same refusal against the service: the client is never handed the record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kinesis_broker_returns_a_refused_message() {
+    let Some(endpoint) = test_endpoint() else {
+        return;
+    };
+    Box::pin(lifecycle::refused_publish_returns_message(
+        move || live_broker(&endpoint),
+        |connected| connected.publisher(),
+        Unsent::Returned,
     ))
     .await;
 }

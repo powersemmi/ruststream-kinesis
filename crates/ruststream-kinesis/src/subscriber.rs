@@ -21,7 +21,7 @@ use futures::FutureExt;
 use futures::Stream;
 #[cfg(feature = "testing")]
 use futures::future::Either;
-use ruststream::{BatchSubscriber, BufferedSubscriber, Subscriber};
+use ruststream::{BatchStream, BatchSubscriber, BufferedSubscriber, Subscriber};
 use tokio::runtime::Handle;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -35,7 +35,7 @@ use crate::error::{KinesisError, sdk_err};
 use crate::in_process::{LogDeliveries, LogSeeker};
 use crate::lease::{LeaseError, LeaseKey, LeaseStore, SHARD_END};
 use crate::message::{
-    KPL_MAGIC, KinesisMessage, KinesisPosition, Opened, Received, Settle, Settlement,
+    KPL_MAGIC, KinesisMessage, KinesisPosition, Opened, Received, SettleVia, Settlement,
 };
 use crate::stream::KinesisStream;
 use crate::track::Watermark;
@@ -623,7 +623,7 @@ impl<Env: Envelope> BatchSubscriber for KinesisSubscriber<Env> {
     fn batches(
         &mut self,
         size: NonZeroUsize,
-    ) -> impl Stream<Item = Result<Self::Batch, KinesisError>> + Send + '_ {
+    ) -> impl BatchStream<Self::Batch, Error = KinesisError> + Send + '_ {
         // The batch size is the read limit: from the readers' next call on, one read fetches at
         // most one batch's worth. A read already in flight under the previous limit can still
         // return more, which is why the batch itself is capped below rather than here.
@@ -1110,7 +1110,7 @@ async fn read_shard(
                         }
                         continue;
                     }
-                    let settlement = Settle::Checkpoint(Settlement {
+                    let settlement = SettleVia::Checkpoint(Settlement {
                         tracker: Arc::clone(&tracker),
                         index: tracker.deliver(record.sequence_number()),
                         store: Arc::clone(store),

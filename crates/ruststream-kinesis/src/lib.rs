@@ -35,8 +35,8 @@ pub mod sealed {
                 without a `start_at(..)`"
     )]
     pub trait EnvelopedSource: Sized {
-        /// The source reading in `Named`.
-        type Enveloped<Named: Envelope>;
+        /// The source reading in `Named`; a definition clones it for each mount.
+        type Enveloped<Named: Envelope>: Clone;
 
         /// The source reading in `envelope`.
         fn with_envelope<Named: Envelope>(self, envelope: Named) -> Self::Enveloped<Named>;

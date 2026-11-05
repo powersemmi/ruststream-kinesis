@@ -228,7 +228,7 @@ impl<Format: FrameCodec> Envelope for Framed<Format> {
                 header: name.to_owned(),
             });
         }
-        self.codec.frame(headers, &payload)
+        FrameCodec::frame(&self.codec, headers, &payload)
     }
 
     fn body(&self, record: &[u8]) -> Body {

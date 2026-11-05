@@ -16,7 +16,7 @@ use super::Bus;
 use super::log::{Delivery, DeliveryReceiver, DeliverySender, SubscriptionId};
 use super::seek::{IN_PROCESS_SHARD, LogSeeker, SeekControl, sequence_of};
 use crate::error::KinesisError;
-use crate::message::{KPL_MAGIC, Received, Settle};
+use crate::message::{KPL_MAGIC, Received, SettleVia};
 use crate::subscriber::KinesisSeeker;
 
 /// One subscription's queue over its stream's retained log.
@@ -112,7 +112,7 @@ impl LogDeliveries {
             partition_key: delivery.record.partition_key.to_string(),
             sequence: Arc::from(sequence_of(delivery.index)),
             seeker: self.seeker.clone(),
-            settlement: Settle::InProcess(release),
+            settlement: SettleVia::InProcess(release),
         })
     }
 

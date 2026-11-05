@@ -29,7 +29,10 @@ use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
 use ruststream::testing::Coordinator;
-use ruststream::{BytesMut, HeaderMap, OutgoingFor, OutgoingMessage, RawMessage, Str, Take};
+use ruststream::{
+    BytesMut, HeaderMap, OutgoingFor, OutgoingMessage, PublishMessageError, PublishOutcome,
+    RawMessage, Str, Take,
+};
 
 pub(crate) use deliveries::{LogDeliveries, Release};
 pub(crate) use seek::LogSeeker;
@@ -130,14 +133,16 @@ impl Bus {
     ///
     /// Returns [`KinesisError::NotConnected`] after `shutdown`, and [`KinesisError::Publish`] for
     /// a record the service refuses.
-    pub(crate) fn put(
+    pub(crate) fn put<'msg>(
         &self,
-        msg: OutgoingFor<'_, Take>,
+        msg: OutgoingFor<'msg, Take>,
         options: Option<&KinesisPublishOptions>,
         from_policy: Option<&str>,
         envelope: &impl Envelope,
-    ) -> Result<(), KinesisError> {
-        self.ensure_open()?;
+    ) -> PublishOutcome<'msg, KinesisError, Take> {
+        if let Err(error) = self.ensure_open() {
+            return Err(PublishMessageError::with_message(error, msg));
+        }
         let partition_key = resolve_partition_key(options, msg.headers(), from_policy);
         let (stream, payload, headers) = msg.into_parts();
         let written =
@@ -145,7 +150,7 @@ impl Bus {
                 stream: stream.to_owned(),
                 source,
             })?;
-        self.append(stream, partition_key, written)
+        Ok(self.append(stream, partition_key, written)?)
     }
 
     /// Takes a record from outside the service, as another producer writes one to the stream.

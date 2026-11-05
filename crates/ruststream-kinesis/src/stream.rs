@@ -12,7 +12,9 @@ use std::time::Duration;
 
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::{Binding, Bindings};
-use ruststream::runtime::{Declared, IntoSource, SubscriberBuilder, SubscriberSettings};
+use ruststream::runtime::{
+    AsDeclared, Declared, IntoDeclared, IntoSource, SubscriberBuilder, SubscriberSettings,
+};
 use ruststream::{
     AddressedCopies, RedeliveryAddress, RedeliveryAddressed, StartAt, SubscriptionSource,
 };
@@ -308,6 +310,7 @@ impl<Def, State, DefCodec, Env> KinesisSubscriberExt
     for SubscriberBuilder<Def, KinesisStream<Env>, State, DefCodec>
 where
     Def: Declared,
+    Env: Clone,
 {
     fn poll_interval(self, interval: Duration) -> Self {
         self.map_source(|source| source.poll_interval(interval))
@@ -353,7 +356,7 @@ where
 /// # }
 /// # fn main() {}
 /// ```
-pub trait KinesisEnvelopeExt: Sized {
+pub trait KinesisEnvelopeExt<Mk = AsDeclared>: IntoDeclared<Mk> {
     /// The mount chain reading in `Named`.
     type Enveloped<Named: Envelope>;
 
@@ -363,9 +366,10 @@ pub trait KinesisEnvelopeExt: Sized {
     fn envelope<Named: Envelope>(self, envelope: Named) -> Self::Enveloped<Named>;
 }
 
-impl<Decl, Def, Source, State, DefCodec> KinesisEnvelopeExt for Decl
+impl<D, Mk, Def, Source, State, DefCodec> KinesisEnvelopeExt<Mk> for D
 where
-    Decl: Declared<Settings = SubscriberBuilder<Def, Source, State, DefCodec>>,
+    D: IntoDeclared<Mk>,
+    D::Decl: Declared<Settings = SubscriberBuilder<Def, Source, State, DefCodec>>,
     Def: Declared,
     Source: EnvelopedSource,
 {
@@ -373,7 +377,8 @@ where
         SubscriberBuilder<Def, Source::Enveloped<Named>, State, DefCodec>;
 
     fn envelope<Named: Envelope>(self, envelope: Named) -> Self::Enveloped<Named> {
-        self.declare()
+        self.into_declared()
+            .declare()
             .map_source(|source| source.with_envelope(envelope))
     }
 }
@@ -388,7 +393,7 @@ impl<Env> EnvelopedSource for KinesisStream<Env> {
 
 /// A start position wraps the descriptor, so the envelope reaches through it: the two steps
 /// compose in either order, and after a position the attribute named.
-impl<Env, Position> EnvelopedSource for StartAt<KinesisStream<Env>, Position> {
+impl<Env, Position: Clone> EnvelopedSource for StartAt<KinesisStream<Env>, Position> {
     type Enveloped<Named: Envelope> = StartAt<KinesisStream<Named>, Position>;
 
     fn with_envelope<Named: Envelope>(self, envelope: Named) -> Self::Enveloped<Named> {
@@ -570,7 +575,7 @@ where
     fn redelivery_address(
         &self,
         _connected: &ConnectedKinesisBroker<Default>,
-    ) -> impl Future<Output = Result<RedeliveryAddress, KinesisError>> + Send {
+    ) -> impl Future<Output = Result<RedeliveryAddress, KinesisError>> {
         // The stream name is the answer, so nothing is asked of the broker and nothing is awaited.
         ready(Ok(RedeliveryAddress::new(self.stream.clone())))
     }

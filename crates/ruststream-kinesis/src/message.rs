@@ -11,7 +11,8 @@ use std::sync::{Arc, OnceLock};
 
 use futures::{Stream, StreamExt};
 use ruststream::{
-    AckError, HeaderMap, IncomingMessage, Partitioned, Positioned, Seekable, Str, Subscriber,
+    AckError, HeaderMap, IncomingMessage, Partitioned, Positioned, Seekable, Settle, Str,
+    Subscriber,
 };
 
 use crate::envelope::{Body, Envelope, Rsk};
@@ -176,7 +177,7 @@ pub(crate) struct Settlement {
 /// Without the feature there is one variant, so the type is the checkpoint settlement itself and
 /// every `match` on it resolves at compile time: a production build carries no second settlement
 /// and no branch to it.
-pub(crate) enum Settle {
+pub(crate) enum SettleVia {
     Checkpoint(Settlement),
     #[cfg(feature = "testing")]
     InProcess(Release),
@@ -185,9 +186,9 @@ pub(crate) enum Settle {
 // The zero-cost promise of the in-process mode, held by the compiler: a build without it gives the
 // settlement exactly the size of the checkpoint it wraps.
 #[cfg(not(feature = "testing"))]
-const _: () = assert!(size_of::<Settle>() == size_of::<Settlement>());
+const _: () = assert!(size_of::<SettleVia>() == size_of::<Settlement>());
 
-impl Settle {
+impl SettleVia {
     /// The stream the record was read from, which names the subscription.
     fn stream(&self) -> &str {
         match self {
@@ -213,7 +214,7 @@ pub(crate) struct Received {
     pub(crate) partition_key: String,
     pub(crate) sequence: Arc<str>,
     pub(crate) seeker: KinesisSeeker,
-    pub(crate) settlement: Settle,
+    pub(crate) settlement: SettleVia,
 }
 
 /// A record delivered by a [`KinesisSubscriber`](crate::KinesisSubscriber), read through the
@@ -245,11 +246,11 @@ impl<Env> std::fmt::Debug for KinesisMessage<Env> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut debug = f.debug_struct("KinesisMessage");
         match &self.received.settlement {
-            Settle::Checkpoint(settlement) => {
+            SettleVia::Checkpoint(settlement) => {
                 debug.field("stream", &settlement.lease.stream());
             }
             #[cfg(feature = "testing")]
-            Settle::InProcess(_) => {}
+            SettleVia::InProcess(_) => {}
         }
         debug
             .field("shard", self.received.settlement.shard())
@@ -324,10 +325,10 @@ impl<Env> KinesisMessage<Env> {
 
     async fn settle(self) -> Result<(), AckError> {
         let settlement = match self.received.settlement {
-            Settle::Checkpoint(settlement) => settlement,
+            SettleVia::Checkpoint(settlement) => settlement,
             // Nothing is checkpointed in process: a handled record is simply consumed.
             #[cfg(feature = "testing")]
-            Settle::InProcess(_) => return Ok(()),
+            SettleVia::InProcess(_) => return Ok(()),
         };
         let Settlement {
             tracker,
@@ -379,6 +380,12 @@ impl<Env: Envelope> IncomingMessage for KinesisMessage<Env> {
         self.headers.get_or_init(|| self.read_headers())
     }
 
+    fn partition_key(&self) -> Option<&[u8]> {
+        Partitioned::partition_key(self)
+    }
+}
+
+impl<Env: Envelope> Settle for KinesisMessage<Env> {
     async fn ack(self) -> Result<(), AckError> {
         self.settle().await
     }
@@ -392,10 +399,6 @@ impl<Env: Envelope> IncomingMessage for KinesisMessage<Env> {
         } else {
             self.settle().await
         }
-    }
-
-    fn partition_key(&self) -> Option<&[u8]> {
-        Partitioned::partition_key(self)
     }
 }
 
