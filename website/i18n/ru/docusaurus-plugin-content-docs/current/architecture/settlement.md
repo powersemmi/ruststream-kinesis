@@ -77,8 +77,8 @@ export const retries = {
 
 Kinesis не придерживает записи и не считает доставки, поэтому и то и другое делает рантайм. Этим
 путём идут исход `retry_after`, а также `retry()` у регистрации, которая объявляет
-[`max_attempts`](api:ruststream::runtime::Mounting::max_attempts) или поток мёртвых писем
-[`dead_letter`](api:ruststream::runtime::Mounting::dead_letter). Номер попытки хранится в
+[`max_attempts`](api:ruststream::runtime::RouterWith::max_attempts) или поток мёртвых писем
+[`dead_letter`](api:ruststream::runtime::RouterWith::dead_letter). Номер попытки хранится в
 заголовке копии `x-ruststream-retry-count`, и первая доставка считается первой попыткой.
 
 Копия уходит в поток, который читает подписка, по адресу, который сообщает дескриптор
