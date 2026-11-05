@@ -6,7 +6,10 @@
     unused_qualifications,
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
+    clippy::cast_sign_loss,
+    // Each run starts the service on the runtime that measures it; the app's cold path carries
+    // no `Send`.
+    clippy::future_not_send
 )]
 //! What this crate costs over the `aws-sdk-kinesis` client it wraps, and what the runtime costs
 //! over this crate.
@@ -16,7 +19,7 @@
 //!
 //! - **raw** drives the client directly: `PutRecord` to publish, `GetRecords` to read.
 //! - **adapter** drives this crate's own types: its broker, its subscription source, the
-//!   `Subscriber` stream it yields, its `IncomingMessage` and its `ack`, its `Publisher`. A loop
+//!   `Subscriber` stream it yields, its `IncomingMessage` and its `Settle::ack`, its `Publisher`. A loop
 //!   here pulls, decodes, reads a field and settles; no handler, no app, no dispatch.
 //! - **framework** is the service a user writes: `#[subscriber]`, the app, the runtime.
 //!
@@ -91,8 +94,8 @@ use aws_sdk_kinesis::types::ShardIteratorType;
 use futures::StreamExt as _;
 use ruststream::runtime::RunningApp;
 use ruststream::{
-    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, StartAt, Subscriber,
-    SubscriptionSource,
+    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, Settle, StartAt,
+    Subscriber, SubscriptionSource,
 };
 use ruststream_kinesis::prelude::*;
 use ruststream_kinesis::{DynamoLeaseStore, KinesisPublishOptions, KinesisPublisher, LeaseStore};
@@ -744,7 +747,7 @@ async fn start(broker: KinesisBroker, run: Run) -> RunningApp {
     RustStream::new(AppInfo::new("kinesis-bench", "0.0.0"))
         .on_startup(async move |()| Ok::<_, Infallible>(run))
         .with_broker(broker, |b| {
-            b.include(consume.start_at(KinesisPosition::horizon()));
+            b.include(consume.start_at(KinesisPosition::horizon()))
         })
         .start()
         .await

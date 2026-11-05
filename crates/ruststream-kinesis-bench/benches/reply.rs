@@ -45,9 +45,7 @@ async fn confirm(order: &Order, ctx: &mut Context<'_, (), Latch>) -> Confirmatio
 }
 
 fn app(messages: usize) -> Pending {
-    common::pending(messages, CONFIRMATIONS, |b| {
-        b.include(confirm);
-    })
+    common::pending(messages, CONFIRMATIONS, |b| b.include(confirm))
 }
 
 // Four runs put the longest one at 839,850 to 839,865 blocks. The limit this declares is 840,749:
