@@ -2,7 +2,7 @@
 
 > `ruststream-kinesis` is the Amazon Kinesis Data Streams broker crate for RustStream, a Rust framework for services that subscribe to message brokers and publish to them. It runs over the official `aws-sdk-kinesis` client: a subscription discovers the stream's shards across splits and merges, leases each shard with fencing and checkpoints its progress, so an acknowledgement is a checkpoint and delivery is at-least-once.
 
-A subscription is the descriptor `KinesisStream`, which names the stream by its name and carries the pause between reads; a bare `#[subscriber("orders")]` builds the same descriptor with its defaults. A service imports `ruststream_kinesis::prelude::*`, which offers `KinesisPublish` as `Publish`; the partition key of one publish is its per-message setting. The `dynamodb-lease` feature adds `DynamoLeaseStore`, so several service instances share the shards.
+A subscription is the descriptor `KinesisStream`, which names the stream by its name and carries the pause between reads; a bare `#[subscriber("orders")]` builds the same descriptor with its defaults. The `with_broker` closure returns the mount chain, `|b| b.include(place).include(audit)`. A service imports `ruststream_kinesis::prelude::*`, which offers `KinesisPublish` as `Publish`; the partition key of one publish is its per-message setting. The `dynamodb-lease` feature adds `DynamoLeaseStore`, so several service instances share the shards.
 
 This site holds the guides, one page per component and the architecture of the crate; the API reference is on docs.rs, and the framework itself is documented on the RustStream site.
 

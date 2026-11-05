@@ -16,6 +16,7 @@
   ],
   "rules": [
     "Import `ruststream_kinesis::prelude::*` at a mount site; a handler body imports `ruststream::prelude::*` and bounds an injected slot with a capability, the one exception being a body that sets a record's partition key.",
+    "Mount handlers by returning the chain from the `with_broker` closure, `|b| b.include(place).include(audit).out_reply(Publish::default())`; `after_startup(..)` comes before the `include`s, and a broker the service only publishes to is `|b| b`.",
     "Name the stream by its name with `KinesisStream::new(\"orders\")` inside `#[subscriber(..)]`; the bare `#[subscriber(\"orders\")]` form builds the same descriptor with its default read settings.",
     "Set `poll_interval(d)` and `create_if_missing(shards)` on the descriptor or at the mount site; on the mount chain they come after `batch(n)` and before `start_at(..)`, which replaces the descriptor.",
     "Subscribe to a stream once per broker: a second subscription to the same stream on one broker is refused when it opens; a second `KinesisBroker` with a lease store of its own reads the stream again.",

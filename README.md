@@ -49,12 +49,12 @@ from the framework; this crate is the transport.
 
 ```toml
 [dependencies]
-ruststream = { version = "0.7", features = ["macros", "json"] }
-ruststream-kinesis = "0.7"
+ruststream = { version = "0.8", features = ["macros", "json"] }
+ruststream-kinesis = "0.8"
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
-ruststream-kinesis = { version = "0.7", features = ["testing"] }
+ruststream-kinesis = { version = "0.8", features = ["testing"] }
 ```
 
 ## Write a service
@@ -87,7 +87,7 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
         b.include(confirm)
             .out_reply(Publish::default())
-            .partition_key("receipts-v1");
+            .partition_key("receipts-v1")
     })
 }
 ```

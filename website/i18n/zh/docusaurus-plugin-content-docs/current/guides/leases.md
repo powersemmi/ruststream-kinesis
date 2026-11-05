@@ -21,7 +21,7 @@ Kinesis 不决定哪个消费者读取哪个分片。其他语言的 Kinesis Cli
 
 ```toml title="Cargo.toml"
 [dependencies]
-ruststream-kinesis = { version = "0.7", features = ["dynamodb-lease"] }
+ruststream-kinesis = { version = "0.8", features = ["dynamodb-lease"] }
 aws-config = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
