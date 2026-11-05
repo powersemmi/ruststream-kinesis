@@ -58,7 +58,7 @@ fn broker(config: &SdkConfig, table: &str) -> KinesisBroker {
 
 fn service(broker: KinesisBroker) -> RustStream {
     RustStream::new(AppInfo::new("fulfilment", "0.1.0")).with_broker(broker, |b| {
-        b.include(subscriber(KinesisStream::new("fulfilment"), Fulfil).build());
+        b.include(subscriber(KinesisStream::new("fulfilment"), Fulfil).build())
     })
 }
 // --8<-- [end:leases]

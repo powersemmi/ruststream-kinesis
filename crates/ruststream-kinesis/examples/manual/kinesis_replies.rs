@@ -47,7 +47,7 @@ fn app() -> impl App {
         // One key means one shard: every receipt is ordered against every other, at the cost of
         // a single shard's throughput. Leave it off to spread them instead.
         .out_reply(Publish::default())
-        .partition_key("receipts-v1");
+        .partition_key("receipts-v1")
     })
 }
 // --8<-- [end:replies]

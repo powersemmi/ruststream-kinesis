@@ -61,7 +61,7 @@ fn service(config: &SdkConfig, table: &str) -> RustStream {
                 Pick,
             )
             .build(),
-        );
+        )
     })
 }
 

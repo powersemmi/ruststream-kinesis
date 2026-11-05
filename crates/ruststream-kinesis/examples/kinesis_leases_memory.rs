@@ -31,9 +31,8 @@ fn service(broker: KinesisBroker) -> RustStream {
     // The store a broker uses when it names none, named here: its checkpoints live in this
     // process and go with it.
     let leases = Arc::new(MemoryLeaseStore::new());
-    RustStream::new(AppInfo::new("audit", "0.1.0")).with_broker(broker.lease_store(leases), |b| {
-        b.include(record);
-    })
+    RustStream::new(AppInfo::new("audit", "0.1.0"))
+        .with_broker(broker.lease_store(leases), |b| b.include(record))
 }
 // --8<-- [end:memory]
 

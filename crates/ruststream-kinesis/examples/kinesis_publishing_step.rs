@@ -51,7 +51,7 @@ async fn record(
 #[ruststream::app]
 fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-        b.include(record).out(Journal, Publish::default()).build();
+        b.include(record).out(Journal, Publish::default())
     })
 }
 

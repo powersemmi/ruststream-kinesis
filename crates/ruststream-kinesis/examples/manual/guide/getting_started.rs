@@ -49,7 +49,7 @@ fn app() -> impl App {
         |b| {
             b.include(
                 subscriber(KinesisStream::new("orders").create_if_missing(1), TakeOrder).build(),
-            );
+            )
         },
     )
 }

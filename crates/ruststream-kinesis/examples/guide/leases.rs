@@ -35,9 +35,7 @@ async fn pick(order: &Order) -> HandlerOutcome {
 fn service(config: &SdkConfig, table: &str) -> RustStream {
     let leases = Arc::new(DynamoLeaseStore::new(config, table));
     let broker = KinesisBroker::from_config(config.clone()).lease_store(leases);
-    RustStream::new(AppInfo::new("warehouse", "0.1.0")).with_broker(broker, |b| {
-        b.include(pick);
-    })
+    RustStream::new(AppInfo::new("warehouse", "0.1.0")).with_broker(broker, |b| b.include(pick))
 }
 
 #[tokio::main]

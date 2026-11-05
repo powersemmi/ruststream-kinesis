@@ -7,6 +7,9 @@
 //! cargo run --example manual_guide_ordering --features testing -- run
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no `Send`.
+#![allow(clippy::future_not_send)]
+
 use std::future::{Future, ready};
 use std::process::ExitCode;
 
@@ -142,9 +145,8 @@ fn service(broker: KinesisBroker) -> RustStream {
             .build(),
         )
         .out(Journal, Publish::default())
-        .build();
         // One key for every receipt: one shard, so the receipts keep one order between them.
-        b.include(
+        .include(
             subscriber(
                 KinesisStream::new("customer-orders.journal").create_if_missing(1),
                 Confirm,
@@ -153,7 +155,7 @@ fn service(broker: KinesisBroker) -> RustStream {
             .build(),
         )
         .out_reply(Publish::default())
-        .partition_key("receipts");
+        .partition_key("receipts")
     })
 }
 

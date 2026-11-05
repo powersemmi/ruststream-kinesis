@@ -33,7 +33,7 @@ impl Handle<Order> for Place {
 
 fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-        b.include(subscriber(KinesisStream::new("orders"), Place).build());
+        b.include(subscriber(KinesisStream::new("orders"), Place).build())
     })
 }
 // --8<-- [end:app]

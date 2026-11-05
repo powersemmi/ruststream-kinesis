@@ -52,8 +52,7 @@ async fn count(views: &[PageView]) -> HandlerOutcome {
 // --8<-- [start:app]
 fn service(broker: KinesisBroker) -> RustStream {
     RustStream::new(AppInfo::new("analytics", "0.1.0")).with_broker(broker, |b| {
-        b.include(book);
-        b.include(count.batch(nonzero!(500)));
+        b.include(book).include(count.batch(nonzero!(500)))
     })
 }
 

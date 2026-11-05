@@ -6,7 +6,10 @@
 //! the broker a service builds on. The in-process transport keeps a retained log per stream, so
 //! repositioning is a real re-read rather than a handle that accepts every seek. The last test
 //! runs one body both in process and against a local stack.
+
 #![cfg(feature = "testing")]
+// A test drives the app on its own task; the app's cold path carries no `Send`.
+#![allow(clippy::future_not_send)]
 
 use std::convert::Infallible;
 use std::future::{Future, ready};
@@ -367,7 +370,7 @@ async fn a_handler_repositions_its_own_subscription_through_the_seek_handle() {
     let broker = seeded("jobs", [1, MARKER, 2, 3]).await;
 
     let app = RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(broker, |b| {
-        b.include(work.start_at(KinesisPosition::horizon()));
+        b.include(work.start_at(KinesisPosition::horizon()))
     });
     let tb = TestApp::start(app).await.expect("the harness starts");
     tb.settle().await.expect("the replay settles");
@@ -406,7 +409,7 @@ async fn a_mount_site_names_the_partition_key_of_a_reply() {
         RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
             b.include(confirm)
                 .out_reply(Publish::default())
-                .partition_key("tenant-acme");
+                .partition_key("tenant-acme")
         });
     let tb = TestApp::start(app).await.expect("the harness starts");
 
@@ -435,7 +438,7 @@ async fn a_reply_type_lands_on_the_stream_it_declares() {
         RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
             b.include(issue)
                 .out_reply(Publish::default())
-                .partition_key("tenant-acme");
+                .partition_key("tenant-acme")
         });
     let tb = TestApp::start(app).await.expect("the harness starts");
 
@@ -461,9 +464,9 @@ async fn a_reply_type_lands_on_the_stream_it_declares() {
 /// the stream is written on this path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reply_type_without_a_stream_takes_the_mount_site_name() {
-    let app =
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-            b.include(confirm).out_reply(Publish::default());
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(KinesisBroker::new(), |b| {
+            b.include(confirm).out_reply(Publish::default())
         });
     let tb = TestApp::start(app).await.expect("the harness starts");
 
@@ -489,10 +492,8 @@ async fn a_reply_type_without_a_stream_takes_the_mount_site_name() {
 /// a policy without one gives every record.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_reply_without_a_named_publisher_goes_through_the_default_policy() {
-    let app =
-        RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-            b.include(confirm);
-        });
+    let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .with_broker(KinesisBroker::new(), |b| b.include(confirm));
     let tb = TestApp::start(app).await.expect("the harness starts");
 
     let broker = tb.broker::<KinesisBroker>();
@@ -516,9 +517,9 @@ async fn a_reply_without_a_named_publisher_goes_through_the_default_policy() {
 /// gets the same subscription the attribute would have mounted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_descriptor_names_a_stream_on_the_manual_path() {
-    let app =
-        RustStream::new(AppInfo::new("ledger", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-            b.include(subscriber(KinesisStream::new("ledger"), Ledger).build());
+    let app = RustStream::new(AppInfo::new("ledger", "0.1.0"))
+        .with_broker(KinesisBroker::new(), |b| {
+            b.include(subscriber(KinesisStream::new("ledger"), Ledger).build())
         });
     let tb = TestApp::start(app).await.expect("the harness starts");
 
@@ -546,15 +547,15 @@ async fn the_descriptor_names_a_stream_on_the_manual_path() {
 async fn a_descriptor_carrying_its_own_settings_mounts_in_process() {
     let app =
         RustStream::new(AppInfo::new("settings", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-            b.include(priced);
-            // The framework's own step comes first and this crate's chain after it, which is the
-            // order a mount site writes them in.
-            b.include(
-                chained
-                    .workers(nonzero!(2))
-                    .poll_interval(Duration::from_millis(250))
-                    .create_if_missing(2),
-            );
+            b.include(priced)
+                // The framework's own step comes first and this crate's chain after it, which is the
+                // order a mount site writes them in.
+                .include(
+                    chained
+                        .workers(nonzero!(2))
+                        .poll_interval(Duration::from_millis(250))
+                        .create_if_missing(2),
+                )
         });
     let tb = TestApp::start(app).await.expect("the harness starts");
 
@@ -584,9 +585,8 @@ async fn a_descriptor_carrying_its_own_settings_mounts_in_process() {
 async fn a_mount_without_a_start_position_opens_at_the_tip() {
     let broker = seeded("tip", [1, 2]).await;
 
-    let app = RustStream::new(AppInfo::new("tip", "0.1.0")).with_broker(broker, |b| {
-        b.include(from_the_tip);
-    });
+    let app = RustStream::new(AppInfo::new("tip", "0.1.0"))
+        .with_broker(broker, |b| b.include(from_the_tip));
     let tb = TestApp::start(app).await.expect("the harness starts");
     tb.settle().await.expect("there is nothing to replay");
 
@@ -615,7 +615,7 @@ async fn a_timestamp_position_opens_the_subscription_over_the_retained_log() {
     let broker = seeded("since", [1, 2]).await;
 
     let app = RustStream::new(AppInfo::new("since", "0.1.0")).with_broker(broker, |b| {
-        b.include(since.start_at(KinesisPosition::timestamp(0)));
+        b.include(since.start_at(KinesisPosition::timestamp(0)))
     });
     let tb = TestApp::start(app).await.expect("the harness starts");
     tb.settle().await.expect("the replay settles");
@@ -635,10 +635,8 @@ async fn a_timestamp_position_opens_the_subscription_over_the_retained_log() {
 /// fails when the subscription opens, rather than mounting something that can never deliver.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_invalid_descriptor_fails_the_mount_in_process() {
-    let app =
-        RustStream::new(AppInfo::new("unnamed", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-            b.include(unnamed);
-        });
+    let app = RustStream::new(AppInfo::new("unnamed", "0.1.0"))
+        .with_broker(KinesisBroker::new(), |b| b.include(unnamed));
 
     let Err(err) = TestApp::start(app).await else {
         panic!("a descriptor that names no stream must not mount");
@@ -652,10 +650,9 @@ async fn an_invalid_descriptor_fails_the_mount_in_process() {
 /// batch subscription counting like a single one, and the error says how to read the stream twice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_second_subscription_to_one_stream_fails_the_mount() {
-    let app =
-        RustStream::new(AppInfo::new("ledger", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-            b.include(post);
-            b.include(reconcile.batch(nonzero!(10)));
+    let app = RustStream::new(AppInfo::new("ledger", "0.1.0"))
+        .with_broker(KinesisBroker::new(), |b| {
+            b.include(post).include(reconcile.batch(nonzero!(10)))
         });
 
     let Err(err) = TestApp::start(app).await else {
@@ -671,10 +668,8 @@ async fn a_second_subscription_to_one_stream_fails_the_mount() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_position_key_names_the_record_the_delivery_headers_name() {
-    let app =
-        RustStream::new(AppInfo::new("audit", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-            b.include(audit);
-        });
+    let app = RustStream::new(AppInfo::new("audit", "0.1.0"))
+        .with_broker(KinesisBroker::new(), |b| b.include(audit));
     let tb = TestApp::start(app).await.expect("the harness starts");
 
     let broker = tb.broker::<KinesisBroker>();
@@ -709,7 +704,7 @@ async fn a_batch_repositions_the_subscription_through_the_batch_context() {
             batches
                 .start_at(KinesisPosition::horizon())
                 .batch(nonzero!(3)),
-        );
+        )
     });
     let tb = TestApp::start(app).await.expect("the harness starts");
     tb.settle().await.expect("the replay settles");
@@ -764,7 +759,7 @@ async fn a_reposition_replaced_before_it_is_applied_leaves_nothing_in_flight() {
                 lanes
                     .start_at(KinesisPosition::horizon())
                     .workers(nonzero!(2)),
-            );
+            )
         });
     let tb = TestApp::start(app).await.expect("the harness starts");
 
@@ -794,10 +789,8 @@ async fn a_reposition_replaced_before_it_is_applied_leaves_nothing_in_flight() {
 /// only there to replace it.
 #[tokio::test(start_paused = true)]
 async fn a_deferred_retry_comes_back_through_the_address_the_descriptor_reports() {
-    let app =
-        RustStream::new(AppInfo::new("deferred", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-            b.include(deferring);
-        });
+    let app = RustStream::new(AppInfo::new("deferred", "0.1.0"))
+        .with_broker(KinesisBroker::new(), |b| b.include(deferring));
     let tb = TestApp::start(app).await.expect("the harness starts");
 
     tb.broker::<KinesisBroker>()
@@ -843,7 +836,7 @@ async fn a_capped_registration_carries_a_spent_record_to_the_dead_letter_stream(
         RustStream::new(AppInfo::new("capped", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
             b.include(stubborn)
                 .max_attempts(nonzero!(3))
-                .dead_letter("capped.dead");
+                .dead_letter("capped.dead")
         });
     let tb = TestApp::start(app).await.expect("the harness starts");
 
@@ -881,7 +874,7 @@ async fn an_immediate_retry_under_a_cap_travels_as_a_counted_copy() {
         |b| {
             b.include(insistent)
                 .max_attempts(nonzero!(2))
-                .dead_letter("insistent.dead");
+                .dead_letter("insistent.dead")
         },
     );
     let tb = TestApp::start(app).await.expect("the harness starts");
@@ -921,6 +914,7 @@ const DEFERRED_FROM: &str = "x-deferred-from";
 /// A transform that writes a header and no broker setting, so it is generic over the options.
 /// The retry position answers a delivery, so what it reads is a [`PublishContext`] over the
 /// handler's own context type: the stream the record arrived on, its headers, its context keys.
+#[derive(Clone)]
 struct DeferredStamp;
 
 impl<Context, Options> PublishTransform<ForReply<Context>, Options> for DeferredStamp {
@@ -947,7 +941,7 @@ async fn a_transform_on_the_retry_position_stamps_the_deferred_copy() {
         RustStream::new(AppInfo::new("stamped", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
             b.include(deferring)
                 .out_retry(Publish::default())
-                .transform(DeferredStamp);
+                .transform(DeferredStamp)
         });
     let tb = TestApp::start(app).await.expect("the harness starts");
 
@@ -977,6 +971,7 @@ async fn a_transform_on_the_retry_position_stamps_the_deferred_copy() {
 /// A transform that names this crate's options type: it writes the partition key through the
 /// options position rather than through a header the publisher would parse back. The mount site
 /// admits it only over a Kinesis publisher, which is what naming the type buys.
+#[derive(Clone)]
 struct KeyByTenant;
 
 impl<K: ContextKind> PublishTransform<K, KinesisPublishOptions> for KeyByTenant {
@@ -1004,7 +999,7 @@ async fn a_transform_names_the_partition_key_a_reply_has_no_call_site_for() {
         |b| {
             b.include(confirm)
                 .out_reply(Publish::default())
-                .transform(KeyByTenant);
+                .transform(KeyByTenant)
         },
     );
     let tb = TestApp::start(app).await.expect("the harness starts");
@@ -1033,8 +1028,9 @@ async fn a_transform_names_the_partition_key_a_reply_has_no_call_site_for() {
 async fn a_step_on_the_publish_names_the_records_partition_key() {
     let app =
         RustStream::new(AppInfo::new("keyed", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-            b.include(keyed).out(Journal, Publish::default()).build();
-            b.include(keyed_reader);
+            b.include(keyed)
+                .out(Journal, Publish::default())
+                .include(keyed_reader)
         });
     let tb = TestApp::start(app).await.expect("the harness starts");
 
@@ -1062,9 +1058,9 @@ async fn a_step_on_the_publish_names_the_records_partition_key() {
 /// still leaves under a key, because Kinesis has no record without one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_publish_with_no_step_keeps_the_policy_defaults_and_still_gets_a_key() {
-    let app =
-        RustStream::new(AppInfo::new("plain", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-            b.include(plain).out(Journal, Publish::default()).build();
+    let app = RustStream::new(AppInfo::new("plain", "0.1.0"))
+        .with_broker(KinesisBroker::new(), |b| {
+            b.include(plain).out(Journal, Publish::default())
         });
     let tb = TestApp::start(app).await.expect("the harness starts");
 
@@ -1098,8 +1094,9 @@ async fn a_publish_with_no_step_keeps_the_policy_defaults_and_still_gets_a_key()
 async fn a_key_written_as_a_header_still_reaches_the_consumer() {
     let app =
         RustStream::new(AppInfo::new("by-hand", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-            b.include(by_hand).out(Journal, Publish::default()).build();
-            b.include(keyed_reader);
+            b.include(by_hand)
+                .out(Journal, Publish::default())
+                .include(keyed_reader)
         });
     let tb = TestApp::start(app).await.expect("the harness starts");
 
@@ -1132,7 +1129,6 @@ async fn a_keyed_publish_keeps_the_codec_the_mount_site_named() {
             b.include(keyed)
                 .out(Journal, Publish::default())
                 .codec(CborCodec)
-                .build();
         },
     );
     let tb = TestApp::start(app).await.expect("the harness starts");
@@ -1194,7 +1190,7 @@ fn dual_app(broker: KinesisBroker) -> RustStream {
         .expect("the clock is past the epoch");
     let opened = u64::try_from(opened.as_millis()).expect("the instant fits in milliseconds");
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(defer_once.start_at(KinesisPosition::timestamp(opened)));
+        b.include(defer_once.start_at(KinesisPosition::timestamp(opened)))
     })
 }
 

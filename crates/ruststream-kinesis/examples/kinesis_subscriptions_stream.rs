@@ -30,9 +30,7 @@ async fn capture(payment: &Payment) -> HandlerOutcome {
 }
 
 fn service(broker: KinesisBroker) -> RustStream {
-    RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker, |b| {
-        b.include(capture);
-    })
+    RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker, |b| b.include(capture))
 }
 // --8<-- [end:descriptor]
 

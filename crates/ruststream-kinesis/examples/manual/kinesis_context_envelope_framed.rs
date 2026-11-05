@@ -46,7 +46,7 @@ fn app() -> impl App {
                 .reply()
                 .build(),
         )
-        .out_reply(Publish::default());
+        .out_reply(Publish::default())
     })
 }
 // --8<-- [end:framed]

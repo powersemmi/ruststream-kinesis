@@ -69,7 +69,6 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("shipping", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
         b.include(subscriber(KinesisStream::new("orders"), Ship).build())
             .out(Shipments, Publish::default())
-            .build();
     })
 }
 

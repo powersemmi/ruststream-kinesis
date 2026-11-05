@@ -29,12 +29,8 @@ async fn apply(change: &StockChange) -> HandlerOutcome {
 }
 
 fn service(broker: KinesisBroker, leases: Arc<dyn LeaseStore>) -> RustStream {
-    RustStream::new(AppInfo::new("inventory", "0.1.0")).with_broker(
-        broker.lease_store(leases),
-        |b| {
-            b.include(apply);
-        },
-    )
+    RustStream::new(AppInfo::new("inventory", "0.1.0"))
+        .with_broker(broker.lease_store(leases), |b| b.include(apply))
 }
 // --8<-- [end:store]
 

@@ -1,7 +1,10 @@
 //! The envelope seen from a service: a payload reaches the handler exactly as it was published,
 //! whatever its first bytes are, and its headers arrive in every envelope that carries them.
 //! Each body runs in process and against a local stack.
+
 #![cfg(feature = "testing")]
+// A test drives the app on its own task; the app's cold path carries no `Send`.
+#![allow(clippy::future_not_send)]
 
 use std::future::{Future, ready};
 use std::sync::Arc;
@@ -65,8 +68,8 @@ fn app(broker: KinesisBroker) -> RustStream {
         .expect("the clock is past the epoch");
     let opened = u64::try_from(opened.as_millis()).expect("the instant fits in milliseconds");
     RustStream::new(AppInfo::new("frames", "0.1.0")).with_broker(broker, |b| {
-        b.include(forward.start_at(KinesisPosition::timestamp(opened)));
-        b.include(archive.start_at(KinesisPosition::timestamp(opened)));
+        b.include(forward.start_at(KinesisPosition::timestamp(opened)))
+            .include(archive.start_at(KinesisPosition::timestamp(opened)))
     })
 }
 
@@ -220,12 +223,12 @@ fn orders<Env: Envelope>(broker: KinesisBroker<Env>, streams: Streams) -> RustSt
                 .to(streams.receipts)
                 .build()
                 .start_at(opened.clone()),
-        );
-        b.include(
+        )
+        .include(
             subscriber(stream(streams.receipts), File)
                 .build()
                 .start_at(opened),
-        );
+        )
     })
 }
 
@@ -364,7 +367,7 @@ fn foreign_reader(broker: KinesisBroker) -> RustStream {
             foreign
                 .envelope(Framed::new(JsonCodec))
                 .start_at(KinesisPosition::timestamp(opened)),
-        );
+        )
     })
 }
 
@@ -444,12 +447,10 @@ async fn audit(order: &Order, Out(trail): Out<impl Publisher, Audit>) -> Handler
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_header_on_a_stream_without_an_envelope_fails_the_publish() {
-    let app = RustStream::new(AppInfo::new("audit", "0.1.0")).with_broker(
-        KinesisBroker::new().envelope(NoOp),
-        |b| {
-            b.include(audit).out(Audit, Publish::default()).build();
-        },
-    );
+    let app = RustStream::new(AppInfo::new("audit", "0.1.0"))
+        .with_broker(KinesisBroker::new().envelope(NoOp), |b| {
+            b.include(audit).out(Audit, Publish::default())
+        });
     let tb = TestApp::start(app).await.expect("the harness starts");
     let broker = tb.broker::<KinesisBroker<NoOp>>();
 
@@ -537,14 +538,14 @@ impl Handle<Order> for Tenanted {
 /// A subscription per handler, each reading through its own counting envelope.
 fn counted(plain: Counted, tenanted: Counted) -> RustStream {
     RustStream::new(AppInfo::new("lazy", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-        b.include(subscriber(KinesisStream::new("lazy.plain").envelope(plain), Plain).build());
-        b.include(
-            subscriber(
-                KinesisStream::new("lazy.tenanted").envelope(tenanted),
-                Tenanted,
+        b.include(subscriber(KinesisStream::new("lazy.plain").envelope(plain), Plain).build())
+            .include(
+                subscriber(
+                    KinesisStream::new("lazy.tenanted").envelope(tenanted),
+                    Tenanted,
+                )
+                .build(),
             )
-            .build(),
-        );
     })
 }
 
@@ -610,12 +611,11 @@ async fn the_envelope_composes_with_a_start_position_in_either_order() {
     let app = RustStream::new(AppInfo::new("positions", "0.1.0")).with_broker(
         KinesisBroker::new(),
         |b| {
-            b.include(positioned.envelope(NoOp));
-            b.include(
+            b.include(positioned.envelope(NoOp)).include(
                 foreign
                     .start_at(KinesisPosition::horizon())
                     .envelope(Framed::new(JsonCodec)),
-            );
+            )
         },
     );
     let tb = TestApp::start(app).await.expect("the harness starts");

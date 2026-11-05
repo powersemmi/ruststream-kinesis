@@ -19,7 +19,7 @@ use aws_sdk_kinesis::types::ShardIteratorType;
 use futures::StreamExt;
 
 use ruststream::{
-    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, Seekable, Seeker,
+    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, Seekable, Seeker, Settle,
     StartAt, Subscriber, SubscriptionSource,
 };
 use ruststream_kinesis::{

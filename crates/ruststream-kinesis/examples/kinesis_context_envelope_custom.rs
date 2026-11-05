@@ -77,7 +77,7 @@ async fn bill(order: &Order, ctx: &mut Context<'_>) -> HandlerOutcome {
 #[ruststream::app]
 fn app() -> impl App {
     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-        b.include(bill.envelope(TenantLine));
+        b.include(bill.envelope(TenantLine))
     })
 }
 // --8<-- [end:custom]

@@ -7,6 +7,9 @@
 //! cargo run --example guide_ordering --features testing -- run
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no `Send`.
+#![allow(clippy::future_not_send)]
+
 use ruststream_kinesis::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -74,11 +77,12 @@ async fn confirm(entry: &Entry) -> Receipt {
 // --8<-- [start:app]
 fn service(broker: KinesisBroker) -> RustStream {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(post).out(Journal, Publish::default()).build();
-        // One key for every receipt: one shard, so the receipts keep one order between them.
-        b.include(confirm)
+        b.include(post)
+            .out(Journal, Publish::default())
+            // One key for every receipt: one shard, so the receipts keep one order between them.
+            .include(confirm)
             .out_reply(Publish::default())
-            .partition_key("receipts");
+            .partition_key("receipts")
     })
 }
 

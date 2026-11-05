@@ -27,7 +27,7 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
         b.include(confirm)
             .out_reply(Publish::default())
-            .partition_key("receipts-v1");
+            .partition_key("receipts-v1")
     })
 }
 // --8<-- [end:app]

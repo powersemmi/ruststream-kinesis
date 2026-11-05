@@ -22,8 +22,8 @@ use std::time::Duration;
 
 use ruststream::conformance::harness::{self, InProcessBroker};
 use ruststream::conformance::helpers::unique_subject;
-use ruststream::conformance::message_shape::{self, OptionCases};
 use ruststream::conformance::lifecycle::Unsent;
+use ruststream::conformance::message_shape::{self, OptionCases};
 use ruststream::conformance::{capabilities, lifecycle, retry, settlement};
 use ruststream::testing::Backlog;
 use ruststream::{IncomingMessage, Name, StartAt};

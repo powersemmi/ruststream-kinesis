@@ -5,6 +5,9 @@
 //! cargo test --example guide_testing --features testing
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no `Send`.
+#![allow(clippy::future_not_send)]
+
 use std::time::Duration;
 
 use ruststream_kinesis::PARTITION_KEY_HEADER;
@@ -60,7 +63,7 @@ fn service(broker: KinesisBroker) -> RustStream {
         b.include(charge)
             .max_attempts(nonzero!(3u32))
             .dead_letter("card-payments.review")
-            .out_reply(Publish::default());
+            .out_reply(Publish::default())
     })
 }
 

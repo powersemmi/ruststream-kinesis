@@ -64,7 +64,7 @@ impl Handle<Shipment> for Ship {
 
 fn service(broker: KinesisBroker) -> RustStream {
     RustStream::new(AppInfo::new("shipping", "0.1.0")).with_broker(broker, |b| {
-        b.include(subscriber(KinesisStream::new("shipments").create_if_missing(1), Ship).build());
+        b.include(subscriber(KinesisStream::new("shipments").create_if_missing(1), Ship).build())
     })
 }
 

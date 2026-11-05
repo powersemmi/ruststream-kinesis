@@ -16,7 +16,7 @@ use ruststream::runtime::PublishExt;
 use ruststream::testing::{InProcess, TestableBroker};
 use ruststream::{
     AckError, Bytes, BytesMut, ConnectedBroker, HeaderMap, IncomingMessage, OutgoingMessage,
-    Publisher, Seekable, Seeker, Subscriber,
+    Publisher, Seekable, Seeker, Settle, Subscriber,
 };
 use ruststream_kinesis::{
     ConnectedKinesisBroker, KinesisBroker, KinesisError, KinesisMessage, KinesisPosition,
@@ -92,16 +92,17 @@ async fn a_stream_name_the_service_refuses_is_refused() {
         "got {refused}"
     );
 
+    let too_long = "s".repeat(129);
     let refused = broker
         .publisher()
         .publish(
-            OutgoingMessage::produced(&"s".repeat(129), BytesMut::from(&b"x"[..])),
+            OutgoingMessage::produced(&too_long, BytesMut::from(&b"x"[..])),
             None,
         )
         .await
         .expect_err("a stream name is at most 128 characters");
     assert!(
-        matches!(refused, KinesisError::Publish { .. }),
+        matches!(refused.error(), KinesisError::Publish { .. }),
         "got {refused}"
     );
 }
@@ -132,7 +133,7 @@ async fn a_record_the_service_refuses_is_refused() {
         .await
         .expect_err("an empty key is refused");
     assert!(
-        matches!(refused, KinesisError::Publish { .. }),
+        matches!(refused.error(), KinesisError::Publish { .. }),
         "got {refused}"
     );
 
@@ -144,7 +145,7 @@ async fn a_record_the_service_refuses_is_refused() {
         .await
         .expect_err("a record over 10 MiB is refused");
     assert!(
-        matches!(refused, KinesisError::Publish { .. }),
+        matches!(refused.error(), KinesisError::Publish { .. }),
         "got {refused}"
     );
     assert_eq!(broker.published("orders"), Vec::new());

@@ -25,7 +25,7 @@ use ruststream_kinesis::prelude::*;
 fn service(broker: KinesisBroker) -> (RustStream, KinesisPublisher) {
     let admin = broker.publisher();
     let app = RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(subscriber(KinesisStream::new("orders"), Place).build());
+        b.include(subscriber(KinesisStream::new("orders"), Place).build())
     });
     (app, admin)
 }
@@ -94,7 +94,10 @@ mod tests {
         assert!(
             matches!(
                 refused,
-                Err(PublishError::Publish(KinesisError::NotConnected))
+                Err(PublishError::Publish {
+                    source: KinesisError::NotConnected,
+                    ..
+                })
             ),
             "{refused:?}"
         );

@@ -52,12 +52,10 @@ impl Handle<Points> for Credit {
 
 // --8<-- [start:mount]
 fn service(broker: KinesisBroker, checkpoints: Arc<Checkpoints>) -> RustStream {
-    RustStream::new(AppInfo::new("loyalty", "0.1.0")).with_broker(
-        broker.lease_store(checkpoints),
-        |b| {
-            b.include(subscriber(KinesisStream::new("loyalty"), Credit).build());
-        },
-    )
+    RustStream::new(AppInfo::new("loyalty", "0.1.0"))
+        .with_broker(broker.lease_store(checkpoints), |b| {
+            b.include(subscriber(KinesisStream::new("loyalty"), Credit).build())
+        })
 }
 // --8<-- [end:mount]
 
