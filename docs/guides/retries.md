@@ -61,8 +61,8 @@ Without a cap it holds the shard's checkpoint in front of the record, as [Checkp
 </TabItem>
 </Tabs>
 
-[`max_attempts`](api:ruststream::runtime::Mounting::max_attempts) counts every delivery of one refund, the first included.
-The fifth delivery is not retried: [`dead_letter`](api:ruststream::runtime::Mounting::dead_letter) publishes it to `refunds.review`, payload and headers as they arrived.
+[`max_attempts`](api:ruststream::runtime::RouterWith::max_attempts) counts every delivery of one refund, the first included.
+The fifth delivery is not retried: [`dead_letter`](api:ruststream::runtime::RouterWith::dead_letter) publishes it to `refunds.review`, payload and headers as they arrived.
 A cap without a dead-letter stream checkpoints past the spent record instead, as `drop` does.
 A dropped refund settles and goes nowhere; the dead-letter stream holds only the refunds that ran out of attempts.
 The streams belong to the service's infrastructure; the example creates them with `create_if_missing` for a local stack.

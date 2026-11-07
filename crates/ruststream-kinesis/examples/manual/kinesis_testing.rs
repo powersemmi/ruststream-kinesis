@@ -63,7 +63,6 @@ fn app() -> impl App {
     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
         b.include(subscriber(KinesisStream::new("payments"), Accept).build())
             .out(Ledger, Publish::default())
-            .build();
     })
 }
 

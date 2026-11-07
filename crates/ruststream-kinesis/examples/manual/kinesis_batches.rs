@@ -74,12 +74,12 @@ fn service(broker: KinesisBroker) -> RustStream {
                 .batch(nonzero!(500))
                 .build()
                 .poll_interval(Duration::from_millis(500)),
-        );
-        b.include(
+        )
+        .include(
             subscriber(KinesisStream::new("refunds"), Refunds)
                 .batch(nonzero!(100))
                 .build(),
-        );
+        )
     })
 }
 // --8<-- [end:batches]

@@ -69,7 +69,7 @@ fn service(broker: KinesisBroker) -> RustStream {
         // Every receipt carries one key, so they share a shard and keep their order.
         b.include(subscriber(orders(), Confirm).reply().build())
             .out_reply(Publish::default())
-            .partition_key("tenant-acme");
+            .partition_key("tenant-acme")
     })
 }
 // --8<-- [end:messages]

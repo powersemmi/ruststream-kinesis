@@ -16,7 +16,7 @@ use super::binary::{ReadHeaders, TextHeaders};
 use crate::envelope::{Body, EnvelopeError, EnvelopeHeaders, MalformedHeaders};
 
 impl FrameCodec for JsonCodec {
-    fn frame(
+    fn frame_document(
         &self,
         headers: EnvelopeHeaders<'_>,
         payload: &[u8],

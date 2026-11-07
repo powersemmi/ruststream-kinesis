@@ -33,7 +33,7 @@ async fn report(reading: &Reading) -> HandlerOutcome {
 /// milliseconds since the Unix epoch.
 fn service(broker: KinesisBroker, since: u64) -> RustStream {
     RustStream::new(AppInfo::new("reports", "0.1.0")).with_broker(broker, |b| {
-        b.include(report.start_at(KinesisPosition::timestamp(since)));
+        b.include(report.start_at(KinesisPosition::timestamp(since)))
     })
 }
 // --8<-- [end:replay]

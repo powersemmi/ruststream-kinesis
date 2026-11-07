@@ -127,7 +127,7 @@ use crate::message::{PARTITION_KEY_HEADER, SEQUENCE_HEADER, SHARD_HEADER};
 /// #[ruststream::app]
 /// fn app() -> impl App {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-///         b.include(on_order.envelope(TenantLine));
+///         b.include(on_order.envelope(TenantLine))
 ///     })
 /// }
 /// # }
@@ -246,7 +246,7 @@ pub trait Envelope: Clone + Send + Sync + 'static {
 /// #[ruststream::app]
 /// fn app() -> impl App {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-///         b.include(on_order.envelope(Tagged));
+///         b.include(on_order.envelope(Tagged))
 ///     })
 /// }
 /// # }
@@ -335,7 +335,7 @@ impl Body {
 /// #[ruststream::app]
 /// fn app() -> impl App {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
-///         .with_broker(KinesisBroker::new().envelope(OneHeader), |_| {})
+///         .with_broker(KinesisBroker::new().envelope(OneHeader), |b| b)
 /// }
 /// # }
 /// # fn main() {}
@@ -389,7 +389,7 @@ pub struct MalformedHeaders;
 /// # #[cfg(feature = "testing")]
 /// # mod demo {
 /// use ruststream::testing::InProcess;
-/// use ruststream::{HeaderMap, OutgoingMessage};
+/// use ruststream::{HeaderMap, OutgoingMessage, PublishMessageError};
 /// use ruststream_kinesis::envelope::EnvelopeError;
 /// use ruststream_kinesis::prelude::*;
 /// use ruststream_kinesis::KinesisError;
@@ -401,7 +401,8 @@ pub struct MalformedHeaders;
 ///     let refused = connected
 ///         .publisher()
 ///         .publish(OutgoingMessage::new("orders", b"{}").with_headers(headers), None)
-///         .await;
+///         .await
+///         .map_err(PublishMessageError::into_error);
 ///     match refused {
 ///         Err(KinesisError::Envelope { stream, source: EnvelopeError::UnsupportedHeader { header } }) => {
 ///             tracing::warn!(stream, header, "the raw stream carries no headers");
@@ -483,7 +484,7 @@ impl EnvelopeError {
 /// fn app() -> impl App {
 ///     let broker = KinesisBroker::new().envelope(Framed::new(JsonCodec));
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-///         b.include(on_order);
+///         b.include(on_order)
 ///     })
 /// }
 /// # }

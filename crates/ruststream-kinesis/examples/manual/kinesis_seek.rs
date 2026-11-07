@@ -52,12 +52,12 @@ fn app() -> impl App {
                 .partition_key("tenant-acme")
                 .publish()
                 .await
-        });
-        b.include(
+        })
+        .include(
             subscriber(KinesisStream::new("jobs"), Replay)
                 .build()
                 .start_at(KinesisPosition::horizon()),
-        );
+        )
     })
 }
 // --8<-- [end:publish]

@@ -144,11 +144,11 @@ fn service(broker: KinesisBroker, review_from: SystemTime) -> impl App<State = P
     RustStream::new(AppInfo::new("ledger", "0.1.0"))
         .on_startup(async move |()| Ok::<_, Infallible>(Projections::default()))
         .with_broker(broker, |b| {
-            b.include(project_balance);
-            b.include(project_spend.batch(nonzero!(500usize)));
-            b.include(
-                review_payout.start_at(KinesisPosition::timestamp(epoch_millis(review_from))),
-            );
+            b.include(project_balance)
+                .include(project_spend.batch(nonzero!(500usize)))
+                .include(
+                    review_payout.start_at(KinesisPosition::timestamp(epoch_millis(review_from))),
+                )
         })
 }
 

@@ -109,8 +109,8 @@ fn service(broker: KinesisBroker) -> impl App<State = Clients> {
             // Five deliveries of one refund, the first included; then the dead-letter stream.
             b.include(process_refund)
                 .max_attempts(nonzero!(5u32))
-                .dead_letter("refunds.review");
-            b.include(review);
+                .dead_letter("refunds.review")
+                .include(review)
         })
 }
 

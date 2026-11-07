@@ -62,7 +62,7 @@ use super::{Body, Envelope, EnvelopeError, EnvelopeHeaders, MalformedHeaders};
 ///     // A consumer in another language reads every record as one CBOR document.
 ///     let broker = KinesisBroker::new().envelope(Framed::new(CborCodec));
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-///         b.include(on_order);
+///         b.include(on_order)
 ///     })
 /// }
 /// # }
@@ -105,7 +105,7 @@ impl<Format: FrameCodec> Framed<Format> {
     /// fn app() -> impl App {
     ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
     ///         b.include(confirm)
-    ///             .out_reply(Publish::default().envelope(Framed::new(JsonCodec)));
+    ///             .out_reply(Publish::default().envelope(Framed::new(JsonCodec)))
     ///     })
     /// }
     /// # }
@@ -144,6 +144,13 @@ impl<Format: FrameCodec> Framed<Format> {
 /// impl Codec for AnalyticsCbor {
 ///     const CONTENT_TYPE: &'static str = "application/vnd.acme.analytics+cbor";
 ///
+///     // The documents are read whole, so a delivery carries no frame to look into first.
+///     type Frame<'a> = ();
+///
+///     fn frame<'a>(&'a self, _payload: &'a [u8]) -> Result<(), CodecError> {
+///         Ok(())
+///     }
+///
 ///     fn encode<T: Serialize>(&self, value: &T) -> Result<BytesMut, CodecError> {
 ///         CborCodec.encode(value)
 ///     }
@@ -158,7 +165,7 @@ impl<Format: FrameCodec> Framed<Format> {
 /// #[ruststream::app]
 /// fn app() -> impl App {
 ///     let broker = KinesisBroker::new().envelope(Framed::new(AnalyticsCbor));
-///     RustStream::new(AppInfo::new("analytics", "0.1.0")).with_broker(broker, |_| {})
+///     RustStream::new(AppInfo::new("analytics", "0.1.0")).with_broker(broker, |b| b)
 /// }
 /// # }
 /// # fn main() {}
@@ -174,7 +181,7 @@ pub trait FrameCodec: Codec + Clone + 'static {
     /// # Errors
     ///
     /// [`EnvelopeError::Codec`] when the codec cannot encode the document.
-    fn frame(
+    fn frame_document(
         &self,
         headers: EnvelopeHeaders<'_>,
         payload: &[u8],
@@ -228,7 +235,7 @@ impl<Format: FrameCodec> Envelope for Framed<Format> {
                 header: name.to_owned(),
             });
         }
-        self.codec.frame(headers, &payload)
+        self.codec.frame_document(headers, &payload)
     }
 
     fn body(&self, record: &[u8]) -> Body {

@@ -33,9 +33,7 @@ async fn book(entry: &Entry) -> HandlerOutcome {
 }
 
 fn service(broker: KinesisBroker) -> RustStream {
-    RustStream::new(AppInfo::new("ledger", "0.1.0")).with_broker(broker, |b| {
-        b.include(book);
-    })
+    RustStream::new(AppInfo::new("ledger", "0.1.0")).with_broker(broker, |b| b.include(book))
 }
 // --8<-- [end:outcomes]
 

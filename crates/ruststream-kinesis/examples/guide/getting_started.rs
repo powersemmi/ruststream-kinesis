@@ -33,9 +33,7 @@ fn app() -> impl App {
             .endpoint("http://localhost:4566")
             .region("us-east-1")
             .test_credentials(),
-        |b| {
-            b.include(take_order);
-        },
+        |b| b.include(take_order),
     )
 }
 // --8<-- [end:service]

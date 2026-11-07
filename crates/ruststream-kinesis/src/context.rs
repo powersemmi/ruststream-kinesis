@@ -54,7 +54,7 @@ use crate::subscriber::KinesisSeeker;
 /// #[ruststream::app]
 /// fn app() -> impl App {
 ///     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-///         b.include(follow);
+///         b.include(follow)
 ///     })
 /// }
 /// # }
@@ -116,7 +116,7 @@ impl<Env: Envelope> BuildContext<KinesisMessage<Env>> for KinesisContext {
 /// #[ruststream::app]
 /// fn app() -> impl App {
 ///     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-///         b.include(rewind.batch(nonzero!(100)));
+///         b.include(rewind.batch(nonzero!(100)))
 ///     })
 /// }
 /// # }

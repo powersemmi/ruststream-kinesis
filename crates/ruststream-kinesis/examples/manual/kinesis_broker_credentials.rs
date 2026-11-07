@@ -6,6 +6,8 @@
 //! KINESIS_TEST_ENDPOINT=http://127.0.0.1:4566 cargo test --example manual_kinesis_broker_credentials --features testing
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no `Send`.
+#![allow(clippy::future_not_send)]
 // A plain build compiles the service; the tests that use it exist only in the test build.
 #![cfg_attr(not(test), allow(dead_code, unused_imports))]
 
@@ -46,7 +48,7 @@ impl Handle<Order> for Place {
 
 fn service(broker: KinesisBroker) -> RustStream {
     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(subscriber(KinesisStream::new("orders"), Place).build());
+        b.include(subscriber(KinesisStream::new("orders"), Place).build())
     })
 }
 

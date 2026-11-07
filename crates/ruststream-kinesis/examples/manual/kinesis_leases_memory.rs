@@ -53,7 +53,7 @@ fn service(broker: KinesisBroker) -> RustStream {
     // process and go with it.
     let leases = Arc::new(MemoryLeaseStore::new());
     RustStream::new(AppInfo::new("audit", "0.1.0")).with_broker(broker.lease_store(leases), |b| {
-        b.include(subscriber(KinesisStream::new("audit-trail"), Record).build());
+        b.include(subscriber(KinesisStream::new("audit-trail"), Record).build())
     })
 }
 // --8<-- [end:memory]

@@ -32,7 +32,7 @@ fn app() -> impl App {
         // a single shard's throughput. Leave it off to spread them instead.
         b.include(confirm)
             .out_reply(Publish::default())
-            .partition_key("receipts-v1");
+            .partition_key("receipts-v1")
     })
 }
 // --8<-- [end:replies]

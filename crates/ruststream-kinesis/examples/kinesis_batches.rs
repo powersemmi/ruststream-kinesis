@@ -42,8 +42,8 @@ fn service(broker: KinesisBroker) -> RustStream {
             digest
                 .batch(nonzero!(500))
                 .poll_interval(Duration::from_millis(500)),
-        );
-        b.include(review.batch(nonzero!(100)));
+        )
+        .include(review.batch(nonzero!(100)))
     })
 }
 // --8<-- [end:batches]

@@ -36,9 +36,7 @@ fn broker(config: &SdkConfig, table: &str) -> KinesisBroker {
 // --8<-- [end:legacy]
 
 fn service(broker: KinesisBroker) -> RustStream {
-    RustStream::new(AppInfo::new("returns", "0.1.0")).with_broker(broker, |b| {
-        b.include(refund);
-    })
+    RustStream::new(AppInfo::new("returns", "0.1.0")).with_broker(broker, |b| b.include(refund))
 }
 
 #[ruststream::app]

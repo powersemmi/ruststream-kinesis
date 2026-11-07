@@ -9,7 +9,7 @@ import TabItem from '@theme/TabItem';
 
 # out_retry
 
-[`out_retry(policy)`](api:ruststream::runtime::Mounting::out_retry) replaces the publisher the retry copies leave through, so the copies take a transform or a codec of the mount site's choosing.
+[`out_retry(policy)`](api:ruststream::runtime::RouterWith::out_retry) replaces the publisher the retry copies leave through, so the copies take a transform or a codec of the mount site's choosing.
 
 A Kinesis registration publishes its [retry copies](./retry-after.md) without it, through the broker's default [`KinesisPublish`](../publishing/index.md) policy.
 `out_retry` names the policy for that position, and the chain after it takes the position's steps: `.transform(..)` and `.codec(..)`.

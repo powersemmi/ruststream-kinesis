@@ -7,6 +7,8 @@
 //!     cargo test --example manual_kinesis_testing_live --features testing
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no `Send`.
+#![allow(clippy::future_not_send)]
 // A plain build compiles the service; the tests that use it exist only in the test build.
 #![cfg_attr(not(test), allow(dead_code, unused_imports))]
 
@@ -48,7 +50,7 @@ impl Handle<Payment> for Accept {
 
 fn service(broker: KinesisBroker) -> RustStream {
     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(broker, |b| {
-        b.include(subscriber(KinesisStream::new("testing-live-payments"), Accept).build());
+        b.include(subscriber(KinesisStream::new("testing-live-payments"), Accept).build())
     })
 }
 

@@ -30,12 +30,8 @@ async fn credit(points: &Points) -> HandlerOutcome {
 
 // --8<-- [start:mount]
 fn service(broker: KinesisBroker, checkpoints: Arc<Checkpoints>) -> RustStream {
-    RustStream::new(AppInfo::new("loyalty", "0.1.0")).with_broker(
-        broker.lease_store(checkpoints),
-        |b| {
-            b.include(credit);
-        },
-    )
+    RustStream::new(AppInfo::new("loyalty", "0.1.0"))
+        .with_broker(broker.lease_store(checkpoints), |b| b.include(credit))
 }
 // --8<-- [end:mount]
 

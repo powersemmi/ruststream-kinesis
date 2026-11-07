@@ -32,7 +32,7 @@ impl Handle<Click> for Count {
 fn app() -> impl App {
     RustStream::new(AppInfo::new("clicks", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
         let clicks = KinesisStream::new("clicks").envelope(NoOp);
-        b.include(subscriber(clicks, Count).build());
+        b.include(subscriber(clicks, Count).build())
     })
 }
 // --8<-- [end:noop]

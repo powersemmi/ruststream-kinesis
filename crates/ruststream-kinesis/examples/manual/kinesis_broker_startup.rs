@@ -48,7 +48,7 @@ impl Handle<Payout> for Pay {
 
 fn service(broker: KinesisBroker) -> RustStream {
     RustStream::new(AppInfo::new("payouts", "0.1.0")).with_broker(broker, |b| {
-        b.include(subscriber(KinesisStream::new("payouts"), Pay).build());
+        b.include(subscriber(KinesisStream::new("payouts"), Pay).build())
     })
 }
 // --8<-- [end:service]

@@ -41,9 +41,7 @@ async fn ship(shipment: &Shipment) -> HandlerOutcome {
 }
 
 fn service(broker: KinesisBroker) -> RustStream {
-    RustStream::new(AppInfo::new("shipping", "0.1.0")).with_broker(broker, |b| {
-        b.include(ship);
-    })
+    RustStream::new(AppInfo::new("shipping", "0.1.0")).with_broker(broker, |b| b.include(ship))
 }
 
 #[ruststream::app]

@@ -51,7 +51,7 @@ fn service(broker: KinesisBroker) -> RustStream {
         let payments = KinesisStream::new("payments")
             .poll_interval(Duration::from_millis(500))
             .create_if_missing(4);
-        b.include(subscriber(payments, Capture).build());
+        b.include(subscriber(payments, Capture).build())
     })
 }
 // --8<-- [end:descriptor]

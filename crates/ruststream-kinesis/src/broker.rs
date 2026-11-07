@@ -149,7 +149,7 @@ pub(crate) type CoreCell = Arc<OnceCell<Link>>;
 ///         .test_credentials()
 ///         .region("us-east-1");
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-///         b.include(handle);
+///         b.include(handle)
 ///     })
 /// }
 /// # }
@@ -248,7 +248,7 @@ impl<Env: Envelope> KinesisBroker<Env> {
     /// fn app() -> impl App {
     ///     let broker = KinesisBroker::new().envelope(Framed::new(JsonCodec));
     ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-    ///         b.include(on_order);
+    ///         b.include(on_order)
     ///     })
     /// }
     /// # }
@@ -338,7 +338,7 @@ impl<Env: Envelope> KinesisBroker<Env> {
     ///
     ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
     ///         .with_broker(broker, |b| {
-    ///             b.include(handle);
+    ///             b.include(handle)
     ///         })
     ///         .run()
     ///         .await?;
@@ -487,7 +487,7 @@ impl<Env: Envelope> Broker for KinesisBroker<Env> {
 /// /// The app `main` runs.
 /// pub fn app() -> RustStream {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-///         b.include(handle);
+///         b.include(handle)
 ///     })
 /// }
 ///

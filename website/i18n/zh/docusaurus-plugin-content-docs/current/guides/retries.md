@@ -55,7 +55,7 @@ Kinesis 既不扣留记录，也不统计投递次数，也没有死信队列。
 </TabItem>
 </Tabs>
 
-[`max_attempts`](api:ruststream::runtime::Mounting::max_attempts) 统计一笔退款的每次投递，第一次也算在内。第五次投递不再重试：[`dead_letter`](api:ruststream::runtime::Mounting::dead_letter) 把它发布到 `refunds.review`，载荷和消息头保持到达时的样子。设置了上限却没有死信流时，检查点会像 `drop` 那样越过用尽尝试的记录。被丢弃的退款完成结算，不会去任何地方；死信流只存放用完了尝试次数的退款。这些流属于服务的基础设施；示例为本地的 LocalStack 用 `create_if_missing` 创建它们。
+[`max_attempts`](api:ruststream::runtime::RouterWith::max_attempts) 统计一笔退款的每次投递，第一次也算在内。第五次投递不再重试：[`dead_letter`](api:ruststream::runtime::RouterWith::dead_letter) 把它发布到 `refunds.review`，载荷和消息头保持到达时的样子。设置了上限却没有死信流时，检查点会像 `drop` 那样越过用尽尝试的记录。被丢弃的退款完成结算，不会去任何地方；死信流只存放用完了尝试次数的退款。这些流属于服务的基础设施；示例为本地的 LocalStack 用 `create_if_missing` 创建它们。
 
 ## 读取死信流 {/* #reading-the-dead-letter-stream */}
 

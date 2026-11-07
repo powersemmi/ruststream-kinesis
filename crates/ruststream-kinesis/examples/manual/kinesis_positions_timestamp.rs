@@ -53,7 +53,7 @@ fn service(broker: KinesisBroker, since: u64) -> RustStream {
             subscriber(KinesisStream::new("readings"), Report)
                 .build()
                 .start_at(KinesisPosition::timestamp(since)),
-        );
+        )
     })
 }
 // --8<-- [end:replay]

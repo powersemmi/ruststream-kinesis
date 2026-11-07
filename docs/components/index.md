@@ -14,7 +14,7 @@ The crate reads and writes Amazon Kinesis Data Streams through the official `aws
 client.
 On top of the client it finds a stream's shards, leases each shard to one instance of the service
 and keeps a checkpoint per shard.
-A service adds `ruststream-kinesis = "0.7"` to its dependencies, beside the framework itself.
+A service adds `ruststream-kinesis = "0.8"` to its dependencies, beside the framework itself.
 
 Three cargo features are off by default and only add to the crate.
 `dynamodb-lease` adds [`DynamoLeaseStore`](./leases/dynamo-lease-store.md), so several instances

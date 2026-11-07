@@ -34,7 +34,7 @@ async fn drain(jobs: &[Job], ctx: &mut Context<'_, KinesisBatchContext>) -> Hand
 #[ruststream::app]
 fn app() -> impl App {
     RustStream::new(AppInfo::new("jobs", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-        b.include(drain.batch(nonzero!(2)));
+        b.include(drain.batch(nonzero!(2)))
     })
 }
 

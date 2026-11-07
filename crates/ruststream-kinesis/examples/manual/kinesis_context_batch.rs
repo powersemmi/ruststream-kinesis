@@ -45,7 +45,7 @@ fn app() -> impl App {
             subscriber(KinesisStream::new("jobs"), Drain)
                 .batch(nonzero!(2))
                 .build(),
-        );
+        )
     })
 }
 

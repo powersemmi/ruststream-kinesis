@@ -142,14 +142,14 @@ fn service(broker: KinesisBroker) -> impl App<State = Clients> {
                 .build(),
             )
             .max_attempts(nonzero!(5u32))
-            .dead_letter("refunds.review");
-            b.include(
+            .dead_letter("refunds.review")
+            .include(
                 subscriber(
                     KinesisStream::new("refunds.review").create_if_missing(1),
                     Review,
                 )
                 .build(),
-            );
+            )
         })
 }
 

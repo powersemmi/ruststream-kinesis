@@ -28,8 +28,8 @@ use aws_sdk_kinesis::primitives::Blob;
 use futures::StreamExt;
 
 use ruststream::{
-    AckError, Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, StartAt,
-    Subscriber, SubscriptionSource,
+    AckError, Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Publisher, Settle,
+    StartAt, Subscriber, SubscriptionSource,
 };
 use ruststream_kinesis::{
     ConnectedKinesisBroker, DynamoLeaseStore, KinesisBroker, KinesisPosition, KinesisStream,

@@ -90,7 +90,7 @@ impl Handle<Order> for Bill {
 fn app() -> impl App {
     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
         let orders = KinesisStream::new("orders").envelope(TenantLine);
-        b.include(subscriber(orders, Bill).build());
+        b.include(subscriber(orders, Bill).build())
     })
 }
 // --8<-- [end:custom]

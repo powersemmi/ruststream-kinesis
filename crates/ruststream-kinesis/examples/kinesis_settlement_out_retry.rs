@@ -37,6 +37,7 @@ async fn collect(_invoice: &Invoice, ctx: &mut Context<'_, KinesisContext>) -> H
 
 // --8<-- [start:out_retry]
 /// Writes the stream a record was deferred from onto its retry copy.
+#[derive(Clone)]
 struct DeferredFrom;
 
 impl<Context, Options> PublishTransform<ForReply<Context>, Options> for DeferredFrom {
@@ -57,7 +58,7 @@ fn service(broker: KinesisBroker) -> RustStream {
     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(broker, |b| {
         b.include(collect)
             .out_retry(Publish::default())
-            .transform(DeferredFrom);
+            .transform(DeferredFrom)
     })
 }
 // --8<-- [end:out_retry]

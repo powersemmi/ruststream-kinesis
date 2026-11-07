@@ -28,9 +28,7 @@ async fn confirm(order: &Order, ctx: &mut Context<'_>) -> Receipt {
 #[ruststream::app]
 fn app() -> impl App {
     let broker = KinesisBroker::new().envelope(Framed::new(JsonCodec));
-    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| {
-        b.include(confirm);
-    })
+    RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(broker, |b| b.include(confirm))
 }
 // --8<-- [end:framed]
 

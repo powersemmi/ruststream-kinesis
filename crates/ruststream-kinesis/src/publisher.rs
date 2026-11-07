@@ -15,7 +15,10 @@ use aws_sdk_kinesis::primitives::Blob;
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::{Binding, Bindings};
 use ruststream::runtime::{MapPublisher, PublishBuilder, PublishSink};
-use ruststream::{HeaderMap, OutgoingFor, PairError, PublishPolicy, Publisher, Take};
+use ruststream::{
+    HeaderMap, OutgoingFor, PairError, PublishMessageError, PublishOutcome, PublishPolicy,
+    Publisher, Take,
+};
 #[cfg(feature = "asyncapi")]
 use serde::Serialize;
 
@@ -84,7 +87,7 @@ use crate::stream::EnvelopeBinding;
 /// /// The app `main` runs.
 /// pub fn app() -> RustStream {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-///         b.include(record).out(Journal, Publish::default()).build();
+///         b.include(record).out(Journal, Publish::default())
 ///     })
 /// }
 ///
@@ -218,19 +221,25 @@ impl<Env: Envelope> Publisher for KinesisPublisher<Env> {
     /// [`KinesisPublishSteps`] is where a call site sets it.
     type Options = KinesisPublishOptions;
 
-    async fn publish(
+    /// A publish refused before the record is built (no connection yet, or one already shut
+    /// down) hands the message back. Once the envelope has sealed the buffer into the record's
+    /// data, the client owns it, so a refusal from the envelope or the service carries none.
+    async fn publish<'msg>(
         &self,
-        msg: OutgoingFor<'_, Take>,
+        msg: OutgoingFor<'msg, Take>,
         options: Option<&Self::Options>,
-    ) -> Result<(), Self::Error> {
-        let core = match self.link()? {
-            Link::Aws(core) => core,
+    ) -> PublishOutcome<'msg, KinesisError, Take> {
+        let core = match self.link() {
+            Ok(Link::Aws(core)) => core,
             #[cfg(feature = "testing")]
-            Link::InProcess(bus) => {
+            Ok(Link::InProcess(bus)) => {
                 return bus.put(msg, options, self.partition_key.as_deref(), &self.envelope);
             }
+            Err(error) => return Err(PublishMessageError::with_message(error, msg)),
         };
-        core.ensure_open()?;
+        if let Err(error) = core.ensure_open() {
+            return Err(PublishMessageError::with_message(error, msg));
+        }
         let partition_key =
             resolve_partition_key(options, msg.headers(), self.partition_key.as_deref());
         // The resolved key rides the record's own field, which is this transport's wire for it:
@@ -248,7 +257,8 @@ impl<Env: Envelope> Publisher for KinesisPublisher<Env> {
                 stream: stream.to_owned(),
                 source,
             })?;
-        core.client
+        Ok(core
+            .client
             .with(Client::put_record)
             .stream_name(stream)
             .partition_key(partition_key)
@@ -259,7 +269,7 @@ impl<Env: Envelope> Publisher for KinesisPublisher<Env> {
             .map_err(|e| KinesisError::Publish {
                 stream: stream.to_owned(),
                 source: sdk_err(&e),
-            })
+            })?)
     }
 }
 
@@ -306,7 +316,7 @@ impl<Env: Envelope> Publisher for KinesisPublisher<Env> {
 /// #[ruststream::app]
 /// fn app() -> impl App {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-///         b.include(record).out(Journal, KinesisPublish::default()).build();
+///         b.include(record).out(Journal, KinesisPublish::default())
 ///     })
 /// }
 /// # }
@@ -385,7 +395,7 @@ impl<Env> KinesisPublish<Env> {
     ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
     ///         // Every journal entry on one shard, mutually ordered.
     ///         let journal = KinesisPublish::default().partition_key("journal-v1");
-    ///         b.include(record).out(Journal, journal).build();
+    ///         b.include(record).out(Journal, journal)
     ///     })
     /// }
     /// # }
@@ -429,7 +439,7 @@ impl<Env> KinesisPublish<Env> {
     /// #[ruststream::app]
     /// fn app() -> impl App {
     ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-    ///         b.include(project).out_reply(Publish::default().envelope(NoOp));
+    ///         b.include(project).out_reply(Publish::default().envelope(NoOp))
     ///     })
     /// }
     /// # }
@@ -585,7 +595,7 @@ where
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
 ///         b.include(confirm)
 ///             .out_reply(Publish::default())
-///             .partition_key("tenant-acme");
+///             .partition_key("tenant-acme")
 ///     })
 /// }
 /// # }
@@ -666,7 +676,7 @@ where
 /// #[ruststream::app]
 /// fn app() -> impl App {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(KinesisBroker::new(), |b| {
-///         b.include(record).out(Journal, Publish::default()).build();
+///         b.include(record).out(Journal, Publish::default())
 ///     })
 /// }
 /// # }
