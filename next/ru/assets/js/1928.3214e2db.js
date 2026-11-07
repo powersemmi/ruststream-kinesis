@@ -1,0 +1,1 @@
+"use strict";(self.webpackChunkruststream_kinesis_website=self.webpackChunkruststream_kinesis_website||[]).push([["1928"],{6443(e,s,t){t.d(s,{AskAIWidget:()=>r});var i=t(6540),n=t(941);let r=(0,i.forwardRef)(function(e,s){return(0,i.useImperativeHandle)(s,()=>({open:()=>(0,n.gD)(),close:n.K3,openWithNewSession:e=>(0,n.gD)(e)})),null})}}]);
